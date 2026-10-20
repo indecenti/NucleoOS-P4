@@ -2073,6 +2073,7 @@ void w4_loop(RunReq *r, wasm_module_inst_t inst, wasm_exec_env_t env, wasm_funct
 }
 
 extern "C" void *os_mmap_set_handoff(void *block, size_t size);   // WAMR esp-idf platform (tools/patches)
+extern "C" void os_mmap_set_handoff_keep(bool keep);              // (same patch)
 
 // The module bytes an async run was started with (Exec::bytes, read by exec_start) as soon as the
 // loader is done with them, instead of at collect: an AOT image can be several MB of PSRAM.
@@ -2083,9 +2084,10 @@ void release_module_bytes(RunReq *r, bool handoff) {
     pthread_mutex_lock(&ex->lock);
     if (ex->bytes && ex->bytes == r->mod) {
         if (handoff) {
-            // Not freed: exec_start sized this block for the linear memory, and it becomes exactly
-            // that (os_mmap_set_handoff, WAMR's esp-idf os_mmap). A freed block could not be found
-            // again whole in a fragmented PSRAM — the next app launch failed "allocate linear memory".
+            // Not freed: exec_start sized this block for the linear memory, which starts in it
+            // (os_mmap_set_handoff, WAMR's esp-idf os_mmap): trimmed to the start size, it grows
+            // in place into the tail (os_mremap). A freed block could not be found again whole in
+            // a fragmented PSRAM — the next app launch failed "allocate linear memory".
             os_mmap_set_handoff(ex->bytes, heap_caps_get_allocated_size(ex->bytes));
         } else {
             free(ex->bytes);
@@ -2208,7 +2210,12 @@ void *run_worker(void *p) {
         NV_LOGI(TAG, "%s: instantiate, PSRAM free %u KB, largest block %u KB", r->tag,
                 (unsigned)(heap_caps_get_free_size(MALLOC_CAP_SPIRAM) / 1024),
                 (unsigned)(heap_caps_get_largest_free_block(MALLOC_CAP_SPIRAM) / 1024));
+        // An app run from the UI keeps the whole handoff block as room to grow in place: the
+        // broker already reserved its ram_budget. A console program (Terminal, the sc-im engine of
+        // Fogli) only gets its start size and gives the rest back to the system.
+        os_mmap_set_handoff_keep(!r->console);
         wasm_module_inst_t inst = wasm_runtime_instantiate_ex(module, &ia, ebuf, sizeof(ebuf));
+        os_mmap_set_handoff_keep(false);
         if (void *unused = os_mmap_set_handoff(nullptr, 0)) heap_caps_free(unused);   // not taken
         if (!inst) {
             set_err(r->err, sizeof r->err, ebuf[0] ? ebuf : "instantiate failed");

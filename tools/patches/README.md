@@ -30,7 +30,14 @@ What it changes:
 - `core/shared/platform/esp-idf/espidf_memmap.c` (also) — `os_mmap_set_handoff()`: the embedder
   hands the next large non-executable `os_mmap` (a linear memory) a block it already holds. nv_wasm
   reads an app.aot into a block sized for the app's memory and hands it over after loading, so the
-  memory never has to find a fresh contiguous block in fragmented PSRAM (1.1.141).
+  memory never has to find a fresh contiguous block in fragmented PSRAM (1.1.141). Since 1.2.146 any
+  linear memory of 256 KB or more takes it. `os_mmap_set_handoff_keep(true)` (nv_wasm: apps run
+  from the UI, whose budget the broker reserved) keeps the whole block, and `os_mremap()` grows in
+  place inside it — no second block, no copy; a console run gets it trimmed in place to its start
+  size and grows the upstream way. A WASI app such as Biblioteca starts at 1.3 MB of a 12 MB budget;
+  before, that start memory had to find room outside the block and failed in a fragmented PSRAM
+  ("allocate linear memory failed"). Never `heap_caps_realloc()` to grow: TLSF copies a moved block
+  with the heap lock held (interrupts off), and a 12 MB copy trips the interrupt watchdog.
 - `core/shared/platform/esp-idf/platform_internal.h` — makes `CONFIG_WAMR_ENABLE_LIBC_WASI`
   compile on ESP-IDF: `os_timespec` / `os_poll_file_handle` / `os_nfds_t` were `int`
   placeholders upstream, but libc-wasi uses them as `struct timespec` / `struct pollfd`. The rest

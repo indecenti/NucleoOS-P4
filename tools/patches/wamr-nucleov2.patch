@@ -91,10 +91,10 @@ index 949e5747..b8f82e34 100644
          size_t bytes_read = 0;
          char *buf;
 diff --git a/core/shared/platform/esp-idf/espidf_memmap.c b/core/shared/platform/esp-idf/espidf_memmap.c
-index b0c493d2..a8b5404b 100644
+index b0c493d2..d5e47888 100644
 --- a/core/shared/platform/esp-idf/espidf_memmap.c
 +++ b/core/shared/platform/esp-idf/espidf_memmap.c
-@@ -17,9 +17,61 @@
+@@ -17,9 +17,70 @@
  static portMUX_TYPE s_spinlock = portMUX_INITIALIZER_UNLOCKED;
  #endif
  
@@ -131,6 +131,15 @@ index b0c493d2..a8b5404b 100644
 +#if CONFIG_IDF_TARGET_ESP32P4
 +static void *s_handoff;
 +static size_t s_handoff_size;
++static bool s_handoff_keep;
++
++/* NucleoV2: whether the linear memory that takes the handoff block keeps all of it (room to grow
++   in place, for an app whose budget the embedder already reserved) or trims it to its start size. */
++void
++os_mmap_set_handoff_keep(bool keep)
++{
++    s_handoff_keep = keep;
++}
 +
 +/* NucleoV2: hand the next non-executable os_mmap (a linear memory) a block allocated by the
 +   embedder (heap_caps_*; freed through os_munmap -> os_free like any other). Returns the block
@@ -156,7 +165,7 @@ index b0c493d2..a8b5404b 100644
      if (prot & MMAP_PROT_EXEC) {
  #if (WASM_MEM_DUAL_BUS_MIRROR != 0)
          uint32_t mem_caps = MALLOC_CAP_SPIRAM;
-@@ -56,8 +108,21 @@ os_mmap(void *hint, size_t size, int prot, int flags, os_file_handle file)
+@@ -56,8 +117,33 @@ os_mmap(void *hint, size_t size, int prot, int flags, os_file_handle file)
  #else
          uint32_t mem_caps = MALLOC_CAP_8BIT;
  #endif
@@ -165,13 +174,25 @@ index b0c493d2..a8b5404b 100644
 +        void *buf_origin = NULL;
 +#if CONFIG_IDF_TARGET_ESP32P4
 +        /* NucleoV2: a block the embedder set aside for this run's linear memory (see
-+           os_mmap_set_handoff) is used as is: the memory then never has to find a
-+           fresh contiguous block in a fragmented PSRAM. */
++           os_mmap_set_handoff) holds it, so the memory never has to find a fresh contiguous
++           block in a fragmented PSRAM. A WASI app starts small (Biblioteca: 1.3 MB of a 12 MB
++           budget) and grows: kept whole (os_mmap_set_handoff_keep), the block is the room
++           os_mremap() grows into without moving; otherwise it is trimmed in place to the start
++           size (TLSF shrinks without copying) and the tail goes back to the heap. Only a linear
++           memory takes it (>= 256 KB: smaller ones may live in faster internal RAM; the 4 KB
++           guard pages of an exec env never). */
 +        if (s_handoff && size + 4 + sizeof(uintptr_t) <= s_handoff_size
-+            && size >= s_handoff_size / 2) { /* the big one: never a small side map */
++            && size >= 256 * 1024) {
 +            buf_origin = s_handoff;
 +            s_handoff = NULL;
 +            s_handoff_size = 0;
++            if (!s_handoff_keep) {
++                void *trimmed =
++                    heap_caps_realloc(buf_origin, size + 4 + sizeof(uintptr_t), mem_caps);
++                if (trimmed) {
++                    buf_origin = trimmed;
++                }
++            }
 +        }
 +#endif
 +        if (!buf_origin) {
@@ -180,7 +201,32 @@ index b0c493d2..a8b5404b 100644
          if (!buf_origin) {
              return NULL;
          }
-@@ -127,7 +192,23 @@ void
+@@ -81,6 +167,24 @@ os_mmap(void *hint, size_t size, int prot, int flags, os_file_handle file)
+ void *
+ os_mremap(void *old_addr, size_t old_size, size_t new_size)
+ {
++#if CONFIG_IDF_TARGET_ESP32P4
++    /* NucleoV2: grow a linear memory in place when its block already has the room (a handoff
++       block kept whole, see os_mmap): no second block of the new size, no copy. Upstream's slow
++       path needs both blocks at once, and in a fragmented PSRAM a fresh 12 MB block often does
++       not exist. Never heap_caps_realloc() here: when TLSF has to move a block it copies it with
++       the heap lock held, interrupts off on that core, and a 12 MB copy (~0.4 s) trips the
++       interrupt watchdog. Executable blocks (p4_exec_alloc, origin a line before) are skipped. */
++    if (old_addr && new_size > old_size) {
++        uint8_t *fixed = (uint8_t *)old_addr;
++        uint8_t *origin = (uint8_t *)((uintptr_t *)fixed)[-1];
++        const size_t off = (size_t)(fixed - origin);
++        if (off >= sizeof(uintptr_t) && off <= 4 + sizeof(uintptr_t)
++            && heap_caps_get_allocated_size(origin) >= off + new_size) {
++            memset(fixed + old_size, 0, new_size - old_size);
++            return old_addr;
++        }
++    }
++#endif
+     return os_mremap_slow(old_addr, old_size, new_size);
+ }
+ 
+@@ -127,7 +231,23 @@ void
  
  void
  os_icache_flush(void *start, size_t len)
