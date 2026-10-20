@@ -140,6 +140,15 @@ def draw(name, px):
         line(d, px, [(8, 2.8), (8, 21.2)], w=1.4)
         line(d, px, [(10.5, 7.5), (17, 7.5)], w=1.3)
         line(d, px, [(10.5, 10.5), (15.5, 10.5)], w=1.3)
+    elif name == "download":   # an arrow into a tray
+        line(d, px, [(12, 3), (12, 15)], w=2.0)
+        line(d, px, [(7, 10.5), (12, 15.5), (17, 10.5)], w=2.0)
+        line(d, px, [(4, 15), (4, 20), (20, 20), (20, 15)], w=2.0)
+    elif name == "pause":
+        rrect(d, px, 6.5, 5, 10, 19, 1)
+        rrect(d, px, 14, 5, 17.5, 19, 1)
+    elif name == "play":
+        poly(d, px, [(8, 4.5), (19.5, 12), (8, 19.5)])
     else:
         raise SystemExit("unknown icon " + name)
     return im.resize((px, px), Image.BOX)
@@ -148,7 +157,7 @@ def draw(name, px):
 ICONS = [("back", 24), ("forward", 24), ("search", 24), ("toc", 24), ("star", 24), ("star_on", 24),
          ("more", 24), ("library", 24), ("random", 24), ("info", 24), ("close", 24), ("history", 24),
          ("textsize", 24), ("theme", 24), ("check", 24), ("backspace", 24), ("enter", 24), ("shift", 24),
-         ("keyboard", 24), ("book", 48)]
+         ("keyboard", 24), ("book", 48), ("download", 24), ("pause", 24), ("play", 24)]
 
 
 def main():

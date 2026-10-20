@@ -12,7 +12,9 @@ available for a file, it asks `nv_open_handlers(path, NV_OPEN_ACTION, ...)`. The
 ## How a file is resolved
 
 1. **Type.** The extension maps to a MIME type and a kind (`nv_open_mime`, `nv_open_kind`), using
-   one table in `nv_open.cpp`. Unknown extensions are `application/octet-stream`.
+   one table in `nv_open.cpp`. Unknown extensions are `application/octet-stream`. Kinds: folder,
+   text, spreadsheet (`NV_FILE_SHEET`: xlsx xls ods csv tsv sc, table icon `NV_SYMBOL_SHEET`), image,
+   audio, video, app, archive, other.
 2. **Handlers.** Apps register `NvOpenHandler` descriptors next to their `NvApp`, in their
    `*_register()` function. Each descriptor lists the MIME patterns it accepts
    (`"text/plain text/markdown"`, `"audio/*"`). There are two roles:
@@ -35,6 +37,9 @@ Defaults are stored in the nv_config key `open_defs` (`mime=handler;...`). Users
 | `video.play`     | opener | video   | video/x-msvideo video/mpeg (+ mp4/h264 only with `CONFIG_NV_VPLAYER_H264`) | 50 |
 | `files.preview`  | opener | files   | text/* application/json application/xml image/jpeg image/png image/bmp | 10 |
 | `sys.wallpaper`  | action | —       | image/jpeg                                 | 0    |
+| `sheets.edit`    | opener | sheets  | xlsx xls ods csv tsv sc (spreadsheet MIMEs) | 50  |
+| `sheets.analyze` | action | sheets  | xlsx xls ods csv tsv: "Analizza con ANIMA" | 0    |
+| `sheets.new`, `sheets.anima` | opener | sheets | none (reached by id: Files' "New spreadsheet", the action above) | 0 |
 | `<wasm id>.open` | opener | a store app | manifest `"opens"`                     | 0    |
 
 Priorities follow a convention. The real editor or viewer of a type uses 50. A secondary view,

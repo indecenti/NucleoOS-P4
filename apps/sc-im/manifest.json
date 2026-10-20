@@ -1,0 +1,73 @@
+{
+  "id": "sc-im",
+  "name": "sc-im",
+  "names": {
+    "en": "sc-im (Sheets engine)",
+    "it": "sc-im (motore di Fogli)",
+    "es": "sc-im (motor de Hojas)",
+    "fr": "sc-im (moteur de Feuilles)",
+    "de": "sc-im (Tabellen-Engine)"
+  },
+  "version": "0.8.5.3",
+  "abi": 17,
+  "console": true,
+  "tty": true,
+  "home": false,
+  "category": "productivity",
+  "ram_budget": 16777216,
+  "stack_kb": 256,
+  "permissions": [
+    "home"
+  ],
+  "author": "Andrés Martinelli and the sc-im contributors",
+  "license": "BSD-4-Clause (sc-im); X11 (ncurses); MIT (libxml2); BSD-3-Clause (libzip); BSD-2-Clause (libxlsxwriter); Zlib (zlib)",
+  "source": "https://github.com/andmarti1424/sc-im",
+  "description": "The calculation engine of Sheets, the spreadsheet app: formulas, undo, Excel .xlsx/.xls, LibreOffice .ods, .csv and .tsv files. Installed with the system and kept up to date. It is also a full-screen keyboard spreadsheet in the Terminal (sc-im FILE: = to type a value or formula, :w to save, :q to quit, :h for the manual).",
+  "descriptions": {
+    "en": "The calculation engine of Sheets, the spreadsheet app: formulas, undo, Excel .xlsx/.xls, LibreOffice .ods, .csv and .tsv files. Installed with the system and kept up to date. It is also a full-screen keyboard spreadsheet in the Terminal (sc-im FILE: = to type a value or formula, :w to save, :q to quit, :h for the manual).",
+    "it": "Il motore di calcolo di Fogli, l'app per i fogli di calcolo: formule, annulla, file Excel .xlsx/.xls, LibreOffice .ods, .csv e .tsv. Si installa con il sistema e si aggiorna da solo. È anche un foglio di calcolo da tastiera a schermo intero nel Terminale (sc-im FILE: = per scrivere un valore o una formula, :w salva, :q esce, :h il manuale).",
+    "es": "El motor de cálculo de Hojas, la app de hojas de cálculo: fórmulas, deshacer, archivos de Excel .xlsx/.xls, LibreOffice .ods, .csv y .tsv. Se instala con el sistema y se actualiza solo. También es una hoja de cálculo de teclado a pantalla completa en la Terminal (sc-im ARCHIVO: = para escribir un valor o fórmula, :w guarda, :q sale, :h el manual).",
+    "fr": "Le moteur de calcul de Feuilles, l'app de tableur : formules, annulation, fichiers Excel .xlsx/.xls, LibreOffice .ods, .csv et .tsv. Installé avec le système et mis à jour tout seul. C'est aussi un tableur au clavier plein écran dans le Terminal (sc-im FICHIER : = pour saisir une valeur ou une formule, :w enregistre, :q quitte, :h le manuel).",
+    "de": "Die Rechen-Engine von Tabellen, der Tabellenkalkulations-App: Formeln, Rückgängig, Excel-.xlsx/.xls-, LibreOffice-.ods-, .csv- und .tsv-Dateien. Wird mit dem System installiert und aktualisiert sich selbst. Im Terminal auch eine Vollbild-Tabellenkalkulation für die Tastatur (sc-im DATEI: = für einen Wert oder eine Formel, :w speichert, :q beendet, :h das Handbuch)."
+  },
+  "usage": "sc-im [FILE] opens the spreadsheet on screen (.xlsx .xls .ods .csv .tsv .sc). Without the screen: sc-im --nocurses --quit_afterload --export_csv FILE (the first sheet as CSV, formulas computed; --export_mkd a table, --export_txt aligned text, --sheet=NAME another sheet). Cells are A0 (column A, row 0).",
+  "opens": [
+    "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+    "application/vnd.ms-excel",
+    "application/vnd.oasis.opendocument.spreadsheet",
+    "text/csv",
+    "text/tab-separated-values",
+    "application/x-sc"
+  ],
+  "file_types": [
+    {
+      "ext": "sc",
+      "mime": "application/x-sc",
+      "kind": "other"
+    }
+  ],
+  "anima": {
+    "tags": [
+      "spreadsheet",
+      "excel",
+      "xlsx",
+      "xls",
+      "ods",
+      "csv",
+      "table",
+      "cells",
+      "formula",
+      "sum",
+      "foglio",
+      "fogli",
+      "tabella",
+      "celle",
+      "somma",
+      "calc"
+    ],
+    "does": {
+      "en": "Reads spreadsheets (.xlsx .xls .ods .csv) with formulas computed. Run: sc-im --nocurses --quit_afterload --export_csv FILE.xlsx (--export_mkd for a table, --sheet=NAME for another sheet)",
+      "it": "Legge fogli di calcolo (.xlsx .xls .ods .csv) con le formule calcolate. Uso: sc-im --nocurses --quit_afterload --export_csv FILE.xlsx (--export_mkd tabella, --sheet=NOME altro foglio)"
+    }
+  }
+}

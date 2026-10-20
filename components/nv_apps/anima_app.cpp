@@ -3833,7 +3833,14 @@ struct AnimaKeep {
     char     prompt[kInputCap];
     char     key_text[256], model[96], base[160];
 };
-NV_PSRAM_BSS AnimaKeep s_keep;
+AnimaKeep *s_ak = nullptr;   // on the LVGL heap only from anima_close (or the build) to the build's end
+void ak_drop(void) {         // the typed API key does not stay around
+    if (s_ak) { lv_memzero(s_ak, sizeof *s_ak); lv_free(s_ak); s_ak = nullptr; }
+}
+AnimaKeep *ak_new(void) {
+    ak_drop();
+    return s_ak = (AnimaKeep *)lv_malloc_zeroed(sizeof(AnimaKeep));
+}
 int s_torn = -1;   // the teardown the close hook handled (nv_app_teardown_t), -1 = none yet
 
 void keep_text(char *dst, size_t n, lv_obj_t *ta) {
@@ -3846,24 +3853,26 @@ void keep_text(char *dst, size_t n, lv_obj_t *ta) {
 void anima_close(nv_app_teardown_t why) {
     s_torn = (int)why;
     if (why == NV_APP_REBUILD) {
-        memset(&s_keep, 0, sizeof s_keep);
-        s_keep.turn = s_pending != nullptr;
-        s_keep.voice = s_spin_voice;
-        s_keep.t0 = s_spin_t0;
-        s_keep.settings = settings_showing();
-        keep_text(s_keep.prompt, sizeof s_keep.prompt, s_input);
-        s_keep.key = s_key_dirty;
-        if (s_key_dirty) keep_text(s_keep.key_text, sizeof s_keep.key_text, s_key_ta);
-        keep_text(s_keep.model, sizeof s_keep.model, s_model_ta);
-        keep_text(s_keep.base, sizeof s_keep.base, s_base_ta);
-        s_keep.prov = s_prov_dd ? lv_dropdown_get_selected(s_prov_dd) : 0;
+        if (!ak_new()) return;   // no memory: the rebuild starts a fresh page, the work goes on
+        s_ak->turn = s_pending != nullptr;
+        s_ak->voice = s_spin_voice;
+        s_ak->t0 = s_spin_t0;
+        s_ak->settings = settings_showing();
+        keep_text(s_ak->prompt, sizeof s_ak->prompt, s_input);
+        s_ak->key = s_key_dirty;
+        if (s_key_dirty) keep_text(s_ak->key_text, sizeof s_ak->key_text, s_key_ta);
+        keep_text(s_ak->model, sizeof s_ak->model, s_model_ta);
+        keep_text(s_ak->base, sizeof s_ak->base, s_base_ta);
+        s_ak->prov = s_prov_dd ? lv_dropdown_get_selected(s_prov_dd) : 0;
         return;
     }
     if (why == NV_APP_SWITCH) {
         // Saved even when empty: an older switch's prompt must not come back.
-        keep_text(s_keep.prompt, sizeof s_keep.prompt, s_input);
-        nv_ui_state_save(s_keep.prompt, strlen(s_keep.prompt) + 1);
-        s_keep.prompt[0] = 0;
+        if (ak_new()) {
+            keep_text(s_ak->prompt, sizeof s_ak->prompt, s_input);
+            nv_ui_state_save(s_ak->prompt, strlen(s_ak->prompt) + 1);
+        }
+        ak_drop();
     }
     work_stop(why == NV_APP_SWITCH);
 }
@@ -3919,10 +3928,10 @@ void anima_build(lv_obj_t *content) {
         s_mono.fallback = &nv_font_14;
         s_mono_ok = true;
     }
-    // A rebuild goes on where the old widgets were (s_keep); anything else is a fresh page.
-    const bool keep = s_torn == NV_APP_REBUILD && nv_ui_app_rebuilding();
+    // A rebuild goes on where the old widgets were (s_ak); anything else is a fresh page.
+    const bool keep = s_torn == NV_APP_REBUILD && nv_ui_app_rebuilding() && s_ak;
     s_torn = -1;
-    if (!keep) memset(&s_keep, 0, sizeof s_keep);
+    if (!keep) ak_new();   // a fresh page: only the prompt a switch saved comes back (may be NULL)
     s_hist_n = 0;             // history_load refills ↑ history from the log (it used to pile up per open)
     s_hist_pos = 0;
     s_menu_n = 0;
@@ -4018,9 +4027,9 @@ void anima_build(lv_obj_t *content) {
 
     // The turn still in flight gets its spinner back: after a rebuild, or a switch back before the
     // answer landed (poll_cb delivers it here instead of detach_cb writing it to the log).
-    bool turn = keep && s_keep.turn;
-    bool voice = keep && s_keep.voice;
-    uint32_t t0 = s_keep.t0;
+    bool turn = keep && s_ak->turn;
+    bool voice = keep && s_ak->voice;
+    uint32_t t0 = keep ? s_ak->t0 : 0;
     if (s_detach) {
         lv_timer_delete(s_detach);
         s_detach = nullptr;
@@ -4034,20 +4043,20 @@ void anima_build(lv_obj_t *content) {
     if (keep) {
         if (s_recording && s_mic) lv_label_set_text(s_mic, LV_SYMBOL_STOP);
         attach_chip_refresh();
-        if (s_keep.key) {
-            lv_textarea_set_text(s_key_ta, s_keep.key_text);
+        if (s_ak->key) {
+            lv_textarea_set_text(s_key_ta, s_ak->key_text);
             s_key_dirty = true;
         }
-        lv_textarea_set_text(s_model_ta, s_keep.model);
-        lv_textarea_set_text(s_base_ta, s_keep.base);
-        lv_dropdown_set_selected(s_prov_dd, s_keep.prov);
-    } else {
-        const size_t n = nv_ui_state_load(s_keep.prompt, sizeof s_keep.prompt);   // a switch back
-        s_keep.prompt[n ? n - 1 : 0] = 0;
+        lv_textarea_set_text(s_model_ta, s_ak->model);
+        lv_textarea_set_text(s_base_ta, s_ak->base);
+        lv_dropdown_set_selected(s_prov_dd, s_ak->prov);
+    } else if (s_ak) {
+        const size_t n = nv_ui_state_load(s_ak->prompt, sizeof s_ak->prompt);   // a switch back
+        s_ak->prompt[n ? n - 1 : 0] = 0;
     }
-    if (s_keep.prompt[0]) lv_textarea_set_text(s_input, s_keep.prompt);
-    if (keep && s_keep.settings) settings_toggle_cb(nullptr);
-    memset(&s_keep, 0, sizeof s_keep);   // the typed API key does not stay around
+    if (s_ak && s_ak->prompt[0]) lv_textarea_set_text(s_input, s_ak->prompt);
+    if (keep && s_ak->settings) settings_toggle_cb(nullptr);
+    ak_drop();
     status_refresh();
     chat_scroll_bottom();
 
@@ -4058,7 +4067,7 @@ void anima_build(lv_obj_t *content) {
 }
 
 const NvApp kAnimaApp = {"anima", "Anima", &nv_icon_anima, 2u << 20, anima_build,
-                         NV_STR_APP_ANIMA, nullptr, 0u, anima_close};
+                         NV_STR_APP_ANIMA, nullptr, 0u, nullptr, anima_close};
 
 }  // namespace
 

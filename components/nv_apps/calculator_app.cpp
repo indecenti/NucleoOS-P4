@@ -375,7 +375,7 @@ void calc_build(lv_obj_t *content) {
 }
 
 const NvApp kCalcApp = {"calc", "Calculator", &nv_icon_calc, 512u << 10, calc_build,
-                        NV_STR_APP_CALC, nullptr, 0u, calc_close};
+                        NV_STR_APP_CALC, nullptr, 0u, nullptr, calc_close};
 
 }  // namespace
 

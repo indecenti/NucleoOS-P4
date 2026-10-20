@@ -5,7 +5,7 @@
 //                                 BIB_LANG = it|en|..., BIB_W / BIB_H = canvas size)
 // Script, one command per line (# comments):
 //   wait N | tap X Y | hold X Y N | drag X0 Y0 X1 Y1 N | key USAGE [MODS] | type TEXT | back |
-//   shot NAME | kbd 0|1 | open PATH | stats
+//   shot NAME | kbd 0|1 | open PATH | stats | net 0|1 (no network / back)
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -75,7 +75,7 @@ static uint16_t *canvas;
 static const char *outdir = ".";
 
 typedef struct {
-    int down, x, y, back, kbd_usage, kbd_mods, stats;
+    int down, x, y, back, kbd_usage, kbd_mods, stats, net;   // net: 1 = off, 2 = on
     char shot[64];
 } frame_t;
 static frame_t *fr;
@@ -152,6 +152,7 @@ static int load_script(const char *path) {
         else if (sscanf(p, "kbd %d", &n) == 1) kbd_on = n;
         else if (sscanf(p, "open %399s", s) == 1) snprintf(open_file, sizeof open_file, "%s", s);
         else if (!strcmp(p, "stats")) push()->stats = 1;
+        else if (sscanf(p, "net %d", &n) == 1) push()->net = n ? 2 : 1;
         else { fprintf(stderr, "script: %s?\n", p); return -1; }
     }
     fclose(f);
@@ -217,10 +218,164 @@ int32_t nv_open_path(char *buf, int32_t len) {
     snprintf(buf, (size_t)len, "%s", open_file);
     return (int32_t)strlen(open_file);
 }
+
+// ---- ABI 12 HTTP, for the download screen: the Kiwix catalog is test/opds_ita.xml, a thumbnail is
+// test/icon48.png (BIB_TESTDATA = that folder), an answer comes 10 frames later. BIB_OFFLINE=1: no network.
+static struct { int used, status, ready; char *body; size_t n, off; } s_http[4];
+static int s_offline;   // the script's "net 0"
+static void dl_tick(void);
+
+static char *slurp(const char *path, size_t *n) {
+    FILE *f = fopen(path, "rb");
+    if (!f) return NULL;
+    fseek(f, 0, SEEK_END);
+    const long k = ftell(f);
+    fseek(f, 0, SEEK_SET);
+    char *b = (char *)HOST_MALLOC((size_t)k + 1);
+    *n = fread(b, 1, (size_t)k, f);
+    fclose(f);
+    return b;
+}
+
+int32_t nv_http_req(const char *spec, const void *body, uint32_t len) {
+    (void)body; (void)len;
+    int h = 0;
+    while (h < 4 && s_http[h].used) h++;
+    if (h == 4) return -3;
+    const char *u = strstr(spec, "\"url\":\"");
+    if (!u) return -2;
+    char url[400];
+    snprintf(url, sizeof url, "%s", u + 7);
+    url[strcspn(url, "\"")] = 0;
+    s_http[h].used = 1;
+    s_http[h].ready = cur + 10;
+    s_http[h].off = s_http[h].n = 0;
+    s_http[h].body = NULL;
+    s_http[h].status = 404;
+    const char *dir = getenv("BIB_TESTDATA");
+    char p[600];
+    if (getenv("BIB_OFFLINE") || s_offline) s_http[h].status = -5;
+    else if (dir && strstr(url, "/catalog/v2/entries?lang=ita") && strstr(url, "start=0")) snprintf(p, sizeof p, "%s/opds_ita.xml", dir);
+    else if (dir && strstr(url, "/catalog/v2/illustration/")) snprintf(p, sizeof p, "%s/icon48.png", dir);
+    else p[0] = 0;
+    if (s_http[h].status != -5 && p[0] && (s_http[h].body = slurp(p, &s_http[h].n))) s_http[h].status = 200;
+    fprintf(stderr, "http: %s -> %d\n", url, s_http[h].status);
+    return h;
+}
+int32_t nv_http_state(int32_t h) {
+    if (h < 0 || h >= 4 || !s_http[h].used) return -2;
+    if (cur < s_http[h].ready) return 0;
+    return s_http[h].status < 0 ? s_http[h].status : 1;
+}
+int32_t nv_http_status(int32_t h) { return h >= 0 && h < 4 && s_http[h].status > 0 ? s_http[h].status : 0; }
+int32_t nv_http_read(int32_t h, void *buf, uint32_t len) {
+    if (h < 0 || h >= 4 || !s_http[h].used) return -2;
+    size_t k = s_http[h].n - s_http[h].off;
+    if (k > len) k = len;
+    if (k) memcpy(buf, s_http[h].body + s_http[h].off, k);
+    s_http[h].off += k;
+    return (int32_t)k;
+}
+void nv_http_close(int32_t h) {
+    if (h < 0 || h >= 4) return;
+    HOST_FREE(s_http[h].body);
+    memset(&s_http[h], 0, sizeof s_http[h]);
+}
+
+// ---- ABI 18 the system downloader: a download grows 512 KB a frame (shown as 180 KB/s) and, when
+// complete, BIB_DL_FIXTURE (a small .zim) is copied to its destination under BIB_ROOT.
+static struct { int id, state; char title[96], dest[160]; long long size, done; } s_dl[16];
+static int s_ndl, s_dl_next = 1;
+static const char *const kDlSt[] = {"queued", "paused", "done", "failed", "running"};
+
+static void json_get(const char *spec, const char *key, char *out, size_t cap) {
+    char k[40];
+    snprintf(k, sizeof k, "\"%s\":\"", key);
+    const char *v = strstr(spec, k);
+    out[0] = 0;
+    if (!v) return;
+    v += strlen(k);
+    size_t i = 0;
+    for (; *v && *v != '"' && i + 1 < cap; v++) { if (*v == '\\' && v[1]) v++; out[i++] = *v; }
+    out[i] = 0;
+}
+
+int32_t nv_dl_start(const char *spec) {
+    if (s_ndl == 16) return -3;
+    char dest[160], title[96], meta4[300];
+    json_get(spec, "dest", dest, sizeof dest);
+    json_get(spec, "title", title, sizeof title);
+    json_get(spec, "meta4", meta4, sizeof meta4);
+    if (dest[0] != '/' || !meta4[0]) return -2;
+    for (int i = 0; i < s_ndl; i++) if (!strcmp(s_dl[i].dest, dest) && s_dl[i].state != 2) return -5;
+    s_dl[s_ndl].id = s_dl_next++;
+    s_dl[s_ndl].state = 4;
+    snprintf(s_dl[s_ndl].title, sizeof s_dl[0].title, "%s", title);
+    snprintf(s_dl[s_ndl].dest, sizeof s_dl[0].dest, "%s", dest);
+    s_dl[s_ndl].size = 50ll << 20;
+    s_dl[s_ndl].done = 0;
+    fprintf(stderr, "dl: start %d %s -> %s\n", s_dl[s_ndl].id, meta4, dest);
+    return s_dl[s_ndl++].id;
+}
+
+static void dl_tick(void) {
+    for (int i = 0; i < s_ndl; i++) {
+        if (s_dl[i].state != 4) continue;
+        s_dl[i].done += 512 << 10;
+        if (s_dl[i].done < s_dl[i].size) continue;
+        s_dl[i].done = s_dl[i].size;
+        s_dl[i].state = 2;
+        const char *root = getenv("BIB_ROOT"), *fx = getenv("BIB_DL_FIXTURE");
+        if (root && fx) {
+            char to[400];
+            snprintf(to, sizeof to, "%s%s", root, s_dl[i].dest);
+            size_t n = 0;
+            char *b = slurp(fx, &n);
+            FILE *f = b ? fopen(to, "wb") : NULL;
+            if (f) { fwrite(b, 1, n, f); fclose(f); }
+            HOST_FREE(b);
+            fprintf(stderr, "dl: done %d -> %s\n", s_dl[i].id, to);
+        }
+    }
+}
+
+static int dl_json(int i, char *buf, size_t cap) {
+    return snprintf(buf, cap, "{\"id\":%d,\"state\":\"%s\",\"title\":\"%s\",\"dest\":\"%s\",\"size\":%lld,\"done\":%lld,"
+                    "\"verified\":%lld,\"bps\":%d,\"phase\":\"%s\",\"error\":\"\"}", s_dl[i].id, kDlSt[s_dl[i].state],
+                    s_dl[i].title, s_dl[i].dest, s_dl[i].size, s_dl[i].done, s_dl[i].done, s_dl[i].state == 4 ? 184320 : 0,
+                    s_dl[i].state == 4 ? "fetch" : "");
+}
+int32_t nv_dl_info(int32_t id, char *buf, uint32_t len) {
+    for (int i = 0; i < s_ndl; i++) if (s_dl[i].id == id) return dl_json(i, buf, len);
+    return -2;
+}
+int32_t nv_dl_list(char *buf, uint32_t len) {
+    size_t k = (size_t)snprintf(buf, len, "[");
+    for (int i = 0; i < s_ndl && k + 600 < len; i++) {
+        if (i) buf[k++] = ',';
+        k += (size_t)dl_json(i, buf + k, len - k);
+    }
+    k += (size_t)snprintf(buf + k, len - k, "]");
+    return (int32_t)k;
+}
+int32_t nv_dl_pause(int32_t id, int32_t on) {
+    for (int i = 0; i < s_ndl; i++)
+        if (s_dl[i].id == id) { s_dl[i].state = on ? 1 : 4; return 1; }
+    return -2;
+}
+int32_t nv_dl_cancel(int32_t id) {
+    for (int i = 0; i < s_ndl; i++)
+        if (s_dl[i].id == id) { memmove(&s_dl[i], &s_dl[i + 1], sizeof s_dl[0] * (size_t)(s_ndl - i - 1)); s_ndl--; return 1; }
+    return -2;
+}
+int32_t nv_dl_free(void) { return 12000; }
+
 int32_t nv_gfx_present(void) {
     if (cur >= nfr) return 0;
+    dl_tick();
     const frame_t *f = &fr[cur++];
     if (f->back) pend_back = 1;
+    if (f->net) s_offline = f->net == 1;
     if (f->shot[0]) write_ppm(f->shot);
     if (f->stats) printf("frame %d: %ld blits, %ld rows\n", cur, blits, blit_rows);
     return 1;

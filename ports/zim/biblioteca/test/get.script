@@ -1,0 +1,77 @@
+# the download screen: the catalog (test/opds_ita.xml), a collection's editions, a download that
+# finishes and joins the library, the downloads list with pause and a two-tap cancel, the search,
+# and a catalog with no network (an old one stays on screen; without one, "try again")
+wait 4
+shot 01_library
+tap 878 30
+wait 30
+shot 02_recommended
+tap 300 170
+wait 20
+shot 03_editions
+# "Download" on the first edition (without pictures)
+tap 933 273
+wait 12
+shot 04_started
+back
+wait 6
+shot 05_progress
+# the downloads
+tap 989 30
+wait 30
+shot 06_downloads
+wait 90
+shot 07_finished
+back
+wait 4
+back
+wait 10
+shot 08_library_has_it
+# the search, typed on a keyboard
+tap 878 30
+wait 10
+tap 878 30
+wait 4
+type vik
+wait 4
+shot 09_search
+back
+wait 4
+# all the collections, then Vikidia: start, pause, cancel twice
+tap 165 90
+wait 6
+shot 10_all
+tap 935 354
+wait 8
+tap 989 30
+wait 8
+tap 910 164
+wait 10
+shot 11_paused
+tap 966 164
+wait 4
+shot 12_cancel_armed
+tap 966 164
+wait 10
+shot 13_canceled
+back
+wait 4
+back
+wait 4
+# no network: the cached catalog is shown; a new language has none: "try again"
+net 0
+tap 878 30
+wait 6
+tap 808 30
+wait 20
+shot 14_offline
+net 1
+tap 808 30
+wait 4
+tap 808 30
+wait 4
+tap 808 30
+wait 4
+tap 808 30
+wait 20
+shot 15_back_online

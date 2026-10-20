@@ -906,7 +906,7 @@ void music_build(lv_obj_t *content) {
 }
 
 const NvApp kMusicApp = {"music", "Music", &nv_icon_music, 2u << 20, music_build,
-                         NV_STR_APP_MUSIC, nullptr, 0u, music_close};
+                         NV_STR_APP_MUSIC, nullptr, 0u, nullptr, music_close};
 
 // Exactly what nv_media decodes (see nv_media.c type_for): no OGG/Opus.
 const NvOpenHandler kMusicPlay = {

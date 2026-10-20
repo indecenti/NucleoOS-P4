@@ -1094,7 +1094,7 @@ void video_build(lv_obj_t *content){
 }
 
 const NvApp kVideoApp = {"video", "Video", &nv_icon_video, 8u << 20, video_build,
-                         NV_STR_APP_VIDEO, nullptr, 0u, video_close};
+                         NV_STR_APP_VIDEO, nullptr, 0u, nullptr, video_close};
 
 // What nv_vplayer plays (nv_vplayer_is_video): MJPEG AVI and MPEG-1; MP4/H.264 only in builds that
 // enable the gated decoder.

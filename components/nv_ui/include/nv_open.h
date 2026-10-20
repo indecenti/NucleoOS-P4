@@ -37,7 +37,7 @@ extern "C" {
 #endif
 
 #define NV_OPEN_PATH_MAX 256   // absolute POSIX path, NUL included
-#define NV_OPEN_MIME_MAX 48
+#define NV_OPEN_MIME_MAX 80   // the Office Open XML types run to 73 characters
 #define NV_OPEN_ID_MAX   40    // handler ids and app ids
 
 // ------------------------------------------------------------------------------ file types
@@ -50,8 +50,12 @@ typedef enum {
     NV_FILE_VIDEO,
     NV_FILE_APP,         // installable / runnable app package (.wasm)
     NV_FILE_ARCHIVE,
+    NV_FILE_SHEET,       // spreadsheet: xlsx, xls, ods, csv, tsv (Fogli)
     NV_FILE_KIND_COUNT
 } nv_file_kind_t;
+
+// FontAwesome "table" (U+F0CE) in nv_font_14/20/28: the spreadsheet kind's glyph
+#define NV_SYMBOL_SHEET "\xEF\x83\x8E"
 
 // MIME type of a file name or path, by extension (case-insensitive). Never NULL:
 // "application/octet-stream" when unknown.

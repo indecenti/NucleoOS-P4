@@ -80,6 +80,8 @@ struct DmdB2sInfo {
     int mode;                  // the dual version in use: 1 Authentic, 2 Fantasy
     int s2;                    // the second screen's composition written for it (0: as it came)
     bool s2dmd;                // with a DMD on the second screen too
+    bool fp;                   // a Future Pinball table played with its backbox off: Popper's backglass picture
+    int fpfull;                // ... on the whole monitor, drawn by the bridge (1), or where Popper shows it (0)
 };
 void dmd_comp_on_info(const DmdB2sInfo *info);
 void dmd_comp_on_dual(int id, int mode, bool ok, const char *err);

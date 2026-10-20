@@ -1049,7 +1049,7 @@ void gallery_build(lv_obj_t *) {
 }
 
 const NvApp kGalleryApp = {"gallery", "Gallery", &nv_icon_gallery, 12u << 20, gallery_build,
-                           NV_STR_APP_GALLERY, nullptr, 0u, gallery_close};
+                           NV_STR_APP_GALLERY, nullptr, 0u, nullptr, gallery_close};
 
 // The formats the viewer shows (HW JPEG, SW PNG/BMP).
 const NvOpenHandler kGalleryView = {

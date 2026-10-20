@@ -10,6 +10,7 @@ void diagnostics_app_register(void);
 void calculator_app_register(void);
 void gallery_app_register(void);
 void notes_app_register(void);
+void sheets_app_register(void);
 void apps_app_register(void);
 void secondscreen_app_register(void);
 void tasks_app_register(void);
@@ -22,6 +23,7 @@ void terminal_build_with(struct _lv_obj_t *content, const char *command);
 // The Terminal's close hook (NvApp.close), also called by a console app's tile, whose screen is a
 // Terminal: `why` is an nv_app_teardown_t (nv_app.h, not included here).
 void terminal_close(int why);
+#define NV_TERM_AUTORUN_MAX 320   // terminal_build_with's command: program id + a quoted file path
 void music_app_register(void);
 void video_app_register(void);
 void recorder_app_register(void);

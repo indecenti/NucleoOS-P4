@@ -805,7 +805,7 @@ void setup_build(lv_obj_t *content) {
 }
 
 const NvApp kSetupApp = {
-    "setup", "Setup", nullptr, 64 * 1024, setup_build, -1, nullptr, 0u, setup_close,
+    "setup", "Setup", nullptr, 64 * 1024, setup_build, -1, nullptr, 0u, nullptr, setup_close,
 };
 
 void full_steps(void) {

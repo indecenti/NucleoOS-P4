@@ -39,6 +39,7 @@ typedef struct {
                                      // 0 is NV_STR_APP_SETTINGS: an app that leaves it out shows as "Settings".
     const void *user;                // opaque per-app context (WASM apps carry their record here)
     unsigned flags;                  // NV_APP_FLAG_*
+    const char *keywords;            // more words search finds it by, any language ("excel xlsx"), or NULL
     nv_app_close_fn close;           // optional teardown hook (see nv_app_close_fn); NULL = none
 } NvApp;
 

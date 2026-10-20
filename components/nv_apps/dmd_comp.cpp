@@ -4,7 +4,9 @@
 //     FullDMD art — the backglass file's second, smaller picture — or both), whether a DMD shows there too
 //     (dmdext's virtual DMD; off: the DMD is only on this board) and, for a dual backglass, its version
 //     (Authentic or Fantasy: B2S lights another set of pictures). Sent to the bridge, which writes them where
-//     B2S and dmdext read them when the table starts;
+//     B2S and dmdext read them when the table starts. A Future Pinball table played with its backbox off has
+//     Popper's backglass picture instead: where Popper shows it (its DMD under it) or the whole monitor, drawn
+//     by the bridge, with the scores it reads from the game in both;
 //   - this screen: its fit (Automatic: the one the table's pictures suit best), original or fitted dots, a
 //     margin, with a 1:1 lens of the real dots.
 // Opened from a table's card in the menu (any table, no game needed: its pictures are asked for as it opens),
@@ -69,6 +71,7 @@ struct Ui {
     // the monitor's page
     lv_obj_t *big_s2 = nullptr, *s2name = nullptr, *s2desc = nullptr, *note = nullptr, *restart = nullptr;
     lv_obj_t *s2dmd[2] = {}, *s2dmd_why = nullptr, *dual[2] = {}, *dual_lbl = nullptr, *dual_note = nullptr;
+    lv_obj_t *s2dmd_lbl = nullptr, *s2row = nullptr, *fp_lbl = nullptr, *fpfull[2] = {};   // (Future Pinball)
     // this screen's page
     lv_obj_t *big_p = nullptr, *fname = nullptr, *desc = nullptr;
     lv_obj_t *dots[2] = {}, *marg[4] = {}, *rb[2] = {};
@@ -494,10 +497,61 @@ void redraw_panel(void) {
     pills_mark(u.rb, 2, dmd_app_table_rebuild(u.gid) ? 0 : 1);
 }
 
+// A Future Pinball table's monitor: Popper's backglass at the top with its DMD under it, or on the whole monitor.
+void draw_fp(Pic &p, bool full) {
+    Ui &u = *s_ui;
+    memset(p.px, 0, (size_t)p.w * (size_t)p.h * 2);
+    const int bh = full ? p.h : p.h * 750 / 1024;   // Popper's backglass screen: 1280x750 over its DMD
+    const dmd_rect_t r{0, 0, p.w, bh};
+    if (u.bg) put_img(p, u.bg, dmd_rect_t{0, 0, (int)u.bg->header.w, (int)u.bg->header.h}, r);
+    else dmd_fill565(p.px, p.w, p.h, r, kStandIn);
+    if (!full) dmd_fill565(p.px, p.w, p.h, dmd_rect_t{p.w / 4, bh + (p.h - bh) / 4, p.w / 2, (p.h - bh) / 2}, 0x2945);
+}
+
+void show(lv_obj_t *o, bool on) {
+    if (!o) return;
+    if (on) lv_obj_remove_flag(o, LV_OBJ_FLAG_HIDDEN);
+    else lv_obj_add_flag(o, LV_OBJ_FLAG_HIDDEN);
+}
+
+// A Future Pinball table: its two choices instead of B2S's compositions.
+void redraw_fp(const DmdB2sInfo *in) {
+    Ui &u = *s_ui;
+    const int full = in->fpfull ? 1 : 0;
+    if (u.s2pic.px) {
+        draw_fp(u.s2pic, full);
+        refresh(u.big_s2);
+    }
+    char t[400];
+    if (u.s2name) {
+        line_of(nv_tr(NV_STR_DMDC_FP_NAMES), full, t, sizeof t);
+        lv_label_set_text(u.s2name, t);
+    }
+    if (u.s2desc) {
+        line_of(nv_tr(NV_STR_DMDC_FP_DESCS), full, t, sizeof t);
+        lv_label_set_text(u.s2desc, t);
+    }
+    lv_obj_t *b2s_objs[] = {u.s2dmd_lbl, u.s2dmd[0], u.s2dmd[1], u.s2dmd_why, u.dual_lbl, u.dual[0], u.dual[1],
+                            u.dual_note, u.s2row};
+    for (lv_obj_t *o : b2s_objs) show(o, false);
+    lv_obj_t *fp_objs[] = {u.fp_lbl, u.fpfull[0], u.fpfull[1]};
+    for (lv_obj_t *o : fp_objs) show(o, true);
+    pills_mark(u.fpfull, 2, full);
+}
+
 // The monitor's choice: its name, what it does, the DMD there, the dual version; cards that need a DMD there
 // only when it is.
 void redraw_s2(void) {
     Ui &u = *s_ui;
+    const DmdB2sInfo *fpi = info_of(u.gid);
+    if (fpi && fpi->fp) {
+        redraw_fp(fpi);
+        return;
+    }
+    lv_obj_t *fp_objs[] = {u.fp_lbl, u.fpfull[0], u.fpfull[1]};
+    for (lv_obj_t *o : fp_objs) show(o, false);
+    lv_obj_t *b2s_objs[] = {u.s2dmd_lbl, u.s2dmd[0], u.s2dmd[1], u.s2row};
+    for (lv_obj_t *o : b2s_objs) show(o, true);
     const int cur = cur_s2();
     if (u.s2pic.px) {
         draw_s2(u.s2pic, cur);
@@ -663,6 +717,24 @@ void s2dmd_cb(lv_event_t *e) {
     snprintf(k, sizeof k, "dmds2d_%d", s_ui->gid);
     nv_config_set_int(k, on ? 1 : 0);
     if (cur_s2() != DMD_S2_KEEP) choose_s2(cur_s2());   // written again with or without it
+    redraw_s2();
+}
+
+// A Future Pinball table's backglass: asked of the bridge now (it answers with the table's description, which
+// confirms it); from the next game.
+void fpfull_cb(lv_event_t *e) {
+    if (!s_ui) return;
+    const int full = lv_event_get_user_data(e) ? 1 : 0;
+    char j[80];
+    snprintf(j, sizeof j, "{\"q\":\"fpfull\",\"id\":%d,\"full\":%d}", s_ui->gid, full);
+    if (!dmd_menu_send(j)) {
+        dmd_menu_send_fail_note();
+        return;
+    }
+    nv_log_write(NV_LOG_INFO, "dmd", "Future Pinball backglass of %d: %s", s_ui->gid, full ? "full screen" : "as Popper");
+    for (int i = 0; s_info && i < 12; i++)
+        if (s_info->i[i].id == s_ui->gid) s_info->i[i].fpfull = full;
+    if (s_ui->game && s_ui->note) lv_label_set_text(s_ui->note, nv_tr(NV_STR_DMDC_NEXT));
     redraw_s2();
 }
 
@@ -864,9 +936,17 @@ void build_s2_page(Ui &u, lv_obj_t *pg) {
     // (the descriptions stop short of the choices on their right)
     lv_obj_set_height(u.s2desc, 18 * 3);
     lv_label_set_long_mode(u.s2desc, LV_LABEL_LONG_DOT);
-    lv_obj_t *dl = label(pg, &nv_font_20, kInk, nv_tr(NV_STR_DMDC_S2_DMD), x, 98);
+    lv_obj_t *dl = u.s2dmd_lbl = label(pg, &nv_font_20, kInk, nv_tr(NV_STR_DMDC_S2_DMD), x, 98);
     lv_obj_set_width(dl, yes_x - x - 8);
     lv_label_set_long_mode(dl, LV_LABEL_LONG_DOT);
+    // a Future Pinball table, backbox off: where its backglass goes (shown instead of what B2S has)
+    const int fp_x = kScrW - 20 - 2 * 200 - 8;
+    u.fp_lbl = label(pg, &nv_font_20, kInk, nv_tr(NV_STR_DMDC_FP), x, 98);
+    lv_obj_set_width(u.fp_lbl, fp_x - x - 8);
+    lv_label_set_long_mode(u.fp_lbl, LV_LABEL_LONG_DOT);
+    two(pg, nv_tr(NV_STR_DMDC_FP_NAMES), fp_x, 90, 200, fpfull_cb, u.fpfull);
+    lv_obj_t *fp_objs[] = {u.fp_lbl, u.fpfull[0], u.fpfull[1]};
+    for (lv_obj_t *o : fp_objs) lv_obj_add_flag(o, LV_OBJ_FLAG_HIDDEN);
     two(pg, nv_tr(NV_STR_DMDC_NOYES), yes_x, 90, 96, s2dmd_cb, u.s2dmd);
     u.s2dmd_why = label(pg, &nv_font_14, kDim, nv_tr(NV_STR_DMDX_S2_DMD_KEEP), x, 124);
     lv_obj_set_width(u.s2dmd_why, yes_x - x - 8);
@@ -890,7 +970,7 @@ void build_s2_page(Ui &u, lv_obj_t *pg) {
     snprintf(names, sizeof names, "%s", nv_tr(NV_STR_DMDC_S2_NAMES));
     split(names, n, DMD_S2_N);
     const int th = kS2TW * u.s2h / u.s2w;
-    lv_obj_t *row = strip(pg, 238, th + 56);
+    lv_obj_t *row = u.s2row = strip(pg, 238, th + 56);
     const dmd_s2_in_t in = s2_in();
     for (int m = 0; m < DMD_S2_N; m++)
         if (dmd_s2_avail(m, &in)) card(u.s2[m], row, kS2TW, th, n[m] ? n[m] : "", m, s2_cb);
@@ -928,7 +1008,7 @@ bool open_table(lv_obj_t *root, int gid, const char *name, bool game, int tab) {
     if (!root || gid <= 0 || !open_screen(root, gid, name, gid)) return false;
     Ui &u = *s_ui;
     u.game = game;
-    if (!game && !info_of(gid)) {
+    if (!info_of(gid)) {   // (in a game too: a game without dmdext leaves the cable to the bridge)
         char j[64];
         snprintf(j, sizeof j, "{\"q\":\"b2sinfo\",\"id\":%d}", gid);
         dmd_menu_send(j);

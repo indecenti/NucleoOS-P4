@@ -56,8 +56,8 @@ const TypeRow kTypes[] = {
     {"md",       "text/markdown",             NV_FILE_TEXT},
     {"markdown", "text/markdown",             NV_FILE_TEXT},
     {"log",      "text/x-log",                NV_FILE_TEXT},
-    {"csv",      "text/csv",                  NV_FILE_TEXT},
-    {"tsv",      "text/tab-separated-values", NV_FILE_TEXT},
+    {"csv",      "text/csv",                  NV_FILE_SHEET},
+    {"tsv",      "text/tab-separated-values", NV_FILE_SHEET},
     {"json",     "application/json",          NV_FILE_TEXT},
     {"xml",      "application/xml",           NV_FILE_TEXT},
     {"html",     "text/html",                 NV_FILE_TEXT},
@@ -105,6 +105,17 @@ const TypeRow kTypes[] = {
     {"tar",      "application/x-tar",         NV_FILE_ARCHIVE},
     {"gz",       "application/gzip",          NV_FILE_ARCHIVE},
     {"pdf",      "application/pdf",           NV_FILE_OTHER},
+    // office documents (spreadsheets: Fogli; documents: the word processor)
+    {"odt",      "application/vnd.oasis.opendocument.text",         NV_FILE_OTHER},
+    {"ods",      "application/vnd.oasis.opendocument.spreadsheet",  NV_FILE_SHEET},
+    {"odp",      "application/vnd.oasis.opendocument.presentation", NV_FILE_OTHER},
+    {"docx",     "application/vnd.openxmlformats-officedocument.wordprocessingml.document", NV_FILE_OTHER},
+    {"xlsx",     "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",       NV_FILE_SHEET},
+    {"pptx",     "application/vnd.openxmlformats-officedocument.presentationml.presentation", NV_FILE_OTHER},
+    {"doc",      "application/msword",                              NV_FILE_OTHER},
+    {"xls",      "application/vnd.ms-excel",                        NV_FILE_SHEET},
+    {"sc",       "application/x-sc",                                NV_FILE_SHEET},
+    {"rtf",      "application/rtf",                                 NV_FILE_OTHER},
     {"bin",      kOctet,                      NV_FILE_OTHER},
 };
 constexpr int kBuiltinN = sizeof(kTypes) / sizeof(kTypes[0]);
@@ -646,6 +657,7 @@ const char *nv_open_kind_symbol(nv_file_kind_t kind) {
         case NV_FILE_VIDEO:   return LV_SYMBOL_VIDEO;
         case NV_FILE_APP:     return LV_SYMBOL_PLAY;
         case NV_FILE_ARCHIVE: return LV_SYMBOL_DRIVE;
+        case NV_FILE_SHEET:   return NV_SYMBOL_SHEET;
         default:              return LV_SYMBOL_FILE;
     }
 }
@@ -659,6 +671,7 @@ const char *nv_open_kind_label(nv_file_kind_t kind) {
         case NV_FILE_VIDEO:   return nv_tr(NV_STR_KIND_VIDEO);
         case NV_FILE_APP:     return nv_tr(NV_STR_KIND_APP);
         case NV_FILE_ARCHIVE: return nv_tr(NV_STR_KIND_ARCHIVE);
+        case NV_FILE_SHEET:   return nv_tr(NV_STR_KIND_SHEET);
         default:              return nv_tr(NV_STR_KIND_FILE);
     }
 }

@@ -1091,7 +1091,7 @@ void cam_build(lv_obj_t *content) {
 // scratch: the gate passed, then every photo save failed for lack of PSRAM. The broker reclaims the
 // ANIMA/WASM caches to meet this figure, so declaring less only turns a clean refusal into a broken open.
 const NvApp kCameraApp = {"camera", "Camera", &nv_icon_camera, 20u << 20, cam_build,
-                          NV_STR_APP_CAMERA, nullptr, 0u, cam_close};
+                          NV_STR_APP_CAMERA, nullptr, 0u, nullptr, cam_close};
 
 }  // namespace
 

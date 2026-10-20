@@ -195,6 +195,59 @@ extern settings_t g_set;
 void settings_load(void);
 void settings_save(void);
 
+// -------------------------------------------------------------------------- the catalog (cat.c)
+typedef struct {
+    char name[64];           // "wikipedia_it_top": the same for every flavour and every month
+    char flavour[12];        // "maxi" (pictures), "nopic", "mini" (introductions), "" (only one)
+    char title[96], summary[192], lang[16], category[24], date[11], author[48];
+    char meta4[224];         // https://lb.download.kiwix.org/zim/.../name_flavour_date.zim.meta4
+    char icon[112];          // "/catalog/v2/illustration/<uuid>/?size=48" on the catalog server
+    uint64_t size;
+    int32_t articles, media;
+    uint8_t pictures, videos;
+} cat_t;
+// Entries of an OPDS v2 feed; *total = the feed's totalResults (-1 unknown). Returns how many.
+int cat_parse(const char *xml, size_t n, cat_t *out, int max, int *total);
+int cat_file_name(const cat_t *c, char *out, size_t cap);   // the .zim the download becomes; 0 if unusable
+int cat_recommended(const char *name, const char *lang2);   // rank in Recommended, -1 = not there
+int cat_flavour_rank(const cat_t *c);                        // which flavour a list offers first (lower)
+
+// ------------------------------------------------------------ the download screen's data (get.c)
+typedef struct {             // one collection of the catalog: its flavours are g_cat[first .. first + n)
+    int first, n;
+    int pick;                // the flavour a list offers (index in g_cat)
+    int rec;                 // rank in Recommended, -1 = not there
+} cat_group_t;
+extern cat_t *g_cat;         // sorted by name, then by the order flavours are offered
+extern int g_ncat;
+extern cat_group_t *g_grp;   // Recommended first, then by title
+extern int g_ngrp;
+enum { GET_IDLE, GET_LOADING, GET_READY, GET_ERROR };
+int get_state(void);
+int get_gen(void);           // bumps whenever g_grp is rebuilt
+int get_busy(void);          // a catalog page is on its way
+int get_error(void);         // the last failure: an NV_NET_E_* or an HTTP status
+const char *get_lang3(void);
+void get_open(const char *lang3, int force);   // the catalog of a language: the cache, the network
+int get_poll(void);          // one step of the network work; 1 = something to redraw
+const uint8_t *get_icon(int ent);              // 48x48 RGBA, NULL until it is there (asked now)
+
+#define DL_MAX 16
+enum { DL_QUEUED, DL_PAUSED, DL_DONE, DL_FAILED, DL_RUNNING };
+typedef struct {             // a download of this app, as the system downloader reports it
+    int id, state;
+    char title[96], dest[160], error[96], phase[12];
+    int64_t size, done;
+    int32_t bps;
+} dl_t;
+extern dl_t g_dl[DL_MAX];
+extern int g_ndl;
+int get_dl_refresh(int *finished, int *failed);   // 1 = anything changed; counts the new ends
+int get_dl_start(const cat_t *c);                 // the download id, or NV_DL_E_*
+int get_dl_of(const cat_t *c);                    // index in g_dl of the download of that file, -1
+int64_t get_room(void);                           // bytes a new download may use, -1 unknown
+int get_have(const cat_t *c);                     // 1 that file is here, 2 an older edition is
+
 // ------------------------------------------------------------------------------------------- i18n
 enum {
     S_LIBRARY, S_EMPTY_TITLE, S_EMPTY_1, S_EMPTY_2, S_EMPTY_3, S_ARTICLES, S_SEARCH_IN, S_NO_RESULTS,
@@ -204,21 +257,24 @@ enum {
     S_NOT_FOUND, S_UNSUPPORTED, S_OPEN_FAILED, S_DAMAGED, S_CONTINUE, S_LOADING, S_SCANNING,
     S_F_TITLE, S_F_DESC, S_F_LANG, S_F_DATE, S_F_CREATOR, S_F_PUBLISHER, S_F_SOURCE, S_F_LICENSE,
     S_F_FILE, S_F_SIZE, S_F_ENTRIES, S_F_FORMAT, S_F_NAME, S_MONTHS, S_TOP, S_COPY_HINT, S_MOVED_HINT,
+    S_GET_TITLE, S_GET_RECOMMENDED, S_GET_ALL, S_GET_DOWNLOADS, S_GET_OTHER, S_GET_LOADING, S_GET_OFFLINE, S_GET_RETRY, S_GET_MAXI, S_GET_NOPIC, S_GET_MINI, S_GET_DOWNLOAD, S_GET_QUEUED, S_GET_HAVE, S_GET_UPDATE, S_GET_ROOM, S_GET_NO_ROOM, S_GET_PAUSE, S_GET_RESUME, S_GET_RETRY_DL, S_GET_CANCEL_SURE, S_GET_DONE, S_GET_FAILED, S_GET_PAUSED, S_GET_CHECKING, S_GET_PREPARING, S_GET_PROGRESS, S_GET_SPEED, S_GET_NONE, S_GET_NOTE, S_GET_STARTED, S_GET_FINISHED, S_GET_NOT_STARTED, S_GET_EXISTS, S_GET_EDITIONS, S_GET_WAIT_NET, S_DELETE, S_DELETE_SURE, S_DELETED, S_GET_NO_MATCH,
     S_COUNT
 };
 void i18n_init(void);
 const char *tr(int id);
 int i18n_italian_keys(void);   // the keyboard layout to assume (Italian for the Italian UI)
+const char *i18n_lang3(void);  // the interface language as the catalog names it ("ita", "eng"...)
 const char *lang_name(const char *iso639_3);
 void fmt_date(const char *ymd, char *out, size_t cap);
 void fmt_size(uint64_t bytes, char *out, size_t cap);
 void fmt_count(long n, char *out, size_t cap);
+void fmt_speed(uint64_t bytes_per_s, char *out, size_t cap);
 
 // --------------------------------------------------------------------------------------- the icons
 typedef struct { const uint8_t *m; int px; } icon_t;
 enum { IC_BACK, IC_FORWARD, IC_SEARCH, IC_TOC, IC_STAR, IC_STAR_ON, IC_MORE, IC_LIBRARY, IC_RANDOM,
        IC_INFO, IC_CLOSE, IC_HISTORY, IC_TEXTSIZE, IC_THEME, IC_CHECK, IC_BACKSPACE, IC_ENTER, IC_SHIFT,
-       IC_KEYBOARD, IC_BOOK, IC_COUNT };
+       IC_KEYBOARD, IC_BOOK, IC_DOWNLOAD, IC_PAUSE, IC_PLAY, IC_COUNT };
 extern const icon_t g_icons[IC_COUNT];
 void icon_draw(int ic, int x, int y, uint16_t c);   // top-left
 

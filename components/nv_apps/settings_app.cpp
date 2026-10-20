@@ -191,8 +191,12 @@ struct SetKeep {
     char    upd_url[256], store_url[192];
     char    ha_host[64], ha_port[8], ha_user[64], ha_pass[65], ha_api_url[160], ha_api_tok[301];
 };
-NV_PSRAM_BSS SetKeep s_keep;
-bool s_keep_on = false;            // s_keep is filled: the build in progress is a rebuild
+SetKeep *s_kp = nullptr;           // the stash, on the LVGL heap from settings_close to the build
+bool s_keep_on = false;            // the stash is filled: the build in progress is a rebuild
+void keep_drop(void) {             // typed passwords and tokens never outlive the build
+    if (s_kp) { lv_memzero(s_kp, sizeof *s_kp); lv_free(s_kp); s_kp = nullptr; }
+    s_keep_on = false;
+}
 
 void keep_text(char *dst, size_t n, lv_obj_t *ta) {
     lv_strlcpy(dst, ta ? lv_textarea_get_text(ta) : "", n);
@@ -2016,11 +2020,11 @@ void cat_network(lv_obj_t *content) {
     s_net_eth_gen = nv_eth_generation();
     net_build_body();
     s_net_timer = lv_timer_create(net_poll, 700, nullptr);
-    if (s_keep_on && s_keep.pw) {   // rebuilt under the password sheet: back up, typing intact
+    if (s_keep_on && s_kp->pw) {   // rebuilt under the password sheet: back up, typing intact
         char ssid[sizeof s_pw_ssid];
         lv_strlcpy(ssid, s_pw_ssid, sizeof ssid);   // open_pw copies into s_pw_ssid itself
         open_pw(ssid);
-        keep_put(s_pw_ta, s_keep.pw_text);
+        keep_put(s_pw_ta, s_kp->pw_text);
     }
 }
 
@@ -2740,7 +2744,7 @@ void cat_bluetooth(lv_obj_t *content) {
     s_bt_pending = false;
     // A rebuild keeps the open tester and a pending first scan; bt_build_body still closes the
     // tester if the pads moved since the last body (s_bt_padgen is left as it was).
-    if (!(s_keep_on && s_keep.bt)) {
+    if (!(s_keep_on && s_kp->bt)) {
         s_pad_sel = -1;
         s_bt_padgen = nv_pad_generation();
         s_bt_autoscan = nv_bt_is_enabled();
@@ -3007,9 +3011,9 @@ void cat_update(lv_obj_t *content) {
     lv_obj_add_event_cb(s_upd_col, upd_page_deleted, LV_EVENT_DELETE, nullptr);
     s_upd_gen = nv_ota_generation();   // seed current: the build below shows this state
     upd_build();
-    if (s_keep_on && s_keep.upd) {   // a rebuild: the URLs typed but not yet checked / saved
-        keep_put(s_upd_ta, s_keep.upd_url);
-        keep_put(s_store_ta, s_keep.store_url);
+    if (s_keep_on && s_kp->upd) {   // a rebuild: the URLs typed but not yet checked / saved
+        keep_put(s_upd_ta, s_kp->upd_url);
+        keep_put(s_store_ta, s_kp->store_url);
     }
     s_upd_timer = lv_timer_create(upd_poll, 500, nullptr);
 }
@@ -3823,13 +3827,13 @@ void cat_home(lv_obj_t *content) {
     lv_obj_t *hs = nv_kit_button(c, nv_tr(NV_STR_SAVE), false);
     lv_obj_add_event_cb(hs, ha_api_save_cb, LV_EVENT_CLICKED, nullptr);
 
-    if (s_keep_on && s_keep.ha) {   // a rebuild: what was typed and not saved yet, secrets too
-        keep_put(s_ha_host, s_keep.ha_host);
-        keep_put(s_ha_port, s_keep.ha_port);
-        keep_put(s_ha_user, s_keep.ha_user);
-        keep_put(s_ha_pass, s_keep.ha_pass);
-        keep_put(s_ha_api_url, s_keep.ha_api_url);
-        keep_put(s_ha_api_tok, s_keep.ha_api_tok);
+    if (s_keep_on && s_kp->ha) {   // a rebuild: what was typed and not saved yet, secrets too
+        keep_put(s_ha_host, s_kp->ha_host);
+        keep_put(s_ha_port, s_kp->ha_port);
+        keep_put(s_ha_user, s_kp->ha_user);
+        keep_put(s_ha_pass, s_kp->ha_pass);
+        keep_put(s_ha_api_url, s_kp->ha_api_url);
+        keep_put(s_ha_api_tok, s_kp->ha_api_tok);
     }
     s_ha_timer = lv_timer_create(ha_tick, 1000, nullptr);
 }
@@ -3849,7 +3853,7 @@ void cat_access(lv_obj_t *content) {
 // system chooser in "pick default" mode. Reset clears every default and rebuilds DEFERRED (the
 // button is deleted by the rebuild).
 constexpr int kDefMimeMax = 64;   // distinct MIMEs considered (the type table has ~60 rows)
-constexpr nv_file_kind_t kDefKinds[] = {NV_FILE_TEXT, NV_FILE_IMAGE, NV_FILE_AUDIO, NV_FILE_VIDEO,
+constexpr nv_file_kind_t kDefKinds[] = {NV_FILE_TEXT, NV_FILE_SHEET, NV_FILE_IMAGE, NV_FILE_AUDIO, NV_FILE_VIDEO,
                                         NV_FILE_APP, NV_FILE_ARCHIVE, NV_FILE_OTHER};
 constexpr int kDefKindN = sizeof(kDefKinds) / sizeof(kDefKinds[0]);   // last = catch-all
 lv_obj_t *s_def_col     = nullptr;   // page scroll column (null when not shown)
@@ -4334,28 +4338,27 @@ lv_obj_t *page_col(void) {
 // reopens on the remembered category — and the pages' DELETE handlers stop their timers and jobs.
 // A mic test (Sound) records and plays its few seconds to the end: nv_audio cannot stop one.
 void settings_close(nv_app_teardown_t why) {
-    memset(&s_keep, 0, sizeof s_keep);
-    s_keep_on = false;
-    if (why != NV_APP_REBUILD) return;
-    s_keep.sel = s_sel;
-    if (s_rail) s_keep.rail_y = lv_obj_get_scroll_y(s_rail);
-    if (lv_obj_t *col = page_col()) s_keep.page_y = lv_obj_get_scroll_y(col);
-    s_keep.pw = s_pw_modal && !s_pw_pending;   // a queued close (Connect, Cancel) wins
-    if (s_keep.pw) keep_text(s_keep.pw_text, sizeof s_keep.pw_text, s_pw_ta);
-    s_keep.bt = s_bt_col != nullptr;
-    s_keep.upd = s_upd_ta != nullptr;
-    if (s_keep.upd) {
-        keep_text(s_keep.upd_url, sizeof s_keep.upd_url, s_upd_ta);
-        keep_text(s_keep.store_url, sizeof s_keep.store_url, s_store_ta);
+    keep_drop();
+    if (why != NV_APP_REBUILD || !(s_kp = (SetKeep *)lv_malloc_zeroed(sizeof(SetKeep)))) return;
+    s_kp->sel = s_sel;
+    if (s_rail) s_kp->rail_y = lv_obj_get_scroll_y(s_rail);
+    if (lv_obj_t *col = page_col()) s_kp->page_y = lv_obj_get_scroll_y(col);
+    s_kp->pw = s_pw_modal && !s_pw_pending;   // a queued close (Connect, Cancel) wins
+    if (s_kp->pw) keep_text(s_kp->pw_text, sizeof s_kp->pw_text, s_pw_ta);
+    s_kp->bt = s_bt_col != nullptr;
+    s_kp->upd = s_upd_ta != nullptr;
+    if (s_kp->upd) {
+        keep_text(s_kp->upd_url, sizeof s_kp->upd_url, s_upd_ta);
+        keep_text(s_kp->store_url, sizeof s_kp->store_url, s_store_ta);
     }
-    s_keep.ha = s_ha_host != nullptr;
-    if (s_keep.ha) {
-        keep_text(s_keep.ha_host, sizeof s_keep.ha_host, s_ha_host);
-        keep_text(s_keep.ha_port, sizeof s_keep.ha_port, s_ha_port);
-        keep_text(s_keep.ha_user, sizeof s_keep.ha_user, s_ha_user);
-        keep_text(s_keep.ha_pass, sizeof s_keep.ha_pass, s_ha_pass);
-        keep_text(s_keep.ha_api_url, sizeof s_keep.ha_api_url, s_ha_api_url);
-        keep_text(s_keep.ha_api_tok, sizeof s_keep.ha_api_tok, s_ha_api_tok);
+    s_kp->ha = s_ha_host != nullptr;
+    if (s_kp->ha) {
+        keep_text(s_kp->ha_host, sizeof s_kp->ha_host, s_ha_host);
+        keep_text(s_kp->ha_port, sizeof s_kp->ha_port, s_ha_port);
+        keep_text(s_kp->ha_user, sizeof s_kp->ha_user, s_ha_user);
+        keep_text(s_kp->ha_pass, sizeof s_kp->ha_pass, s_ha_pass);
+        keep_text(s_kp->ha_api_url, sizeof s_kp->ha_api_url, s_ha_api_url);
+        keep_text(s_kp->ha_api_tok, sizeof s_kp->ha_api_tok, s_ha_api_tok);
     }
     s_keep_on = true;
 }
@@ -4410,26 +4413,25 @@ void settings_build(lv_obj_t *content) {
     }
     if (s_sel < 0 || s_sel >= kCatN) s_sel = 0;
     s_keep_on = s_keep_on && nv_ui_app_rebuilding();
-    if (s_keep_on && s_keep.sel != s_sel) {   // a new intent opened another page: keep the rail only
-        s_keep.pw = s_keep.bt = s_keep.upd = s_keep.ha = false;
-        s_keep.page_y = 0;
+    if (s_keep_on && s_kp->sel != s_sel) {   // a new intent opened another page: keep the rail only
+        s_kp->pw = s_kp->bt = s_kp->upd = s_kp->ha = false;
+        s_kp->page_y = 0;
     }
     build_rail();
     build_detail();   // header + page (its builder restores the kept fields)
     if (s_keep_on) {
         lv_obj_update_layout(s_rail);   // content height known before the scroll clamp
-        lv_obj_scroll_to_y(s_rail, s_keep.rail_y, LV_ANIM_OFF);
+        lv_obj_scroll_to_y(s_rail, s_kp->rail_y, LV_ANIM_OFF);
         if (lv_obj_t *col = page_col()) {
             lv_obj_update_layout(col);
-            lv_obj_scroll_to_y(col, s_keep.page_y, LV_ANIM_OFF);
+            lv_obj_scroll_to_y(col, s_kp->page_y, LV_ANIM_OFF);
         }
     }
-    memset(&s_keep, 0, sizeof s_keep);   // typed passwords and tokens never outlive the build
-    s_keep_on = false;
+    keep_drop();
 }
 
 const NvApp kSettingsApp = {"settings", "Settings", &nv_icon_settings, 1u << 20, settings_build,
-                            NV_STR_APP_SETTINGS, nullptr, 0u, settings_close};
+                            NV_STR_APP_SETTINGS, nullptr, 0u, nullptr, settings_close};
 
 }  // namespace
 

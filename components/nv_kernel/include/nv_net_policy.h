@@ -1,6 +1,7 @@
-// nv_net_policy — pure checks behind the ABI v12 network imports (nv_wasm_net.cpp): URL split,
-// destination class (public vs private address), request header sanity, Home Assistant API
-// paths. (MQTT topic rules: nv_mqtt_topic.h.) No ESP-IDF; unit-tested and fuzzed in tests/host (target "netpol").
+// nv_net_policy — pure checks behind the ABI v12 network imports (nv_wasm_net.cpp) and the system
+// downloader (nv_dl): URL split, destination class (public vs private address), request header sanity,
+// Home Assistant API paths. (MQTT topic rules: nv_mqtt_topic.h.) No ESP-IDF; unit-tested and fuzzed in
+// tests/host (target "netpol").
 #pragma once
 #include <stdbool.h>
 #include <stddef.h>

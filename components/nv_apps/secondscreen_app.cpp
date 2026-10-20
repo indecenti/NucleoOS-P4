@@ -1417,7 +1417,7 @@ void ss_build(lv_obj_t *content) {
 }
 
 const NvApp kScreenApp = {"secondscreen", "Second Screen", &nv_icon_screen, 4u << 20,
-                          ss_build, NV_STR_APP_SCREEN, nullptr, 0u, ss_close};
+                          ss_build, NV_STR_APP_SCREEN, nullptr, 0u, nullptr, ss_close};
 
 }  // namespace
 

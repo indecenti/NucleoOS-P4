@@ -804,6 +804,9 @@ typedef enum {
     NV_STR_DMDC_DUAL_NOTE,
     NV_STR_DMDC_S2_PER_TABLE,
     NV_STR_DMDC_NO_B2S,
+    NV_STR_DMDC_FP,
+    NV_STR_DMDC_FP_NAMES,
+    NV_STR_DMDC_FP_DESCS,
     NV_STR_DMDM_TITLE,
     NV_STR_DMDM_RECENT,
     NV_STR_DMDM_NEW,
@@ -862,6 +865,13 @@ typedef enum {
     NV_STR_DMDX_BRIDGE,
     NV_STR_DMDX_POPPER_OK,
     NV_STR_DMDX_POPPER_NO,
+    NV_STR_APP_SHEETS,                  // the spreadsheet app (Fogli)
+    NV_STR_KIND_SHEET,                  // file kind: spreadsheet
+    NV_STR_SHEETS_NEW,                  // Files: new spreadsheet in this folder
+    NV_STR_SHEETS_ANALYZE,              // file action: open in Fogli with ANIMA
+    NV_STR_DL_TITLE,                    // notification title: the system downloader (nv_dl)
+    NV_STR_DL_DONE_FMT,                 // notification: %s = what was downloaded
+    NV_STR_DL_FAILED_FMT,               // notification: %s = what failed (details in the app)
     NV_STR_COUNT
 } nv_str_id_t;
 

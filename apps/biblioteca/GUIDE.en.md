@@ -16,6 +16,10 @@ Articles are shown in reading mode: clean text with headings, paragraphs, lists,
 - **Sections** (list): the article's contents; tap a section to go there.
 - **Bookmark** (star): adds or removes the article. Bookmarks and history open from the library or the menu.
 - **Menu** (three dots): random article, light or dark theme, bookmarks, history, collection information, text size.
+- **Download collections** (down arrow in the library): the Kiwix catalog in the interface language, with **Recommended** (the best of Wikipedia, the medical encyclopedia, the dictionary, Wikivoyage, Vikidia for children...), **All**, the categories and a search (magnifier). The **EN** button changes the catalog's language.
+- **Editions**: tap a collection to see its editions with size and date: **with pictures**, **without pictures**, **introductions only**. Below them, the room left on the card for downloads. **Download** starts it; when the library holds an older edition of the same collection, the button says **Newer edition**.
+- **Downloads** (down arrow, top right): progress, speed and time left, **pause**, **resume** and **cancel** (two taps). Downloads go on when you close the app and resume where they were after a restart. Every 4 MB piece is checked against the fingerprint Kiwix publishes, and a server that sends wrong data is dropped for the next one. At the end a notification comes and the collection joins the library.
+- **Delete from the card**: in a collection's information (the **i**), with two taps. Use it to drop the old edition once the new one is in.
 
 ## Keyboard and mouse
 
@@ -39,7 +43,9 @@ With a keyboard connected the on-screen keyboard stays hidden. The mouse works l
 
 ## Where to get the files
 
-From the Kiwix library site (library.kiwix.org) download the `.zim` files you want on a PC, then copy them to the `zim` folder of the home folder of the SD card (`/sdcard/home/zim`) with a card reader. Files over 2 GB must be split into parts (`name.zimaa`, `name.zimab`…): the Library reads them as one file.
+The simplest way is **Download collections** in the library: the Internet is needed only to download, reading is offline. On a weak Wi-Fi it takes time: at 250 KB/s 1 GB takes about an hour (the download goes on by itself, also with the app closed). Collections over 2 GB are written in parts (`name.zimaa`, `name.zimab`…), which the Library reads as one file.
+
+Otherwise, download the `.zim` files on a PC from the Kiwix library site (library.kiwix.org) and copy them to the `zim` folder of the home folder of the SD card (`/sdcard/home/zim`) with a card reader: faster for big collections. Files over 2 GB must be split into parts as above.
 
 To start with, the `nopic` (no photos) or `mini` (introductions only) versions are a good choice: Italian Wikipedia `top_nopic` is about 900 MB, the Italian Wiktionary about 360 MB, the medical encyclopedia about 90 MB.
 
@@ -47,4 +53,4 @@ The same collections can be read in the Terminal with the `zim` program, and ANI
 
 ## Limits
 
-Pictures are shown in WebP, PNG, JPEG, GIF (the first frame) and SVG; a PNG or JPEG over a million pixels stays a grey box. `nopic` collections have only the formulas. Search finds titles, not the words inside articles. Links to the Internet do not open: the Library shows the address. Collections made with zimit (copies of whole websites) look rougher.
+Pictures are shown in WebP, PNG, JPEG, GIF (the first frame) and SVG; a PNG or JPEG over a million pixels stays a grey box. `nopic` collections have only the formulas. Search finds titles, not the words inside articles. The catalog leaves out video collections (TED). Links to the Internet do not open: the Library shows the address. Collections made with zimit (copies of whole websites) look rougher.

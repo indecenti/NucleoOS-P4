@@ -46,7 +46,7 @@ log="$Z/_out/bib_build.log"
     -I"$here" -I"$G" -I"$Z/nvzim" -I"$Z/nvhtml" -I"$S" -I"$root/sdk/include" -I"$S/zstd-1.5.7/lib" -I"$W" -I"$W/src" \
     -I"$X/linux/include/linux" -I"$X/userspace" \
     -mexec-model=reactor -Wl,--export=run -Wl,-z,stack-size=262144 -Wl,--strip-all -o "$out/app.wasm" \
-    "$here"/app.c "$here"/doc.c "$here"/gfx.c "$here"/font.c "$here"/img.c "$here"/kbd.c "$here"/lib.c "$here"/i18n.c \
+    "$here"/app.c "$here"/cat.c "$here"/get.c "$here"/doc.c "$here"/gfx.c "$here"/font.c "$here"/img.c "$here"/kbd.c "$here"/lib.c "$here"/i18n.c \
     "$G/fontdata.c" "${WEBP[@]}" \
     "$Z/nvhtml/nvhtml.c" "$Z/nvzim/nvzim.c" "$Z/nvzim/nvzim_md5.c" "$S/lodepng.c" \
     "$S"/zstd-1.5.7/lib/common/*.c "$S"/zstd-1.5.7/lib/decompress/*.c \

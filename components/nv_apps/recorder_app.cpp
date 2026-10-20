@@ -927,7 +927,7 @@ void rec_build(lv_obj_t *content){
 }
 
 const NvApp kRecApp = {"recorder", "Recorder", &nv_icon_recorder, 512u << 10, rec_build,
-                       NV_STR_APP_RECORDER, nullptr, 0u, rec_close};
+                       NV_STR_APP_RECORDER, nullptr, 0u, nullptr, rec_close};
 
 }  // namespace
 

@@ -129,7 +129,7 @@ typedef struct {
 
 // <gen:app-alias> --- GENERATED from registry/app-aliases.json by tools/anima/gen_aliases.py.
 // DO NOT EDIT BY HAND: edit the JSON and run `python tools/anima/gen_aliases.py`.
-#define A_MAX_ALIAS 11
+#define A_MAX_ALIAS 14
 typedef struct { const char *id; const char *alias[A_MAX_ALIAS]; } a_alias_t;
 
 // Words the user might type (IT+EN) -> the registry app id ANIMA opens. First match wins.
@@ -152,6 +152,9 @@ static const a_alias_t APP_ALIAS[] = {
     { "anima",         { "assistente", "chat", "assistant", NULL } },   // No 'anima' alias: the whoami intent owns that word; these open the chat app.
     { "abc123",        { "abc", "alfabeto", "lettere", "numeri", "imparare", "letters", "numbers", NULL } },
     { "pianino",       { "piano", "pianino", "pianoforte", "tastiera", NULL } },
+    { "sheets",        { "excel", "foglio", "fogli", "spreadsheet", "spreadsheets", "sheets", "xlsx", "hoja", "hojas", "tableur", "feuilles", "tabellenkalkulation", "tabellen", NULL } },   // Fogli, the spreadsheet (native, components/nv_apps/sheets_app.cpp). IT/EN plus 'hoja(s)' (es), 'tableur'/'feuilles' (fr), 'tabelle(n)kalkulation' (de); no 'calcolo': see calc.
+    { "sc-im",         { "scim", NULL } },   // Fogli's engine as a full-screen keyboard spreadsheet in the Terminal (system app, ports/tui): only its own name.
+    { "wordgrinder",   { "videoscrittura", "word", "wordgrinder", "documento", "odt", "textverarbeitung", "traitement", "procesador", NULL } },   // The word processor (system app, ports/tui). IT/EN plus 'procesador' (es), 'traitement' (fr), 'textverarbeitung' (de); no 'writer': it prefixes notes' 'write'.
 };
 // </gen:app-alias>
 
@@ -3447,7 +3450,7 @@ const char *nucleo_anima_act_grammar(bool en)
 {
     return en
         ? "DEVICE ACTIONS: when the user asks you to DO something on this device that you can do with these, reply with ONLY the ACT lines, nothing else (one action per line, at most 3, run in order; at most one open_app and one add_event/create_file):\n"
-          "ACT open_app <id>   (ids: gallery notes files music video calc terminal settings tasks sysmon camera recorder diag apps secondscreen abc123 pianino)\n"
+          "ACT open_app <id>   (ids: gallery notes files music video calc terminal settings tasks sysmon camera recorder diag apps secondscreen abc123 pianino sheets wordgrinder)\n"
           "ACT close_app music\nACT set_volume <0-100 | +N | -N>\nACT set_brightness <0-100 | +N | -N>\n"
           "(\"to 60%\", \"back to 60\" = the ABSOLUTE value: ACT set_volume 60; +N/-N only for \"raise/lower by N\"; \"both\" = one line each)\n"
           "ACT add_event <days from today> <HH:MM or -> <text>\nACT create_file <name.txt> | <short content>\n"

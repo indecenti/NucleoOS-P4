@@ -1,0 +1,68 @@
+{
+  "id": "wordgrinder",
+  "name": "WordGrinder",
+  "names": {
+    "en": "WordGrinder",
+    "it": "WordGrinder",
+    "es": "WordGrinder",
+    "fr": "WordGrinder",
+    "de": "WordGrinder"
+  },
+  "version": "0.9.0.1",
+  "abi": 17,
+  "console": true,
+  "tty": true,
+  "category": "productivity",
+  "ram_budget": 16777216,
+  "stack_kb": 256,
+  "permissions": [
+    "home"
+  ],
+  "author": "David Given and the WordGrinder contributors",
+  "license": "MIT (WordGrinder, Luau, fmt); BSD-2-Clause (cmark); Zlib (MiniZip, zlib); X11 (ncurses)",
+  "source": "https://github.com/davidgiven/wordgrinder",
+  "description": "WordGrinder is a word processor for writing: headings, lists, bold, italic and underline, word count, several documents in one file, undo, autosave. It opens and exports OpenDocument .odt, Markdown, HTML and plain text, and exports LaTeX, troff and Org too. ESC opens the menu, Ctrl+S saves.",
+  "descriptions": {
+    "en": "WordGrinder is a word processor for writing: headings, lists, bold, italic and underline, word count, several documents in one file, undo, autosave. It opens and exports OpenDocument .odt, Markdown, HTML and plain text, and exports LaTeX, troff and Org too. ESC opens the menu, Ctrl+S saves.",
+    "it": "WordGrinder è un programma di videoscrittura per scrivere: titoli, elenchi, grassetto, corsivo e sottolineato, conteggio parole, più documenti in un file, annulla, salvataggio automatico. Apre ed esporta OpenDocument .odt, Markdown, HTML e testo, ed esporta anche LaTeX, troff e Org. ESC apre il menu, Ctrl+S salva.",
+    "es": "WordGrinder es un procesador de textos para escribir: títulos, listas, negrita, cursiva y subrayado, recuento de palabras, varios documentos en un archivo, deshacer, guardado automático. Abre y exporta OpenDocument .odt, Markdown, HTML y texto, y también exporta LaTeX, troff y Org. ESC abre el menú, Ctrl+S guarda.",
+    "fr": "WordGrinder est un traitement de texte pour écrire : titres, listes, gras, italique et souligné, comptage des mots, plusieurs documents dans un fichier, annulation, sauvegarde automatique. Il ouvre et exporte OpenDocument .odt, Markdown, HTML et texte brut, et exporte aussi LaTeX, troff et Org. ESC ouvre le menu, Ctrl+S enregistre.",
+    "de": "WordGrinder ist ein Textverarbeitungsprogramm zum Schreiben: Überschriften, Listen, fett, kursiv und unterstrichen, Wortzählung, mehrere Dokumente in einer Datei, Rückgängig, automatisches Speichern. Es öffnet und exportiert OpenDocument .odt, Markdown, HTML und Text und exportiert auch LaTeX, troff und Org. ESC öffnet das Menü, Strg+S speichert."
+  },
+  "usage": "wordgrinder [FILE] opens the editor on screen (.wg; .odt .md .html .txt are imported, saving writes a .wg next to them, File > Export writes them back). Convert without the screen: wordgrinder --convert IN OUT (by extension: .odt .md .html .txt .wg in; the same plus .tex .tr .org out), e.g. wordgrinder --convert note.odt note.txt",
+  "opens": [
+    "application/vnd.oasis.opendocument.text",
+    "application/x-wordgrinder",
+    "text/markdown",
+    "text/html",
+    "text/plain"
+  ],
+  "file_types": [
+    {
+      "ext": "wg",
+      "mime": "application/x-wordgrinder",
+      "kind": "other"
+    }
+  ],
+  "anima": {
+    "tags": [
+      "document",
+      "odt",
+      "word",
+      "writer",
+      "markdown",
+      "convert",
+      "text",
+      "documento",
+      "scrivere",
+      "videoscrittura",
+      "testo",
+      "converti",
+      "lettera"
+    ],
+    "does": {
+      "en": "Converts documents between .odt .md .html .txt (out also .tex): read an ODT as text, turn notes into an ODT. Run: wordgrinder --convert IN.odt OUT.txt",
+      "it": "Converte documenti tra .odt .md .html .txt (in uscita anche .tex): leggere un ODT come testo, trasformare appunti in ODT. Uso: wordgrinder --convert IN.odt OUT.txt"
+    }
+  }
+}

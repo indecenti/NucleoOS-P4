@@ -144,6 +144,49 @@ fast-interp + AOT **without hardware bound checks** (the P4 has none; with them,
 exception check into a signal + longjmp that skips the host's try_call frames) — plus the `nv`
 imports above. `NVHOST_DEBUG=1` traces try_call/throw.
 
+## Full-screen programs (`ports/tui`)
+
+curses programs in the Terminal: **sc-im** (spreadsheet: xlsx, xls, ods, csv) and **WordGrinder**
+(word processor: odt, md, html, txt), both system apps with a Home tile. `bash ports/tui/build.sh`
+builds the libraries into WSL's `/root/nv_tui/prefix` (ncurses 6.5 with xterm-256color compiled in,
+zlib, libzip, libxml2, libxlsxwriter, libxls), then the programs and their riscv32 AOT;
+`bash ports/tui/test.sh` runs the regression suite (tty shim unit test, command mode, file formats,
+dates and time zones, the 16 MB memory cap, safe saving, the screens in tmux with a mouse click and a
+resize report). Manifests say `"console": true, "tty": true` (ABI 17).
+
+The device side is in the firmware (`terminal_app.cpp`, `nv_wasm_wasi.c`); the program side is
+`ports/tui/compat`, linked into every tty program:
+
+| File | What it gives the program |
+|---|---|
+| `termios.h`, `nv_termios.c` | termios (WASI has none): attributes kept and read back; `struct winsize`, `TIOCGWINSZ` (so ncurses' configure turns on resizing) |
+| `nv_tty.c` | stdin through `--wrap=read,poll,select,ioctl`: the Terminal's in-band resize reports (`CSI 48;rows;cols;h;w t`) become `LINES`/`COLUMNS` + `SIGWINCH`; poll/select see the bytes held back; `TIOCGWINSZ` answers |
+| `nv_localtime.c` | `--wrap=localtime,localtime_r,mktime`: local time from `NUCLEO_UTC_OFFSET` (wasi-libc has no zones) |
+| `nv_memstream.c` | `--wrap=open_memstream`: a write that cannot grow the buffer is an error (musl's silently truncated sc-im's .xlsx parts) |
+| `nv_posix.c`, `nv_posix.h`, `pwd.h`, `sys/wait.h` | the POSIX calls WASI lacks: no processes/shell/users (ENOSYS paths), real `mkstemp`/`mkdtemp`/`tmpfile` |
+
+Notes from these ports:
+
+- **wasm-ld `--wrap` needs `-u`** for symbols only the `__real_` side references: without
+  `-Wl,-u,poll` the real `poll` was not pulled from libc and the call became `call 0`, an invalid
+  module ("type mismatch" in WAMR). Check a new build with `node -e "new WebAssembly.Module(...)"`.
+- **WSL's `/tmp` is wiped** between `wsl.exe` runs here: build trees and the prefix live in
+  `/root/nv_tui`.
+- **wasm stack**: link with `-Wl,-z,stack-size=262144`; libxlsxwriter overflows the 64 KB default
+  (it shows as "out of bounds memory access" in `workbook_close`).
+- Memory is the device's 16 MB `ram_budget`: sc-im's upstream xlsx reader built a DOM (8,000 rows
+  did not fit) and walked the shared strings per cell (quadratic); `scim.patch` streams every part
+  with SAX straight out of the zip, caches cell formats on export, and saves to `NAME.tmp~` then
+  renames, so a failed save never replaces the user's file. Excel day 25569 is 1970-01-01 (upstream
+  used 25568, a day late).
+- WordGrinder's Lua (17,000 lines) is compiled to Luau bytecode on the PC (`luau_bc.cpp`,
+  `lua_table.py`): start-up 0.40 s → 0.11 s on the PC host. Luau raises errors through
+  `nv_try_call`/`nv_throw` (`-DNV_SJLJ`, no C++ exceptions on the device).
+- `nvhost --raw --env=K=V` runs a tty program in a real terminal (tmux in `test.sh`); inject a
+  resize with `tmux send-keys -l $'\e[48;12;60;0;0t'`, a click with `$'\e[<0;COL;ROWM\e[<0;COL;ROWm'`.
+- Patches are regenerated against pristine tarballs; never `sed -i` a CRLF file of the repo from
+  Git Bash (it rewrites the line endings).
+
 ## Graphical Lua apps
 
 `ports/luaapp` builds the **Lua App** engine (`apps/luaapp`): Lua 5.4 with a renderer, widgets,

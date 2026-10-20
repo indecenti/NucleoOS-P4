@@ -80,6 +80,7 @@ nv_file_kind_t wasm_file_kind(const char *kind) {
     static const struct { const char *s; nv_file_kind_t k; } kMap[] = {
         { "text",  NV_FILE_TEXT },  { "image", NV_FILE_IMAGE }, { "audio",   NV_FILE_AUDIO },
         { "video", NV_FILE_VIDEO }, { "app",   NV_FILE_APP },   { "archive", NV_FILE_ARCHIVE },
+        { "sheet", NV_FILE_SHEET },
     };
     if (kind) for (auto &m : kMap) if (!strcmp(m.s, kind)) return m.k;
     return NV_FILE_OTHER;
@@ -777,7 +778,18 @@ void wasm_tile_build(lv_obj_t *content) {
         return;
     }
     if (s_view_app && s_view_app->console) {   // a terminal program opens as a Terminal running it
-        terminal_build_with(content, s_view_app->id);
+        // Opened on a file (nv_open): the program gets it on its command line, and the run may
+        // see its folder (the launch-file grant, see nv_wasi_opts_t.open_dir).
+        const NvIntent *in = nv_open_intent();
+        char cmd[NV_TERM_AUTORUN_MAX];
+        if (in && in->verb == NV_INTENT_OPEN && in->path[0] && !strchr(in->path, '"') &&
+            strlen(s_view_app->id) + strlen(in->path) + 4 < sizeof cmd) {
+            snprintf(cmd, sizeof cmd, "%s \"%s\"", s_view_app->id, in->path);
+            nv_wasm_exec_set_launch_file(in->path);
+        } else {
+            snprintf(cmd, sizeof cmd, "%s", s_view_app->id);
+        }
+        terminal_build_with(content, cmd);
         return;
     }
 
@@ -2631,7 +2643,7 @@ void apps_build(lv_obj_t *content) {
 }
 
 const NvApp kAppsApp = {"apps", "Apps", &nv_icon_apps, 1u << 20, apps_build, NV_STR_APP_APPS, nullptr,
-                        0u, apps_close};
+                        0u, nullptr, apps_close};
 
 }  // namespace
 
@@ -2794,7 +2806,7 @@ void wasm_tile_register(int i) {
     // read at scan time. This replaces the old icon.argb loader (wasm_tile_icon) that boot-looped
     // in 1.1.57 loading a PSRAM ARGB dsc during the boot scan; compiled icons sidestep that path.
     s_tiles[i] = { a.id, a.name, tile_icon(i), wasm_launch_budget(a), wasm_tile_build, -1, &a, tile_flags(a),
-                   wasm_tile_close };
+                   nullptr, wasm_tile_close };
     nv_app_register(&s_tiles[i]);
 }
 

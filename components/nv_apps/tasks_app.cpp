@@ -261,7 +261,7 @@ void tasks_build(lv_obj_t *content) {
 }
 
 const NvApp kTasksApp = {"tasks", "Tasks", &nv_icon_tasks, 512u << 10, tasks_build,
-                         NV_STR_APP_TASKS, nullptr, 0u, tasks_close};
+                         NV_STR_APP_TASKS, nullptr, 0u, nullptr, tasks_close};
 
 }  // namespace
 

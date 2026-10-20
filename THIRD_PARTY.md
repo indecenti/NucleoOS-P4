@@ -48,6 +48,10 @@ its exact terms; the list below is a convenience summary of the major dependenci
 | NanoSVG (Mikko Mononen) | the SVG pictures and formulas of the Biblioteca app (fetched by `ports/zim/fetch.sh`, with `ports/zim/biblioteca/nanosvgrast.patch`) | zlib |
 | Noto Sans, Noto Sans Mono (Google, the Noto project) | the text of the Biblioteca app (subset in `ports/zim/biblioteca/fonts`, with its `OFL.txt`) | SIL OFL 1.1 |
 | PDFio 1.6.5 (Michael R Sweet) + zlib 1.3.1 | system terminal program `pdfio` (pdftotext, pdfinfo, pdfmerge from PDFio's examples; `ports/cli/pdfio`) | Apache-2.0 / Zlib |
+| sc-im 0.8.5 (Andrés Martinelli and contributors) | system program `sc-im`, the spreadsheet (`ports/tui/scim`, sources fetched pinned by `ports/tui/fetch.sh`, patch `ports/tui/scim/scim.patch`: streaming xlsx reader, safe xlsx saving, WASI fixes). This product includes software developed by Andrés Martinelli <andmarti@gmail.com>. | BSD-4-Clause |
+| WordGrinder 0.9 (David Given) + Luau (Roblox), cmark, fmt, MiniZip, clip | system program `wordgrinder`, the word processor (`ports/tui/wordgrinder`, patch `wordgrinder.patch`: Luau errors without C++ exceptions, import on open) | MIT / MIT / BSD-2-Clause / MIT / Zlib / MIT |
+| ncurses 6.5 (Thomas E. Dickey, Free Software Foundation) | curses for the full-screen programs (`ports/tui/ncurses`, xterm-256color compiled in) | X11 (MIT-style) |
+| libxml2 2.14.6, libzip 1.11.4, libxlsxwriter 1.2.4, libxls 1.6.3, zlib 1.3.1 | spreadsheet files in `sc-im`: .xlsx/.ods reading, .xlsx writing (patch `ports/tui/deps/libxlsxwriter.patch`), .xls reading | MIT / BSD-3-Clause / BSD-2-Clause / BSD-2-Clause / Zlib |
 | MicroPython 1.26.1 (Damien P. George and contributors) + micropython-lib modules | system terminal program `python` (`ports/micropython`, patch `micropython.patch`; rebuild with `ports/micropython/build.sh`) | MIT |
 | Material Design Icons | UI glyphs (source for generated icons) | Apache-2.0 |
 | Flat Color Icons (icons8) | app/launcher icons (source for generated icons) | MIT |

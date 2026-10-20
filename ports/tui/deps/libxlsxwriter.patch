@@ -1,0 +1,14 @@
+--- a/src/packager.c
++++ b/src/packager.c
+@@ -2151,7 +2151,10 @@
+             size_t *buffer_size, const char *filename)
+ {
+     /* Flush to ensure buffer is updated when using a memory-backed file. */
+-    fflush(file);
++    /* NucleoOS: a write that failed (a memory-backed file that could not grow) would otherwise
++     * be zipped as a silently truncated part: report it, so the workbook is not written. */
++    if (fflush(file) != 0 || ferror(file))
++        return LXW_ERROR_MEMORY_MALLOC_FAILED;
+     return *buffer ?
+         _add_buffer_to_zip(self, *buffer, *buffer_size, filename) :
+         _add_file_to_zip(self, file, filename);

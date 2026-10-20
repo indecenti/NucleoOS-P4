@@ -116,9 +116,8 @@ bool s_applied_ok = false;
 
 // Editor text whose save failed at a teardown (no card): held in PSRAM for the editor that comes
 // back (rebuild, switch back), which shows it still unsaved. One note at a time, keyed by its file.
-char *s_held_body = nullptr;
-NV_PSRAM_BSS char s_held_title[kTitleLen];
-NV_PSRAM_BSS char s_held_key[NV_OPEN_PATH_MAX];   // s_ext_path or s_cur.fname
+// One heap block: the key (s_ext_path or s_cur.fname), the title, then the body.
+char *s_held_key = nullptr, *s_held_title = nullptr, *s_held_body = nullptr;
 
 // What a suspended Notes task keeps (nv_ui_state_save, on NV_APP_SWITCH only).
 struct NotesState {
@@ -405,8 +404,8 @@ void field_changed_cb(lv_event_t *) { schedule_autosave(); }
 
 const char *cur_key(void) { return s_ext ? s_ext_path : s_cur.fname; }
 void held_drop(void) {
-    if (s_held_body) heap_caps_free(s_held_body);
-    s_held_body = nullptr;
+    if (s_held_key) heap_caps_free(s_held_key);
+    s_held_key = s_held_title = s_held_body = nullptr;
 }
 bool held_for_cur(void) { return s_held_body && !strcmp(s_held_key, cur_key()); }
 // Copy the editor's text (widgets still alive) for the editor that comes back.
@@ -415,11 +414,13 @@ void held_keep(void) {
     const char *body = s_body_ta ? lv_textarea_get_text(s_body_ta) : nullptr;
     const char *title = s_title_ta ? lv_textarea_get_text(s_title_ta) : nullptr;
     const size_t n = body ? strlen(body) : 0;
-    s_held_body = (char *)heap_caps_malloc(n + 1, MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
-    if (!s_held_body) return;   // no memory: the edit is lost, as before
+    s_held_key = (char *)heap_caps_malloc(NV_OPEN_PATH_MAX + kTitleLen + n + 1, MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
+    if (!s_held_key) return;   // no memory: the edit is lost, as before
+    s_held_title = s_held_key + NV_OPEN_PATH_MAX;
+    s_held_body = s_held_title + kTitleLen;
     memcpy(s_held_body, body ? body : "", n + 1);
-    utf8_copy(s_held_title, sizeof s_held_title, title ? title : "");
-    lv_snprintf(s_held_key, sizeof s_held_key, "%s", cur_key());
+    utf8_copy(s_held_title, kTitleLen, title ? title : "");
+    lv_snprintf(s_held_key, NV_OPEN_PATH_MAX, "%s", cur_key());
 }
 
 // Leaving the editor: back to the list, or — opened on a file by another app — back to that app.
@@ -964,7 +965,7 @@ void notes_build(lv_obj_t *) {
 }
 
 const NvApp kNotesApp = {"notes", "Notes", &nv_icon_notes, 768u << 10, notes_build,
-                         NV_STR_APP_NOTES, nullptr, 0u, notes_close};
+                         NV_STR_APP_NOTES, nullptr, 0u, nullptr, notes_close};
 
 // Notes edits plain text and Markdown (priority 50: the default editor). Structured text (JSON,
 // configs, logs, CSV) is left to Files' read-only Preview — an autosaving editor must not rewrite

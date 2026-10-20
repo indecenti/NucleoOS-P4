@@ -29,6 +29,7 @@ void nv_apps_register_all(void) {
     camera_app_register();
     calculator_app_register();
     notes_app_register();
+    sheets_app_register();        // Fogli: spreadsheet (native grid, sc-im as the engine)
     tasks_app_register();
     dmd_app_register();           // external pinball DMD for a PC running dmdext (nv_dmd)
     // System file actions that belong to no app (nv_open ACTION handlers). App-owned openers are

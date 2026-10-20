@@ -16,6 +16,10 @@ Le voci si leggono in modalità lettura: testo pulito con titoli, paragrafi, ele
 - **Sezioni** (elenco): l'indice della voce; tocca una sezione per andarci.
 - **Segnalibri** (stella): aggiunge o toglie la voce. Segnalibri e cronologia si aprono dalla libreria o dal menu.
 - **Menu** (tre puntini): voce a caso, tema chiaro o scuro, segnalibri, cronologia, informazioni sulla raccolta, dimensione del testo.
+- **Scarica raccolte** (freccia in basso nella libreria): il catalogo di Kiwix nella lingua dell'interfaccia, con **Consigliate** (il meglio di Wikipedia, l'enciclopedia medica, il dizionario, Wikivoyage, Vikidia per i ragazzi...), **Tutte**, le categorie e la ricerca (lente). Il tasto **IT** cambia la lingua del catalogo.
+- **Edizioni**: tocca una raccolta per vedere le sue edizioni, con dimensione e data: **con immagini**, **senza immagini**, **solo le introduzioni**. Sotto c'è lo spazio che resta sulla scheda per i download. **Scarica** avvia il download; se in libreria c'è un'edizione più vecchia della stessa raccolta, il tasto dice **Edizione più recente**.
+- **Download** (freccia in basso, in alto a destra): avanzamento, velocità e tempo che manca, **pausa**, **riprendi** e **annulla** (due tocchi). I download continuano anche se chiudi l'app e dopo un riavvio riprendono da dove erano. Ogni pezzo da 4 MB viene verificato con l'impronta pubblicata da Kiwix, e se un server manda dati sbagliati si passa al successivo. Alla fine arriva una notifica e la raccolta compare in libreria.
+- **Elimina dalla scheda**: nelle informazioni di una raccolta (la **i**), con due tocchi. Serve a togliere l'edizione vecchia dopo aver scaricato quella nuova.
 
 ## Tastiera e mouse
 
@@ -39,7 +43,9 @@ Con una tastiera collegata la tastiera sullo schermo non compare. Il mouse funzi
 
 ## Dove prendere i file
 
-Dal sito della libreria Kiwix (library.kiwix.org) si scaricano sul PC i file `.zim` che interessano, poi si copiano nella cartella `zim` della home della scheda SD (`/sdcard/home/zim`) con il lettore di schede. Per i file oltre 2 GB servono i file divisi in parti (`nome.zimaa`, `nome.zimab`…): la Biblioteca li legge come un file solo.
+Il modo più semplice è **Scarica raccolte** nella libreria: serve la connessione a Internet solo per scaricare, poi si legge offline. Con un Wi-Fi debole servono tempo e pazienza: a 250 KB/s 1 GB richiede circa un'ora (il download va avanti da solo, anche ad app chiusa). Le raccolte oltre 2 GB vengono scritte in parti (`nome.zimaa`, `nome.zimab`…), che la Biblioteca legge come un file solo.
+
+In alternativa, dal sito della libreria Kiwix (library.kiwix.org) si scaricano sul PC i file `.zim` e si copiano nella cartella `zim` della home della scheda SD (`/sdcard/home/zim`) con il lettore di schede: per le raccolte grandi è più veloce. I file oltre 2 GB vanno divisi in parti come sopra.
 
 Per cominciare vanno bene le versioni `nopic` (senza foto) o `mini` (solo le introduzioni): Wikipedia in italiano `top_nopic` pesa circa 900 MB, il Wikizionario circa 360 MB, l'enciclopedia medica circa 90 MB.
 
@@ -47,4 +53,4 @@ Le stesse raccolte si leggono anche nel Terminale con il programma `zim`, e ANIM
 
 ## Limiti
 
-Le immagini compaiono in WebP, PNG, JPEG, GIF (il primo fotogramma) e SVG; un PNG o un JPEG oltre un milione di pixel resta un riquadro grigio. Nelle raccolte `nopic` ci sono solo le formule. La ricerca trova i titoli, non le parole dentro le voci. I link verso Internet non si aprono: la Biblioteca mostra l'indirizzo. Le raccolte fatte con zimit (copie di siti interi) danno risultati più grezzi.
+Le immagini compaiono in WebP, PNG, JPEG, GIF (il primo fotogramma) e SVG; un PNG o un JPEG oltre un milione di pixel resta un riquadro grigio. Nelle raccolte `nopic` ci sono solo le formule. La ricerca trova i titoli, non le parole dentro le voci. Il catalogo lascia fuori le raccolte di video (TED). I link verso Internet non si aprono: la Biblioteca mostra l'indirizzo. Le raccolte fatte con zimit (copie di siti interi) danno risultati più grezzi.

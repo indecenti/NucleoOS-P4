@@ -95,6 +95,9 @@ struct RunReq {
     char           err[128];
 };
 
+// The running app's manifest (~1.8 KB): task context only, so PSRAM rather than internal RAM.
+NV_PSRAM_BSS nv_wasm_app_t s_exec_app;
+
 // The single async run (solo-mode: one app at a time). UI side polls under `lock`; the worker
 // and host imports write under the same lock. Nothing here touches LVGL.
 struct Exec {
@@ -107,7 +110,7 @@ struct Exec {
     struct { nv_wrun_id_t id; bool ok; uint32_t ms; char err[128]; } orphan{};
     pthread_t           thread{};
     bool                thread_valid = false;
-    nv_wasm_app_t       app{};
+    nv_wasm_app_t      &app = s_exec_app;
     uint8_t            *bytes = nullptr;      // loaded app.wasm (freed on collect)
     wasm_module_inst_t  inst = nullptr;       // valid only while the worker runs (for terminate)
     bool                abort_req = false;
@@ -149,6 +152,7 @@ struct ConsoleReq {
     TaskHandle_t owner;
     char         args[NV_WASI_ARGS_CAP];
     char         cwd[NV_WASI_PATH_CAP];         // the Terminal's folder (PWD of the next console runs)
+    int          cols, rows;                    // the Terminal's grid ("tty" apps: COLUMNS / LINES)
 };
 NV_PSRAM_BSS ConsoleReq s_console;
 
@@ -2163,6 +2167,20 @@ void *run_worker(void *p) {
         wopts.args       = r->args;
         wopts.engine_id  = (r->ex && r->ex->app.engine[0]) ? r->ex->app.engine : nullptr;   // ABI v14
         wopts.cwd        = r->console && s_console.cwd[0] ? s_console.cwd : nullptr;
+        // ABI v7 grant (the file the run was opened on): a console run sees that file's folder
+        char open_dir[NV_WASI_PATH_CAP] = "";
+        if (r->console && s_grant.path[0] && strlen(s_grant.path) < sizeof open_dir) {
+            snprintf(open_dir, sizeof open_dir, "%s", s_grant.path);
+            char *slash = strrchr(open_dir, '/');
+            if (slash && slash != open_dir) *slash = '\0';
+            else open_dir[0] = '\0';
+        }
+        wopts.open_dir   = open_dir[0] ? open_dir : nullptr;
+        // a full-screen program run with no screen (ANIMA, a pipe) sees a dumb terminal: curses
+        // then stops at once instead of drawing into a capture nobody can answer
+        wopts.tty        = r->console && r->ex && r->ex->app.tty && s_console.cols > 0 && s_console.rows > 0;
+        wopts.cols       = s_console.cols;
+        wopts.rows       = s_console.rows;
         if (is_wasi && !nv_wasi_prepare(&wasi, module, &wopts, wasi_sink, r, ebuf, sizeof(ebuf))) {
             set_err(r->err, sizeof r->err, ebuf);
             wasm_runtime_unload(module);
@@ -2360,6 +2378,11 @@ uint32_t nv_wasm_env_perms(wasm_exec_env_t env) {
     return r ? r->perms : 0;
 }
 
+const char *nv_wasm_env_app_id(wasm_exec_env_t env) {
+    const RunReq *r = req_of(env);
+    return r && r->ex ? r->ex->app.id : "";
+}
+
 // WAMR allocator -> PSRAM, 16-byte aligned. Two constraints together:
 //  1) Plain malloc pulls from internal SRAM, whose largest free block is only ~31KB under normal
 //     load, so per-run allocations (exec-env stack, instance structs) intermittently failed as
@@ -2443,6 +2466,7 @@ bool nv_wasm_init(void) {
                                        sizeof(s_nv_natives) / sizeof(s_nv_natives[0])))
         NV_LOGW(TAG, "register_natives(nv) failed");
     nv_wasm_net_register();   // ABI v12: http_req / ws_* / mqtt_* / ha_* (nv_wasm_net.cpp)
+    nv_wasm_dl_register();    // ABI v18: dl_* (nv_wasm_dl.cpp, the system downloader nv_dl)
 
 
     nv_mem_reclaimer_add("wasm-caches", wasm_reclaim, nullptr);
@@ -2569,7 +2593,7 @@ void parse_opens(const cJSON *arr, const char *id, char *out, size_t n) {
             NV_LOGW(TAG, "manifest %s: more than %d \"opens\" patterns (rest ignored)", id, NV_WASM_OPENS_MAX);
             break;
         }
-        char m[48];
+        char m[80];
         const char *raw = (cJSON_IsString(it) && it->valuestring) ? it->valuestring : nullptr;
         if (!mime_norm(raw, true, m, sizeof m)) {
             NV_LOGW(TAG, "manifest %s: bad \"opens\" pattern '%.48s' (skipped)", id, raw ? raw : "?");
@@ -2690,6 +2714,9 @@ bool read_manifest(const char *dir, const char *id, nv_wasm_app_t *out) {
     out->w4 = cJSON_IsTrue(cJSON_GetObjectItem(root, "wasm4"));
     // A terminal program (WASI command with stdin): the Terminal runs it, not a launcher panel.
     out->console = cJSON_IsTrue(cJSON_GetObjectItem(root, "console"));
+    // ...that owns the whole screen (curses): see "tty" in nv_wasm.h.
+    out->tty = out->console && cJSON_IsTrue(cJSON_GetObjectItem(root, "tty"));
+    out->no_home = cJSON_IsFalse(cJSON_GetObjectItem(root, "home"));
     // Dependencies: "requires": {"<id>": "<min version>", ...} — ids are package/component ids,
     // versions dotted numbers. Anything malformed is dropped (and logged): an app whose requirement
     // can't be read must not look satisfied, so a bad entry keeps its id with version "999".
@@ -2798,7 +2825,7 @@ const char *nv_wasm_sys_component(const char *id) {
 // them on its own when they are missing (nv_appstore_system_start) and they can't be uninstalled.
 static const char *const kSystemApps[] = { "lua", "js", "sqlite3", "qrencode", "units", "eigenmath",
                                            "dateutils", "html2text", "lowdown", "zstd", "pdfio", "python",
-                                           "zim" };
+                                           "zim", "sc-im", "wordgrinder" };
 
 bool nv_wasm_is_system_app(const char *id) {
     if (!id) return false;
@@ -3122,6 +3149,13 @@ void nv_wasm_exec_set_console_cwd(const char *cwd) {
     pthread_mutex_unlock(&s_exec.lock);
 }
 
+void nv_wasm_exec_set_console_size(int cols, int rows) {
+    pthread_mutex_lock(&s_exec.lock);
+    s_console.cols = cols > 0 ? cols : 0;
+    s_console.rows = rows > 0 ? rows : 0;
+    pthread_mutex_unlock(&s_exec.lock);
+}
+
 void nv_wasm_exec_set_console(const char *args) {
     pthread_mutex_lock(&s_exec.lock);
     s_console.pending = true;
@@ -3152,6 +3186,15 @@ size_t nv_wasm_exec_write_stdin(nv_wrun_id_t id, const char *data, size_t n) {
 #else
     (void)id; (void)data; (void)n;
     return 0;
+#endif
+}
+
+bool nv_wasm_exec_write_stdin_whole(nv_wrun_id_t id, const char *data, size_t n) {
+#if CONFIG_WAMR_ENABLE_LIBC_WASI
+    return console_is(id) && nv_wasi_stdin_write_whole(data, n);
+#else
+    (void)id; (void)data; (void)n;
+    return false;
 #endif
 }
 

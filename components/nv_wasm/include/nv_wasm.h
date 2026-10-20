@@ -152,11 +152,35 @@
 //     save/data folder and canvas. WASI apps then also get "/engine" = that package's data folder
 //     and env NUCLEO_ENGINE=<id>. manifest "args": ["..."] = argv[1..] for any WASI app.
 //
+// ---- ABI v18: the system downloader (nv_dl; docs/ZIM_READER_PLAN.md §4f) ------------------------
+// Big files in the background, checked piece by piece, resumed after a dropped connection or a restart;
+// a download goes on after the app closes. Permission "net"; the file lands where the app sees it
+// ("home": the shared workspace, else "fs": its data folder), never over an existing file. An app sees
+// only its own downloads. Errors: -1 permission, -2 bad spec/id/path, -3 too many listed, -4 path kept
+// by the system, -5 the file exists or is being downloaded, -6 no card, -7 answer bigger than the buffer.
+//   nv.dl_start(spec) -> id                 ($)i       spec JSON {"meta4": https URL} or {"url": https URL,
+//                                                       "size": bytes, "sha256": hex}, + "dest" (the app's
+//                                                       path, e.g. "/zim/x.zim") and "title"
+//   nv.dl_info(id,buf,len) -> n             (i*~)i     JSON {"id","state" (queued|paused|done|failed|
+//                                                       running),"title","dest","size","done","verified",
+//                                                       "bps","phase","error"}
+//   nv.dl_list(buf,len) -> n                (*~)i      JSON array of those, oldest first
+//   nv.dl_pause(id,on) -> 1|0               (ii)i      on=0 resumes a paused one or retries a failed one
+//   nv.dl_cancel(id) -> 1                   (i)i       stops and deletes the partial file; a finished
+//                                                       download is only forgotten (the file stays)
+//   nv.dl_free() -> MiB                     ()i        room for a new download: free space less the OTA
+//                                                       reserve and what listed downloads still need
+//
 // ---- Console programs (Terminal) ---------------------------------------------------------------
 // A WASI command whose manifest says "console": true is a terminal program: the Terminal runs it
 // with a command line (argv), a live stdin (what the user types, line by line) and no opcode cap
 // or timeout — the user stops it. Permission "home" preopens the shared workspace /sdcard/home as
 // "/" (with "fs" too, the private data folder is "/appdata").
+// "tty": true too makes it a full-screen program (curses): it gets TERM=xterm-256color,
+// LANG=C.UTF-8 and the screen size as COLUMNS/LINES, stdin can be polled with a timeout
+// (poll/select: ESC and key timeouts), and the Terminal keeps that grid size while it runs (the
+// on-screen keyboard scrolls the view instead of resizing the screen) and turns taps into xterm
+// mouse clicks when the program asks for the mouse.
 //
 // Bump NV_WASM_ABI when the table above changes incompatibly; apps declare the ABI they need in
 // their manifest and the runner refuses newer-than-OS apps with a clear error. New imports are
@@ -173,7 +197,7 @@ extern "C" {
 
 // Version of the host-import ABI implemented by this OS build (manifest "abi" is checked
 // against it at run time).
-#define NV_WASM_ABI 16   // 16: Vertice 1.5 queries (vx_project, vx_texture_size, vx_obj_get_pos, fades, vx_config)
+#define NV_WASM_ABI 18   // 18: the system downloader (dl_*); 17: full-screen terminal programs (tty); 16: Vertice 1.5
 
 // Initialize the WAMR runtime once (idempotent). Returns false if it could not start.
 bool nv_wasm_init(void);
@@ -239,13 +263,13 @@ typedef struct {
     uint32_t canvas_h;         // ABI v2 game canvas height (manifest "canvas_h")
     // ABI v7 file associations. "opens": MIME patterns ("type/sub" or "type/*", lowercase
     // [a-z0-9.+-], at most NV_WASM_OPENS_MAX), space-separated; "" = the app opens no files.
-    char     opens[96];
+    char     opens[256];
     // "file_types": extensions the app teaches the OS (registered at boot next to its tile).
     // kind is one of "text" "image" "audio" "video" "app" "archive" "other" (kept as a string:
     // nv_wasm stays UI-agnostic; the launcher maps it to nv_file_kind_t).
     struct {
         char ext[12];          // [a-z0-9]{1,11}, no dot
-        char mime[48];         // "type/sub", no wildcard
+        char mime[80];         // "type/sub", no wildcard (Office types are long)
         char kind[8];
     } file_types[4];
     uint8_t  n_file_types;
@@ -254,6 +278,11 @@ typedef struct {
     bool     w4;
     // Terminal program (manifest "console": true): run from the Terminal with argv + stdin.
     bool     console;
+    // Full-screen terminal program (manifest "tty": true, with "console"): curses (see above).
+    bool     tty;
+    // No Home tile (manifest "home": false): an app another one fronts (sc-im is Fogli's engine);
+    // it stays reachable from the Terminal, search and Apps.
+    bool     no_home;
     // ABI v9 scaled canvas (manifest "canvas_scale": "fit" | "stretch" | "zoom"): the game view
     // PPA-scales the canvas to the whole panel, straight into the display framebuffer, instead of
     // showing it 1:1 through LVGL. Lets a game render a small frame (3D: 512x300 = 2x exact) and
@@ -285,10 +314,12 @@ typedef struct {
 // ("console") with no window of its own is a tool the Terminal runs: an OS system app
 // (nv_wasm_is_system_app, installed by the OS itself) or one the store files under "terminal".
 // Console games (interactive fiction, "games") and console apps of unknown category (installed
-// before the store wrote categories, until its next catalog fill) keep their icon.
+// before the store wrote categories, until its next catalog fill) keep their icon, and so does a
+// full-screen program ("tty": a spreadsheet, a word processor), system app or not: it is an app
+// the user opens, which then runs in the Terminal.
 static inline bool nv_wasm_app_on_home(const nv_wasm_app_t *a, bool system_app) {
-    if (!a || a->library) return false;
-    if (!a->console) return true;
+    if (!a || a->library || a->no_home) return false;
+    if (!a->console || a->tty) return true;
     return !system_app && strcmp(a->category, "terminal") != 0;
 }
 
@@ -383,6 +414,8 @@ void nv_wasm_exec_set_launch_file(const char *path);
 void nv_wasm_exec_set_console(const char *args);
 // The shell's folder for console runs (an absolute /sdcard path): a "home" program gets it as PWD.
 void nv_wasm_exec_set_console_cwd(const char *cwd);
+// The Terminal's grid for the next console run of a "tty" app: COLUMNS / LINES (0 = unknown).
+void nv_wasm_exec_set_console_size(int cols, int rows);
 
 // True while the in-flight run is a console run.
 bool nv_wasm_exec_is_console(void);
@@ -391,6 +424,8 @@ bool nv_wasm_exec_is_console(void);
 // end of input (Ctrl-D: the guest's next read returns 0 once). No-ops unless `id` is the engine's
 // run, still executing, and a console run.
 size_t nv_wasm_exec_write_stdin(nv_wrun_id_t id, const char *data, size_t n);
+// All n bytes or none (a control sequence must never arrive cut): false = no room right now.
+bool   nv_wasm_exec_write_stdin_whole(nv_wrun_id_t id, const char *data, size_t n);
 void   nv_wasm_exec_close_stdin(nv_wrun_id_t id);
 // The input came from a pipe or a file and is over: EOF for good (close_stdin is the tty's one-shot ^D).
 void   nv_wasm_exec_end_stdin(nv_wrun_id_t id);

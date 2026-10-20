@@ -22,6 +22,7 @@ const icon_t g_icons[IC_COUNT] = {
     {ICON_TEXTSIZE, ICON_TEXTSIZE_PX}, {ICON_THEME, ICON_THEME_PX}, {ICON_CHECK, ICON_CHECK_PX},
     {ICON_BACKSPACE, ICON_BACKSPACE_PX}, {ICON_ENTER, ICON_ENTER_PX}, {ICON_SHIFT, ICON_SHIFT_PX},
     {ICON_KEYBOARD, ICON_KEYBOARD_PX}, {ICON_BOOK, ICON_BOOK_PX},
+    {ICON_DOWNLOAD, ICON_DOWNLOAD_PX}, {ICON_PAUSE, ICON_PAUSE_PX}, {ICON_PLAY, ICON_PLAY_PX},
 };
 
 void icon_draw(int ic, int x, int y, uint16_t c) { gfx_mask(g_icons[ic].m, g_icons[ic].px, g_icons[ic].px, x, y, c); }
@@ -77,13 +78,16 @@ void theme_set(int dark) {
 #define SUGG_MAX 9
 #define FOUND_MAX 40
 
-enum { SCR_LIBRARY, SCR_READER };
-enum { OV_NONE, OV_SEARCH, OV_TOC, OV_MENU, OV_MARKS, OV_INFO, OV_VIEWER };
+enum { SCR_LIBRARY, SCR_READER, SCR_GET };
+enum { OV_NONE, OV_SEARCH, OV_TOC, OV_MENU, OV_MARKS, OV_INFO, OV_VIEWER, OV_GET_INFO, OV_DLS };
 enum {
     A_NONE, A_BACK, A_FORWARD, A_LIBRARY, A_SEARCH, A_TOC, A_STAR, A_MORE, A_OPEN_COLL, A_INFO_COLL,
     A_CONTINUE, A_MARKS, A_CLOSE, A_SUGG, A_FOUND, A_SCAN, A_TOC_ITEM, A_RANDOM, A_SIZE_DEC, A_SIZE_INC,
     A_THEME, A_INFO, A_MARK_OPEN, A_MARK_DEL, A_VERIFY, A_MAIN_PAGE, A_OSK, A_FIELD,
+    A_GET, A_GET_CHIP, A_GET_LANG, A_GET_ROW, A_GET_START, A_GET_RETRY, A_GET_SEARCH, A_DLS, A_DL_PAUSE,
+    A_DL_RESUME, A_DL_CANCEL, A_DL_OPEN, A_DELETE,
 };
+#define GET_CATS 16
 
 typedef struct {
     int x, y, w, h, act, arg;
@@ -139,6 +143,19 @@ static struct {
     // info
     int info_coll;
     char info_msg[160];
+    // the download screen
+    char get_lang[8];        // the catalog's language ("ita"...)
+    int get_chip;            // 0 Recommended, 1 All, 2.. a category
+    int get_search;          // the search field instead of the chips
+    int32_t get_scroll;
+    int get_group;           // the collection of the detail page
+    int *vis, nvis;          // the groups shown
+    int vis_gen;             // the catalog they were counted for (get_gen)
+    char cats[GET_CATS][24];
+    int ncats;
+    int dl_next;             // when to ask the downloader again
+    int dl_armed;            // a download whose cancel was tapped once (its id), 0 none
+    int del_armed;           // a collection whose delete was tapped once, -1 none
     // input
     int touch_down, tx0, ty0, tx, ty, t0, moved, long_fired;
     int32_t drag_scroll0;
@@ -150,6 +167,8 @@ enum { R_ALL = 1, R_BAR = 2, R_CONTENT = 4 };
 
 static void save_position(void);
 static void draw_all(void);
+static int pill(int x, int y, const char *lbl, int act, int arg, int primary);
+static int active_downloads(void);
 
 static void to_library(void) {   // the page being read becomes "Continue reading"
     save_position();
@@ -582,6 +601,13 @@ static void go_back(void) {
         A.redraw |= R_ALL;
         return;
     }
+    if (A.screen == SCR_GET) {
+        if (A.get_search) { A.get_search = 0; A.q[0] = 0; A.osk_on = 0; A.redraw |= R_ALL; return; }
+        A.screen = SCR_LIBRARY;
+        A.focus = -1;
+        A.redraw |= R_ALL;
+        return;
+    }
     if (A.screen == SCR_READER) {
         if (A.nback > 0) {
             const nav_t n = A.back[--A.nback];
@@ -630,6 +656,7 @@ static void set_text_size(int s) {
 // ------------------------------------------------------------------------------------ search
 
 static void search_update(void) {
+    if (A.screen == SCR_GET) { A.get_scroll = 0; return; }   // the catalog filters as it draws
     A.nsugg = 0;
     A.sel = 0;
     A.nfound = 0;
@@ -820,6 +847,9 @@ static void draw_library(void) {
             }
             y += 10;
         }
+        const char *lbl = tr(S_GET_TITLE);
+        const int pw = text_width(F_BOLD, 17, lbl, (int)strlen(lbl)) + 40;
+        pill((g_w - pw) / 2, y + 16, lbl, A_GET, 0, 1);
     }
     for (int i = 0; i < g_nlib; i++) {
         const coll_t *c = &g_lib[i];
@@ -854,6 +884,10 @@ static void draw_library(void) {
     bar_bg();
     icon_draw(IC_LIBRARY, 22, (BAR_H - 24) / 2, g_col[C_ACCENT]);
     draw_bar_title(tr(S_LIBRARY), 60, g_w - 300);
+    button(g_w - 3 * BTN - 16, (BAR_H - BTN) / 2, IC_DOWNLOAD, A_GET, 0, 1, g_col[C_BAR_TEXT]);
+    if (active_downloads()) {
+        gfx_rrect(g_w - 3 * BTN - 16 + BTN - 18, 10, 12, 12, 6, g_col[C_ACCENT]);
+    }
     button(g_w - 2 * BTN - 12, (BAR_H - BTN) / 2, IC_HISTORY, A_MARKS, MARK_HISTORY, 1, g_col[C_BAR_TEXT]);
     button(g_w - BTN - 8, (BAR_H - BTN) / 2, IC_STAR, A_MARKS, MARK_BOOKMARKS, 1, g_col[C_BAR_TEXT]);
 }
@@ -1009,7 +1043,7 @@ static void osk_press(int code) {
     case OK_BS: q_backspace(); return;
     case OK_LAYER: A.osk_layer = !A.osk_layer; A.redraw |= R_ALL; return;
     case OK_SPACE: q_append(' '); return;
-    case OK_ENTER: search_choose(A.sel); return;
+    case OK_ENTER: if (A.screen == SCR_GET) { A.osk_on = 0; A.redraw |= R_ALL; } else search_choose(A.sel); return;
     case OK_HIDE: A.osk_on = 0; A.redraw |= R_ALL; return;
     default: break;
     }
@@ -1261,6 +1295,11 @@ static void draw_info(void) {
     const int r2 = row_box(x, y, w2, 50, A_VERIFY, A.info_coll, g_col[C_CARD]);
     (void)r2;
     text_draw(F_BOLD, 18, x + 24, y + 32, b2, (int)strlen(b2), g_col[C_ACCENT]);
+    x += w2 + 16;
+    const char *b3 = tr(A.del_armed == A.info_coll ? S_DELETE_SURE : S_DELETE);
+    const int w3 = text_width(F_BOLD, 18, b3, (int)strlen(b3)) + 48;
+    row_box(x, y, w3, 50, A_DELETE, A.info_coll, A.del_armed == A.info_coll ? g_col[C_PRESS] : g_col[C_CARD]);
+    text_draw(F_BOLD, 18, x + 24, y + 32, b3, (int)strlen(b3), g_col[C_TEXT]);
     if (A.info_msg[0]) text_draw_fit(F_SANS, 17, lx, y + 84, A.info_msg, (int)strlen(A.info_msg), g_w - 64, g_col[C_TEXT]);
 }
 
@@ -1303,9 +1342,475 @@ static void draw_viewer(void) {
     button(g_w - BTN - 12, 8, IC_CLOSE, A_CLOSE, 0, 1, rgb565(0xE6, 0xE8, 0xEB));
 }
 
+
+// ------------------------------------------------------------------------- the download screen
+// The Kiwix catalog (get.c) as collections with their editions, and the downloads of the system
+// downloader: they go on when the app is closed, and a finished one joins the library.
+
+#define GET_ROW 92
+static const char *const kLang3[] = {"ita", "eng", "spa", "fra", "deu"};
+
+static void cat_label(const char *raw, char *out, size_t cap) {   // "stack_exchange" -> "Stack exchange"
+    if (!raw[0] || !strcmp(raw, "other")) { snprintf(out, cap, "%s", tr(S_GET_OTHER)); return; }
+    snprintf(out, cap, "%s", raw);
+    for (char *p = out; *p; p++) if (*p == '_') *p = ' ';
+    if (out[0] >= 'a' && out[0] <= 'z') out[0] = (char)(out[0] - 32);
+}
+
+// The categories of the catalog, the ones with most collections first (the chips after "All").
+static void get_cats(void) {
+    int cnt[GET_CATS] = {0};
+    A.ncats = 0;
+    for (int g = 0; g < g_ngrp; g++) {
+        const char *c = g_cat[g_grp[g].pick].category;
+        int k = 0;
+        while (k < A.ncats && strcmp(A.cats[k], c)) k++;
+        if (k == A.ncats) {
+            if (A.ncats == GET_CATS) continue;
+            snprintf(A.cats[A.ncats++], sizeof A.cats[0], "%s", c);
+        }
+        cnt[k]++;
+    }
+    for (int i = 0; i < A.ncats; i++)   // most first; "other" and "" last
+        for (int j = i + 1; j < A.ncats; j++) {
+            const int oi = !A.cats[i][0] || !strcmp(A.cats[i], "other"), oj = !A.cats[j][0] || !strcmp(A.cats[j], "other");
+            if (oj < oi || (oj == oi && cnt[j] > cnt[i])) {
+                char t[24];
+                memcpy(t, A.cats[i], sizeof t); memcpy(A.cats[i], A.cats[j], sizeof t); memcpy(A.cats[j], t, sizeof t);
+                const int c = cnt[i]; cnt[i] = cnt[j]; cnt[j] = c;
+            }
+        }
+}
+
+static int get_matches(int g) {
+    const cat_t *c = &g_cat[g_grp[g].pick];
+    if (A.get_search && A.q[0]) {   // a search looks through everything
+        char q[200], t[400];
+        lower_utf8(A.q, q, sizeof q);
+        snprintf(t, sizeof t, "%s %s %s", c->title, c->name, c->summary);
+        lower_utf8(t, t, sizeof t);
+        return strstr(t, q) != NULL;
+    }
+    if (A.get_chip == 0) return g_grp[g].rec >= 0;
+    if (A.get_chip == 1) return 1;
+    return A.get_chip - 2 < A.ncats && !strcmp(c->category, A.cats[A.get_chip - 2]);
+}
+
+static int get_visible(void) {   // the rows shown, in A.vis
+    if (A.vis_gen != get_gen()) {    // a new catalog (arrived, refreshed, another language)
+        free(A.vis);
+        A.vis = (int *)malloc(sizeof(int) * (size_t)(g_ngrp > 0 ? g_ngrp : 1));
+        A.vis_gen = get_gen();
+        get_cats();
+        if (A.get_chip >= 2 + A.ncats) A.get_chip = 0;
+        int rec = 0;   // a language without a Recommended list starts from All
+        for (int g = 0; g < g_ngrp && !rec; g++) rec = g_grp[g].rec >= 0;
+        if (!rec && A.get_chip == 0 && g_ngrp) A.get_chip = 1;
+    }
+    A.nvis = 0;
+    for (int g = 0; g < g_ngrp && A.vis; g++)
+        if (get_matches(g)) A.vis[A.nvis++] = g;
+    return A.nvis;
+}
+
+static void get_enter(void) {
+    A.screen = SCR_GET;
+    A.overlay = OV_NONE;
+    A.get_scroll = 0;
+    A.get_search = 0;
+    A.q[0] = 0;
+    A.focus = -1;
+    if (get_state() == GET_IDLE || strcmp(get_lang3(), A.get_lang)) get_open(A.get_lang, 0);
+    A.dl_next = 0;
+    A.redraw |= R_ALL;
+}
+
+static void draw_rgba48(const uint8_t *rgba, int x, int y) {
+    for (int j = 0; j < 48; j++) {
+        const int sy = y + j;
+        if (sy < 0 || sy >= g_h) continue;
+        for (int i = 0; i < 48; i++) {
+            const uint8_t *p = rgba + (j * 48 + i) * 4;
+            const int sx = x + i;
+            if (!p[3] || sx < 0 || sx >= g_w) continue;
+            uint16_t *d = g_rows[sy] + sx;
+            *d = blend565(*d, rgb565(p[0], p[1], p[2]), p[3]);
+        }
+    }
+    gfx_dirty(y, y + 48);
+}
+
+static void draw_get_thumb(int ent, int x, int y) {
+    gfx_rrect(x, y, 64, 64, 12, g_set.dark ? rgb565(0x2C, 0x30, 0x37) : rgb565(0xFF, 0xFF, 0xFF));
+    const uint8_t *ic = get_icon(ent);
+    if (ic) draw_rgba48(ic, x + 8, y + 8);
+    else icon_draw(IC_BOOK, x + 8, y + 8, g_col[C_RULE]);
+}
+
+// A rounded text button; primary = filled with the accent. Returns its width.
+static int pill(int x, int y, const char *lbl, int act, int arg, int primary) {
+    const int w = text_width(F_BOLD, 17, lbl, (int)strlen(lbl)) + 40, h = 44;
+    const int r = reg_add(x, y, w, h, act, arg), st = reg_state(r);
+    gfx_rrect(x, y, w, h, 22, st == 2 ? g_col[C_PRESS] : primary ? g_col[C_ACCENT] : g_col[C_BG]);
+    if (!primary) gfx_ring(x, y, w, h, 22, 1, g_col[C_RULE]);
+    if (st == 1) gfx_ring(x - 3, y - 3, w + 6, h + 6, 25, 2, g_col[C_FOCUS]);
+    text_draw(F_BOLD, 17, x + 20, y + 28, lbl, (int)strlen(lbl), primary && st != 2 ? g_col[C_ON_ACCENT] : g_col[C_ACCENT]);
+    return w;
+}
+
+static const char *flavour_label(const cat_t *c) {
+    if (!strcmp(c->flavour, "nopic")) return tr(S_GET_NOPIC);
+    if (!strcmp(c->flavour, "mini")) return tr(S_GET_MINI);
+    if (!strcmp(c->flavour, "maxi")) return tr(S_GET_MAXI);
+    return "";
+}
+
+static void fmt_eta(int64_t secs, char *out, size_t cap) {
+    if (secs >= 3600) snprintf(out, cap, "%d h %02d min", (int)(secs / 3600), (int)(secs / 60 % 60));
+    else if (secs >= 60) snprintf(out, cap, "%d min", (int)((secs + 59) / 60));
+    else snprintf(out, cap, "%d s", (int)(secs > 0 ? secs : 1));
+}
+
+// "1,2 GB di 3,4 GB" and, while it runs, "180 KB/s, mancano 2 h 05 min".
+static void dl_text(const dl_t *d, char *a, size_t an, char *b, size_t bn) {
+    char x[24], y[24], v[24], t[32];
+    fmt_size((uint64_t)d->done, x, sizeof x);
+    fmt_size((uint64_t)d->size, y, sizeof y);
+    snprintf(a, an, tr(S_GET_PROGRESS), x, d->size ? y : "?");
+    b[0] = 0;
+    if (d->state == DL_RUNNING && d->bps > 0 && d->size > d->done) {
+        fmt_speed((uint64_t)d->bps, v, sizeof v);
+        fmt_eta((d->size - d->done) / d->bps, t, sizeof t);
+        snprintf(b, bn, tr(S_GET_SPEED), v, t);
+    }
+}
+
+static const char *dl_state_text(const dl_t *d) {
+    switch (d->state) {
+    case DL_QUEUED: return tr(S_GET_QUEUED);
+    case DL_PAUSED: return tr(S_GET_PAUSED);
+    case DL_DONE: return tr(S_GET_DONE);
+    case DL_FAILED: return tr(S_GET_FAILED);
+    default: return !strcmp(d->phase, "meta4") ? tr(S_GET_PREPARING) : !strcmp(d->phase, "check") ? tr(S_GET_CHECKING) : "";
+    }
+}
+
+static void progress_bar(int x, int y, int w, const dl_t *d) {
+    gfx_rrect(x, y, w, 8, 4, g_col[C_RULE]);
+    const int f = d->size > 0 ? (int)((int64_t)w * d->done / d->size) : 0;
+    if (f > 8) gfx_rrect(x, y, f, 8, 4, d->state == DL_FAILED ? g_col[C_DIM] : g_col[C_ACCENT]);
+}
+
+// The download of any edition of a collection (the most recent one asked for), or -1.
+static int group_dl(const cat_group_t *gr) {
+    int best = -1;
+    for (int f = gr->first; f < gr->first + gr->n; f++) {
+        const int d = get_dl_of(&g_cat[f]);
+        if (d >= 0 && (best < 0 || g_dl[d].id > g_dl[best].id)) best = d;
+    }
+    return best;
+}
+
+// The right side of a row or of an edition: the state, or the button that starts it.
+static void get_action(int x_right, int y, int ent, int d) {
+    const cat_t *c = &g_cat[ent];
+    if (d >= 0 && g_dl[d].state != DL_DONE && g_dl[d].state != DL_FAILED) {
+        const int w = 180, x = x_right - w;
+        char pct[16];
+        snprintf(pct, sizeof pct, "%d%%", g_dl[d].size ? (int)(g_dl[d].done * 100 / g_dl[d].size) : 0);
+        const char *s = g_dl[d].state == DL_RUNNING && !dl_state_text(&g_dl[d])[0] ? pct : dl_state_text(&g_dl[d]);
+        text_draw_fit(F_BOLD, 16, x, y + 18, s, (int)strlen(s), w, g_col[C_ACCENT]);
+        progress_bar(x, y + 30, w, &g_dl[d]);
+        return;
+    }
+    const int have = get_have(c);
+    if (have == 1) {
+        const char *s = tr(S_GET_HAVE);
+        const int w = text_width(F_SANS, 15, s, (int)strlen(s));
+        icon_draw(IC_CHECK, x_right - w - 30, y + 10, g_col[C_DIM]);
+        text_draw(F_SANS, 15, x_right - w, y + 28, s, (int)strlen(s), g_col[C_DIM]);
+        return;
+    }
+    const char *lbl = tr(have == 2 ? S_GET_UPDATE : S_GET_DOWNLOAD);
+    const int w = text_width(F_BOLD, 17, lbl, (int)strlen(lbl)) + 40;
+    pill(x_right - w, y, lbl, A_GET_START, ent, 1);
+}
+
+static void draw_get_row(int g, int y) {
+    const cat_group_t *gr = &g_grp[g];
+    const cat_t *c = &g_cat[gr->pick];
+    const int x = 24, w = g_w - 48, h = GET_ROW - 8;
+    row_box(x, y, w, h, A_GET_ROW, g, g_col[C_CARD]);
+    draw_get_thumb(gr->pick, x + 12, y + 10);
+    const int tx = x + 92, tw = w - 92 - 230;
+    text_draw_fit(F_BOLD, 19, tx, y + 28, c->title, (int)strlen(c->title), tw, g_col[C_TEXT]);
+    text_draw_fit(F_SANS, 15, tx, y + 51, c->summary, (int)strlen(c->summary), tw, g_col[C_DIM]);
+    char meta[240], d[48], sz[32], n[32];
+    fmt_date(c->date, d, sizeof d);
+    fmt_size(c->size, sz, sizeof sz);
+    fmt_count(c->articles, n, sizeof n);
+    const char *fl = flavour_label(c);
+    snprintf(meta, sizeof meta, "%s \xC2\xB7 %s %s \xC2\xB7 %s%s%s%s", d, n, tr(S_ARTICLES), sz, fl[0] ? " \xC2\xB7 " : "", fl,
+             gr->n > 1 ? " \xE2\x80\xA6" : "");
+    text_draw_fit(F_SANS, 14, tx, y + 73, meta, (int)strlen(meta), tw, g_col[C_DIM]);
+    get_action(x + w - 16, y + (h - 44) / 2, gr->pick, group_dl(gr));
+}
+
+static int active_downloads(void) {
+    int n = 0;
+    for (int i = 0; i < g_ndl; i++) n += g_dl[i].state == DL_QUEUED || g_dl[i].state == DL_RUNNING;
+    return n;
+}
+
+static void dl_button(int x, int y) {   // the downloads, with how many are under way
+    button(x, y, IC_DOWNLOAD, A_DLS, 0, 1, g_col[C_BAR_TEXT]);
+    const int n = active_downloads();
+    if (!n) return;
+    char s[8];
+    snprintf(s, sizeof s, "%d", n);
+    gfx_rrect(x + BTN - 22, y + 4, 20, 20, 10, g_col[C_ACCENT]);
+    const int tw = text_width(F_BOLD, 13, s, (int)strlen(s));
+    text_draw(F_BOLD, 13, x + BTN - 12 - tw / 2, y + 19, s, (int)strlen(s), g_col[C_ON_ACCENT]);
+}
+
+static int32_t get_height(void) { return 60 + A.nvis * GET_ROW + 24; }
+
+static void draw_get(void) {
+    gfx_fill(0, 0, g_w, g_h, g_col[C_BG]);
+    const int bottom = A.osk_on ? g_h - OSK_H : g_h;
+    get_visible();
+    gfx_clip(0, BAR_H, g_w, bottom);
+    int y = BAR_H + 8 - A.get_scroll;
+    // the chips: Recommended, All, the categories (or the search field)
+    if (A.get_search) {
+        reg_add(24, y, g_w - 48, 44, A_FIELD, 0);
+        draw_field(24, y, g_w - 48);
+    } else {
+        int x = 24;
+        for (int k = 0; k < 2 + A.ncats && x < g_w - 60; k++) {
+            char lbl[40];
+            if (k == 0) snprintf(lbl, sizeof lbl, "%s", tr(S_GET_RECOMMENDED));
+            else if (k == 1) snprintf(lbl, sizeof lbl, "%s", tr(S_GET_ALL));
+            else cat_label(A.cats[k - 2], lbl, sizeof lbl);
+            const int w = text_width(F_SANS, 16, lbl, (int)strlen(lbl)) + 32;
+            if (x + w > g_w - 24) break;
+            const int on = k == A.get_chip;
+            const int r = reg_add(x, y + 2, w, 40, A_GET_CHIP, k), st = reg_state(r);
+            gfx_rrect(x, y + 2, w, 40, 20, st == 2 ? g_col[C_PRESS] : on ? g_col[C_ACCENT] : g_col[C_CARD]);
+            if (st == 1) gfx_ring(x - 3, y - 1, w + 6, 46, 23, 2, g_col[C_FOCUS]);
+            text_draw(on ? F_BOLD : F_SANS, 16, x + 16, y + 28, lbl, (int)strlen(lbl), on && st != 2 ? g_col[C_ON_ACCENT] : g_col[C_TEXT]);
+            x += w + 10;
+        }
+    }
+    y += 60;
+    const int st = get_state();
+    if (st == GET_LOADING || (st == GET_IDLE)) {
+        const char *s = tr(S_GET_LOADING);
+        text_draw(F_SANS, 19, (g_w - text_width(F_SANS, 19, s, (int)strlen(s))) / 2, y + 120, s, (int)strlen(s), g_col[C_DIM]);
+    } else if (st == GET_ERROR) {
+        const char *s = tr(S_GET_OFFLINE);
+        text_draw_fit(F_SANS, 19, 48, y + 120, s, (int)strlen(s), g_w - 96, g_col[C_TEXT]);
+        pill(48, y + 150, tr(S_GET_RETRY), A_GET_RETRY, 0, 1);
+    } else if (!A.nvis) {
+        const char *s = tr(S_GET_NO_MATCH);
+        text_draw(F_SANS, 18, (g_w - text_width(F_SANS, 18, s, (int)strlen(s))) / 2, y + 100, s, (int)strlen(s), g_col[C_DIM]);
+    }
+    for (int i = 0; i < A.nvis; i++, y += GET_ROW) {
+        if (y + GET_ROW < BAR_H || y > bottom) continue;
+        draw_get_row(A.vis[i], y);
+    }
+    gfx_noclip();
+    if (A.osk_on) draw_osk();
+    // the bar on top
+    bar_bg();
+    button(6, (BAR_H - BTN) / 2, IC_BACK, A_CLOSE, 0, 1, g_col[C_BAR_TEXT]);
+    draw_bar_title(tr(S_GET_TITLE), 6 + BTN + 10, g_w - 6 - BTN - 10 - 3 * BTN - 120);
+    char l[8];   // the catalog's language: a tap moves to the next one
+    snprintf(l, sizeof l, "%.2s", get_lang3()[0] ? get_lang3() : A.get_lang);
+    for (char *p = l; *p; p++) if (*p >= 'a' && *p <= 'z') *p = (char)(*p - 32);
+    const int lx = g_w - 3 * BTN - 24 - 64;
+    const int r = reg_add(lx, (BAR_H - 40) / 2, 60, 40, A_GET_LANG, 0), rs = reg_state(r);
+    gfx_rrect(lx, (BAR_H - 40) / 2, 60, 40, 20, rs == 2 ? g_col[C_PRESS] : g_col[C_CARD]);
+    if (rs == 1) gfx_ring(lx - 3, (BAR_H - 40) / 2 - 3, 66, 46, 23, 2, g_col[C_FOCUS]);
+    text_draw(F_BOLD, 16, lx + (60 - text_width(F_BOLD, 16, l, (int)strlen(l))) / 2, BAR_H / 2 + 6, l, (int)strlen(l), g_col[C_TEXT]);
+    button(g_w - 3 * BTN - 16, (BAR_H - BTN) / 2, A.get_search ? IC_CLOSE : IC_SEARCH, A_GET_SEARCH, 0, 1, g_col[C_BAR_TEXT]);
+    if (A.get_search && !A.osk_on) button(g_w - 2 * BTN - 12, (BAR_H - BTN) / 2, IC_KEYBOARD, A_FIELD, 1, 1, g_col[C_DIM]);
+    dl_button(g_w - BTN - 8, (BAR_H - BTN) / 2);
+    if (get_busy() && st == GET_READY) gfx_fill(0, BAR_H - 3, (A.now / 4) % g_w, 2, g_col[C_ACCENT]);   // refreshing
+}
+
+// Words of `s` on up to `max` lines of width w; returns the y after them.
+static int draw_wrapped(int f, int px, int x, int y, int w, const char *s, int max, uint16_t col) {
+    int n = (int)strlen(s), lines = 0;
+    while (n > 0 && lines < max) {
+        int k = text_fit(f, px, s, n, w);
+        if (k < n) { int b = k; while (b > 0 && s[b] != ' ') b--; if (b > 0) k = b; }
+        if (lines == max - 1 && k < n) { text_draw_fit(f, px, x, y, s, n, w, col); y += px + 10; return y; }
+        text_draw(f, px, x, y, s, k, col);
+        y += px + 10;
+        s += k;
+        n -= k;
+        while (n > 0 && *s == ' ') { s++; n--; }
+        lines++;
+    }
+    return y;
+}
+
+static void draw_get_info(void) {
+    gfx_fill(0, 0, g_w, g_h, g_col[C_BG]);
+    if (A.get_group < 0 || A.get_group >= g_ngrp) return;
+    const cat_group_t *gr = &g_grp[A.get_group];
+    const cat_t *c = &g_cat[gr->pick];
+    gfx_clip(0, BAR_H, g_w, g_h);
+    int y = BAR_H + 20 - A.list_scroll;
+    draw_get_thumb(gr->pick, 32, y);
+    text_draw_fit(F_BOLD, 24, 116, y + 30, c->title, (int)strlen(c->title), g_w - 150, g_col[C_TEXT]);
+    char line[300], d[48], n[32];
+    fmt_date(c->date, d, sizeof d);
+    fmt_count(c->articles, n, sizeof n);
+    snprintf(line, sizeof line, "%s \xC2\xB7 %s \xC2\xB7 %s %s%s%s", lang_name(c->lang), d, n, tr(S_ARTICLES),
+             c->author[0] ? " \xC2\xB7 " : "", c->author);
+    text_draw_fit(F_SANS, 16, 116, y + 58, line, (int)strlen(line), g_w - 150, g_col[C_DIM]);
+    y += 96;
+    y = draw_wrapped(F_SANS, 18, 32, y + 4, g_w - 64, c->summary, 3, g_col[C_TEXT]);
+    y += 12;
+    const char *h = tr(S_GET_EDITIONS);
+    text_draw(F_BOLD, 18, 32, y + 4, h, (int)strlen(h), g_col[C_HEAD]);
+    y += 20;
+    const int64_t room = get_room();
+    for (int f = gr->first; f < gr->first + gr->n; f++, y += 76) {
+        const cat_t *e = &g_cat[f];
+        gfx_rrect(24, y, g_w - 48, 68, 12, g_col[C_CARD]);
+        char sz[32], lbl[120];
+        fmt_size(e->size, sz, sizeof sz);
+        const char *fl = flavour_label(e);
+        snprintf(lbl, sizeof lbl, "%s%s%s", fl, fl[0] ? " \xC2\xB7 " : "", sz);
+        text_draw_fit(F_BOLD, 18, 44, y + 30, lbl, (int)strlen(lbl), g_w - 360, g_col[C_TEXT]);
+        fmt_date(e->date, d, sizeof d);
+        fmt_count(e->articles, n, sizeof n);
+        snprintf(lbl, sizeof lbl, "%s \xC2\xB7 %s %s", d, n, tr(S_ARTICLES));
+        text_draw_fit(F_SANS, 15, 44, y + 54, lbl, (int)strlen(lbl), g_w - 360, g_col[C_DIM]);
+        const int dl = get_dl_of(e);
+        if (dl < 0 && get_have(e) != 1 && room >= 0 && (int64_t)e->size > room) {
+            const char *s = tr(S_GET_NO_ROOM);
+            text_draw_fit(F_SANS, 15, g_w - 330, y + 40, s, (int)strlen(s), 290, g_col[C_DIM]);
+        } else {
+            get_action(g_w - 40, y + 12, f, dl);
+        }
+    }
+    if (room >= 0) {
+        char r[32];
+        fmt_size((uint64_t)room, r, sizeof r);
+        snprintf(line, sizeof line, tr(S_GET_ROOM), r);
+        text_draw(F_SANS, 16, 32, y + 24, line, (int)strlen(line), g_col[C_DIM]);
+        y += 36;
+    }
+    draw_wrapped(F_SANS, 15, 32, y + 16, g_w - 64, tr(S_GET_NOTE), 2, g_col[C_DIM]);
+    gfx_noclip();
+    bar_bg();
+    button(6, (BAR_H - BTN) / 2, IC_BACK, A_CLOSE, 0, 1, g_col[C_BAR_TEXT]);
+    draw_bar_title(c->title, 6 + BTN + 10, g_w - 6 - BTN - 10 - BTN - 24);
+    dl_button(g_w - BTN - 8, (BAR_H - BTN) / 2);
+}
+
+static void draw_dls(void) {
+    gfx_fill(0, 0, g_w, g_h, g_col[C_BG]);
+    gfx_clip(0, BAR_H, g_w, g_h);
+    int y = BAR_H + 12 - A.list_scroll;
+    y = draw_wrapped(F_SANS, 15, 32, y + 16, g_w - 64, tr(S_GET_NOTE), 2, g_col[C_DIM]) + 4;
+    if (!g_ndl) {
+        const char *s = tr(S_GET_NONE);
+        text_draw(F_SANS, 18, (g_w - text_width(F_SANS, 18, s, (int)strlen(s))) / 2, g_h / 2, s, (int)strlen(s), g_col[C_DIM]);
+    }
+    for (int i = g_ndl - 1; i >= 0; i--, y += 104) {   // the newest first
+        const dl_t *d = &g_dl[i];
+        if (y + 104 < BAR_H || y > g_h) continue;
+        const int done = d->state == DL_DONE;
+        const int r = reg_add(24, y, g_w - 48 - 2 * BTN - 16, 96, done ? A_DL_OPEN : A_NONE, i);
+        gfx_rrect(24, y, g_w - 48, 96, 12, r == A.pressed && done ? g_col[C_PRESS] : g_col[C_CARD]);
+        text_draw_fit(F_BOLD, 18, 44, y + 30, d->title, (int)strlen(d->title), g_w - 280, g_col[C_TEXT]);
+        char a[64], b[64], s[200];
+        dl_text(d, a, sizeof a, b, sizeof b);
+        const char *stt = dl_state_text(d);
+        if (done) snprintf(s, sizeof s, "%s", stt);
+        else snprintf(s, sizeof s, "%s%s%s%s%s", stt, stt[0] ? " \xC2\xB7 " : "", a, b[0] ? " \xC2\xB7 " : "", b);
+        if (d->state == DL_FAILED && d->error[0]) snprintf(s, sizeof s, "%s: %s", stt, d->error);
+        text_draw_fit(F_SANS, 15, 44, y + 56, s, (int)strlen(s), g_w - 280, d->state == DL_FAILED ? g_col[C_TEXT] : g_col[C_DIM]);
+        if (!done) progress_bar(44, y + 72, g_w - 280 - 20, d);
+        const int bx = g_w - 24 - 2 * BTN - 12, by = y + (96 - BTN) / 2;
+        if (d->state == DL_RUNNING || d->state == DL_QUEUED) button(bx, by, IC_PAUSE, A_DL_PAUSE, i, 1, g_col[C_TEXT]);
+        else if (d->state == DL_PAUSED || d->state == DL_FAILED) button(bx, by, IC_PLAY, A_DL_RESUME, i, 1, g_col[C_ACCENT]);
+        button(bx + BTN + 4, by, IC_CLOSE, A_DL_CANCEL, i, 1, A.dl_armed == d->id ? g_col[C_ACCENT] : g_col[C_DIM]);
+        if (A.dl_armed == d->id) {
+            const char *sure = tr(S_GET_CANCEL_SURE);
+            const int tw = text_width(F_SANS, 14, sure, (int)strlen(sure));
+            gfx_rrect(g_w - 24 - tw - 24, y + 96 - 30, tw + 16, 24, 12, g_col[C_ACCENT]);
+            text_draw(F_SANS, 14, g_w - 24 - tw - 16, y + 96 - 13, sure, (int)strlen(sure), g_col[C_ON_ACCENT]);
+        }
+    }
+    gfx_noclip();
+    bar_bg();
+    button(6, (BAR_H - BTN) / 2, IC_BACK, A_CLOSE, 0, 1, g_col[C_BAR_TEXT]);
+    draw_bar_title(tr(S_GET_DOWNLOADS), 6 + BTN + 10, g_w - 200);
+}
+
+// Rescan the library (a download finished, a collection was deleted) keeping the open one.
+static void lib_rescan(void) {
+    char open[128] = "";
+    if (A.coll >= 0 && A.coll < g_nlib) snprintf(open, sizeof open, "%s", g_lib[A.coll].file);
+    lib_scan(NULL, NULL);
+    if (open[0]) {
+        A.coll = lib_find(open);
+        if (A.coll < 0) { close_coll(); A.has_doc = 0; if (A.screen == SCR_READER) to_library(); }
+    }
+}
+
+// Downloads: polled every second on these screens, every few seconds elsewhere; a finished one is
+// read into the library, said in a toast, and taken off the downloader's list.
+static void dl_poll(void) {
+    if (A.now < A.dl_next) return;
+    A.dl_next = A.now + (A.screen == SCR_GET ? 1000 : 4000);
+    int fin = 0, fail = 0;
+    const int changed = get_dl_refresh(&fin, &fail);
+    if (changed && (A.screen != SCR_READER || A.overlay != OV_NONE)) A.redraw |= R_ALL;
+    if (fin) {
+        lib_rescan();
+        for (int i = g_ndl - 1; i >= 0; i--)
+            if (g_dl[i].state == DL_DONE) { toast(tr(S_GET_FINISHED), g_dl[i].title); break; }
+        A.redraw |= R_ALL;
+    }
+}
+
+static void delete_coll(int ci) {
+    if (ci < 0 || ci >= g_nlib) return;
+    char path[200], title[160];
+    snprintf(path, sizeof path, "%s", g_lib[ci].path);
+    snprintf(title, sizeof title, "%s", g_lib[ci].title[0] ? g_lib[ci].title : g_lib[ci].file);
+    if (A.coll == ci) { close_coll(); A.has_doc = 0; }
+    if (!strcmp(g_set.last_file, g_lib[ci].file)) { g_set.last_file[0] = g_set.last_path[0] = 0; settings_save(); }
+    const size_t n = strlen(path);
+    if (n > 6 && !strcmp(path + n - 6, ".zimaa")) {   // every part of a split file
+        for (int i = 0; i < 26 * 26; i++) {
+            path[n - 2] = (char)('a' + i / 26);
+            path[n - 1] = (char)('a' + i % 26);
+            if (remove(path) != 0) break;
+        }
+    } else {
+        remove(path);
+    }
+    lib_rescan();
+    A.screen = SCR_LIBRARY;
+    A.overlay = OV_NONE;
+    A.del_armed = -1;
+    toast(tr(S_DELETED), title);
+}
+
 static void draw_all(void) {
     A.nregs = 0;
-    if (A.screen == SCR_LIBRARY && A.overlay == OV_NONE) draw_library();
+    if (A.overlay == OV_GET_INFO) draw_get_info();
+    else if (A.overlay == OV_DLS) draw_dls();
+    else if (A.screen == SCR_GET && A.overlay == OV_NONE) draw_get();
+    else if (A.screen == SCR_LIBRARY && A.overlay == OV_NONE) draw_library();
     else if (A.overlay == OV_SEARCH) draw_search();
     else if (A.overlay == OV_MARKS) draw_marks();
     else if (A.overlay == OV_INFO) draw_info();
@@ -1427,6 +1932,74 @@ static void do_action(int act, int arg) {
     }
     case A_MAIN_PAGE: A.overlay = OV_NONE; open_main(arg); break;
     case A_OSK: osk_press(arg); break;
+    case A_GET: get_enter(); break;
+    case A_GET_CHIP: A.get_chip = arg; A.get_scroll = 0; A.redraw |= R_ALL; break;
+    case A_GET_LANG:
+        for (int i = 0; i < 5; i++)
+            if (!strcmp(A.get_lang, kLang3[i])) { snprintf(A.get_lang, sizeof A.get_lang, "%s", kLang3[(i + 1) % 5]); break; }
+        get_open(A.get_lang, 0);
+        A.get_chip = 0;
+        A.get_scroll = 0;
+        A.redraw |= R_ALL;
+        break;
+    case A_GET_RETRY: get_open(A.get_lang, 1); A.redraw |= R_ALL; break;
+    case A_GET_SEARCH:
+        A.get_search = !A.get_search;
+        A.q[0] = 0;
+        A.osk_on = A.get_search && !kbd_present();
+        A.osk_layer = A.osk_shift = 0;
+        A.get_scroll = 0;
+        A.redraw |= R_ALL;
+        break;
+    case A_GET_ROW:
+        if (arg < 0 || arg >= g_ngrp) break;
+        A.get_group = arg;
+        A.overlay = OV_GET_INFO;
+        A.list_scroll = 0;
+        A.osk_on = 0;
+        A.focus = -1;
+        A.redraw |= R_ALL;
+        break;
+    case A_GET_START: {
+        if (arg < 0 || arg >= g_ncat) break;
+        const int id = get_dl_start(&g_cat[arg]);
+        if (id > 0) {
+            toast(tr(S_GET_STARTED), g_cat[arg].title);
+            A.dl_next = 0;
+        } else {
+            char why[96];
+            snprintf(why, sizeof why, "%s", id == NV_DL_E_EXISTS ? tr(S_GET_EXISTS) : "");
+            if (!why[0]) snprintf(why, sizeof why, "%d", id);
+            toast(tr(S_GET_NOT_STARTED), why);
+        }
+        A.redraw |= R_ALL;
+        break;
+    }
+    case A_DLS: A.overlay = OV_DLS; A.list_scroll = 0; A.osk_on = 0; A.dl_next = 0; A.dl_armed = 0; A.focus = -1; A.redraw |= R_ALL; break;
+    case A_DL_PAUSE: case A_DL_RESUME:
+        if (arg >= 0 && arg < g_ndl) nv_dl_pause(g_dl[arg].id, act == A_DL_PAUSE);
+        A.dl_next = 0;
+        A.redraw |= R_ALL;
+        break;
+    case A_DL_CANCEL:
+        if (arg < 0 || arg >= g_ndl) break;
+        if (g_dl[arg].state == DL_DONE || A.dl_armed == g_dl[arg].id) { nv_dl_cancel(g_dl[arg].id); A.dl_armed = 0; }
+        else A.dl_armed = g_dl[arg].id;
+        A.dl_next = 0;
+        A.redraw |= R_ALL;
+        break;
+    case A_DL_OPEN: {
+        if (arg < 0 || arg >= g_ndl) break;
+        const char *f = strrchr(g_dl[arg].dest, '/');
+        const int ci = f ? lib_find(f + 1) : -1;
+        if (ci >= 0) { A.overlay = OV_NONE; A.screen = SCR_LIBRARY; open_main(ci); }
+        break;
+    }
+    case A_DELETE:
+        if (A.del_armed == arg) delete_coll(arg);
+        else A.del_armed = arg;
+        A.redraw |= R_ALL;
+        break;
     case A_FIELD:
         if (arg == 1 || !kbd_present()) { A.osk_on = 1; A.redraw |= R_ALL; }
         break;
@@ -1498,6 +2071,16 @@ static void on_key(const kev_t *k) {
         }
     }
     if (A.overlay == OV_VIEWER) { go_back(); return; }   // any key closes the picture
+    if (A.screen == SCR_GET && A.overlay == OV_NONE && A.get_search) {   // typing into the catalog's search
+        switch (k->key) {
+        case K_ESC: go_back(); return;
+        case K_ENTER: A.osk_on = 0; A.redraw |= R_ALL; return;
+        case K_BACKSPACE: q_backspace(); return;
+        case K_SPACE: q_append(' '); return;
+        case K_CHAR: if (!ctrl && !alt) { A.osk_on = 0; q_append(k->ch); return; } break;
+        default: break;
+        }
+    }
     if (k->key == K_ESC || (alt && k->key == K_LEFT)) { go_back(); return; }
     if (alt && k->key == K_RIGHT) { go_forward(); return; }
     if (k->key == K_TAB) { focus_step(k->mods & M_SHIFT ? -1 : 1); return; }
@@ -1529,7 +2112,14 @@ static void on_key(const kev_t *k) {
         if (A.focus >= 0 || A.focus_link >= 0) activate_focus();
         return;
     }
-    if (A.overlay == OV_MENU || A.overlay == OV_INFO) {
+    if (A.overlay == OV_MENU || A.overlay == OV_INFO || A.overlay == OV_GET_INFO || A.overlay == OV_DLS || A.screen == SCR_GET) {
+        if (k->key == K_PGDN || k->key == K_PGUP) {
+            int32_t *s = A.screen == SCR_GET && A.overlay == OV_NONE ? &A.get_scroll : &A.list_scroll;
+            *s += k->key == K_PGDN ? g_h / 2 : -g_h / 2;
+            if (*s < 0) *s = 0;
+            A.redraw |= R_ALL;
+            return;
+        }
         if (k->key == K_DOWN || k->key == K_RIGHT) focus_step(1);
         if (k->key == K_UP || k->key == K_LEFT) focus_step(-1);
         return;
@@ -1583,7 +2173,9 @@ static void on_touch(int down, int x, int y) {
         A.vel = 0;
         A.nvel = 0;
         A.drag_scroll0 = A.screen == SCR_READER && A.overlay == OV_NONE ? A.scroll
-                         : A.overlay == OV_TOC || A.overlay == OV_MARKS ? A.list_scroll : A.lib_scroll;
+                         : A.overlay == OV_TOC || A.overlay == OV_MARKS || A.overlay == OV_GET_INFO || A.overlay == OV_DLS
+                             ? A.list_scroll
+                         : A.screen == SCR_GET ? A.get_scroll : A.lib_scroll;
         A.pressed = reg_at(x, y);
         if (A.pressed >= 0) A.redraw |= A.screen == SCR_READER && A.overlay == OV_NONE ? R_BAR : R_ALL;
         A.focus = -1;
@@ -1594,7 +2186,7 @@ static void on_touch(int down, int x, int y) {
         A.ty = y;
         if (!A.moved && (abs(y - A.ty0) > 12 || abs(x - A.tx0) > 12)) {
             A.moved = 1;
-            if (A.pressed >= 0 && !(A.overlay == OV_SEARCH && A.regs[A.pressed].act == A_OSK)) {
+            if (A.pressed >= 0 && !((A.overlay == OV_SEARCH || A.screen == SCR_GET) && A.regs[A.pressed].act == A_OSK)) {
                 A.pressed = -1;
                 A.redraw |= R_ALL;
             }
@@ -1602,8 +2194,12 @@ static void on_touch(int down, int x, int y) {
         if (A.moved && scrollable_y(A.ty0) && A.pressed < 0) {
             const int32_t s = A.drag_scroll0 - (y - A.ty0);
             if (A.screen == SCR_READER && A.overlay == OV_NONE) scroll_to(s);
-            else if (A.overlay == OV_TOC || A.overlay == OV_MARKS) {
+            else if (A.overlay == OV_TOC || A.overlay == OV_MARKS || A.overlay == OV_GET_INFO || A.overlay == OV_DLS) {
                 A.list_scroll = s < 0 ? 0 : s;
+                A.redraw |= R_ALL;
+            } else if (A.screen == SCR_GET && A.overlay == OV_NONE) {
+                const int32_t m = get_height() - (g_h - BAR_H);
+                A.get_scroll = s > m ? (m > 0 ? m : 0) : s < 0 ? 0 : s;
                 A.redraw |= R_ALL;
             } else if (A.screen == SCR_LIBRARY && A.overlay == OV_NONE) {
                 const int32_t m = lib_height() - (g_h - BAR_H);
@@ -1642,16 +2238,20 @@ static void on_touch(int down, int x, int y) {
             const int dt = A.vy_t[A.nvel - 1] - A.vy_t[0];
             if (dt > 0 && A.now - A.vy_t[A.nvel - 1] < 80) A.vel = -(float)(A.vy_y[A.nvel - 1] - A.vy_y[0]) / (float)dt;
         }
-        if (was >= 0 && A.overlay == OV_SEARCH && A.regs[was].act == A_OSK) do_action(A_OSK, A.regs[was].arg);
+        if (was >= 0 && (A.overlay == OV_SEARCH || A.screen == SCR_GET) && A.regs[was].act == A_OSK) do_action(A_OSK, A.regs[was].arg);
         A.redraw |= R_ALL;
         return;
     }
     if (was >= 0) {
         const reg_t r = A.regs[was];
         A.redraw |= R_ALL;
+        if (r.act != A_DL_CANCEL) A.dl_armed = 0;   // a second tap on cancel must be the very next one
+        if (r.act != A_DELETE) A.del_armed = -1;
         do_action(r.act, r.arg);
         return;
     }
+    A.dl_armed = 0;
+    A.del_armed = -1;
     if (A.overlay == OV_TOC || A.overlay == OV_MENU || A.overlay == OV_VIEWER) {   // a tap outside closes it
         go_back();
         return;
@@ -1834,8 +2434,11 @@ void run(void) {
     memset(&A, 0, sizeof A);
     A.coll = -1;
     A.focus = A.focus_link = A.pressed = -1;
+    A.del_armed = -1;
+    A.get_group = -1;
     if (gfx_init() < 0 || font_init() < 0) return;
     i18n_init();
+    snprintf(A.get_lang, sizeof A.get_lang, "%s", i18n_lang3());
     settings_load();
     theme_set(g_set.dark);
     A.sugg = (nvzim_entry_t *)calloc(SUGG_MAX, sizeof(nvzim_entry_t));
@@ -1863,6 +2466,8 @@ void run(void) {
         if (down || A.touch_down) on_touch(down, x, y);
         bench_step();
         save_position_when_still();
+        if (A.screen == SCR_GET && get_poll()) A.redraw |= R_ALL;   // the catalog and its thumbnails
+        dl_poll();
         if (A.vel != 0 && !A.touch_down) {   // fling
             const int32_t before = A.scroll;
             scroll_to(A.scroll + (int32_t)(A.vel * (float)dt));

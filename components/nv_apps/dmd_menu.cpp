@@ -3149,6 +3149,8 @@ void handle(uint8_t type, uint8_t *data, uint32_t len) {
             i.mode = jint(o, "mode");
             i.s2 = jint(o, "s2");
             i.s2dmd = cJSON_IsTrue(cJSON_GetObjectItem(o, "s2dmd"));
+            i.fp = cJSON_IsTrue(cJSON_GetObjectItem(o, "fp"));
+            i.fpfull = jint(o, "fpfull");
             dmd_comp_on_info(&i);
         } else if (o && !strcmp(jstr(o, "q"), "dual")) {
             dmd_comp_on_dual(jint(o, "id"), jint(o, "mode"), cJSON_IsTrue(cJSON_GetObjectItem(o, "ok")), jstr(o, "err"));

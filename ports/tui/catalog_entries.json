@@ -1,0 +1,46 @@
+{
+  "sc-im": {
+    "category": "productivity",
+    "featured": false,
+    "rating": 4.6,
+    "regions": [
+      "*"
+    ],
+    "names": {
+      "en": "sc-im (Sheets engine)",
+      "it": "sc-im (motore di Fogli)",
+      "es": "sc-im (motor de Hojas)",
+      "fr": "sc-im (moteur de Feuilles)",
+      "de": "sc-im (Tabellen-Engine)"
+    },
+    "descriptions": {
+      "en": "The calculation engine of Sheets, the spreadsheet app: formulas, undo, Excel .xlsx/.xls, LibreOffice .ods, .csv and .tsv files. Installed with the system and kept up to date. It is also a full-screen keyboard spreadsheet in the Terminal (sc-im FILE: = to type a value or formula, :w to save, :q to quit, :h for the manual).",
+      "it": "Il motore di calcolo di Fogli, l'app per i fogli di calcolo: formule, annulla, file Excel .xlsx/.xls, LibreOffice .ods, .csv e .tsv. Si installa con il sistema e si aggiorna da solo. È anche un foglio di calcolo da tastiera a schermo intero nel Terminale (sc-im FILE: = per scrivere un valore o una formula, :w salva, :q esce, :h il manuale).",
+      "es": "El motor de cálculo de Hojas, la app de hojas de cálculo: fórmulas, deshacer, archivos de Excel .xlsx/.xls, LibreOffice .ods, .csv y .tsv. Se instala con el sistema y se actualiza solo. También es una hoja de cálculo de teclado a pantalla completa en la Terminal (sc-im ARCHIVO: = para escribir un valor o fórmula, :w guarda, :q sale, :h el manual).",
+      "fr": "Le moteur de calcul de Feuilles, l'app de tableur : formules, annulation, fichiers Excel .xlsx/.xls, LibreOffice .ods, .csv et .tsv. Installé avec le système et mis à jour tout seul. C'est aussi un tableur au clavier plein écran dans le Terminal (sc-im FICHIER : = pour saisir une valeur ou une formule, :w enregistre, :q quitte, :h le manuel).",
+      "de": "Die Rechen-Engine von Tabellen, der Tabellenkalkulations-App: Formeln, Rückgängig, Excel-.xlsx/.xls-, LibreOffice-.ods-, .csv- und .tsv-Dateien. Wird mit dem System installiert und aktualisiert sich selbst. Im Terminal auch eine Vollbild-Tabellenkalkulation für die Tastatur (sc-im DATEI: = für einen Wert oder eine Formel, :w speichert, :q beendet, :h das Handbuch)."
+    }
+  },
+  "wordgrinder": {
+    "category": "productivity",
+    "featured": true,
+    "rating": 4.6,
+    "regions": [
+      "*"
+    ],
+    "names": {
+      "en": "WordGrinder",
+      "it": "WordGrinder",
+      "es": "WordGrinder",
+      "fr": "WordGrinder",
+      "de": "WordGrinder"
+    },
+    "descriptions": {
+      "en": "WordGrinder is a word processor for writing: headings, lists, bold, italic and underline, word count, several documents in one file, undo, autosave. It opens and exports OpenDocument .odt, Markdown, HTML and plain text, and exports LaTeX, troff and Org too. ESC opens the menu, Ctrl+S saves.",
+      "it": "WordGrinder è un programma di videoscrittura per scrivere: titoli, elenchi, grassetto, corsivo e sottolineato, conteggio parole, più documenti in un file, annulla, salvataggio automatico. Apre ed esporta OpenDocument .odt, Markdown, HTML e testo, ed esporta anche LaTeX, troff e Org. ESC apre il menu, Ctrl+S salva.",
+      "es": "WordGrinder es un procesador de textos para escribir: títulos, listas, negrita, cursiva y subrayado, recuento de palabras, varios documentos en un archivo, deshacer, guardado automático. Abre y exporta OpenDocument .odt, Markdown, HTML y texto, y también exporta LaTeX, troff y Org. ESC abre el menú, Ctrl+S guarda.",
+      "fr": "WordGrinder est un traitement de texte pour écrire : titres, listes, gras, italique et souligné, comptage des mots, plusieurs documents dans un fichier, annulation, sauvegarde automatique. Il ouvre et exporte OpenDocument .odt, Markdown, HTML et texte brut, et exporte aussi LaTeX, troff et Org. ESC ouvre le menu, Ctrl+S enregistre.",
+      "de": "WordGrinder ist ein Textverarbeitungsprogramm zum Schreiben: Überschriften, Listen, fett, kursiv und unterstrichen, Wortzählung, mehrere Dokumente in einer Datei, Rückgängig, automatisches Speichern. Es öffnet und exportiert OpenDocument .odt, Markdown, HTML und Text und exportiert auch LaTeX, troff und Org. ESC öffnet das Menü, Strg+S speichert."
+    }
+  }
+}

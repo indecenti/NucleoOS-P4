@@ -12,7 +12,7 @@ O="$Z/_out/bib_shots"
 X="$S/xz-embedded-20240322"
 W="$S/libwebp-1.6.0"
 BIN=/tmp/bib_native
-srcs=("$B"/app.c "$B"/doc.c "$B"/gfx.c "$B"/font.c "$B"/img.c "$B"/kbd.c "$B"/lib.c "$B"/i18n.c "$G"/fontdata.c "$T"/native_host.c
+srcs=("$B"/app.c "$B"/cat.c "$B"/get.c "$B"/doc.c "$B"/gfx.c "$B"/font.c "$B"/img.c "$B"/kbd.c "$B"/lib.c "$B"/i18n.c "$G"/fontdata.c "$T"/native_host.c
       "$W"/src/dec/*.c "$W"/src/dsp/{alpha_processing,cpu,dec,filters,rescaler,upsampling,yuv}*.c "$W"/src/dsp/lossless.c
       "$W"/src/dsp/lossless_{avx2,mips_dsp_r2,msa,neon,sse2,sse41}.c
       "$W"/src/utils/{bit_reader_utils,color_cache_utils,filters_utils,huffman_utils,palette,quant_levels_dec_utils}.c
@@ -44,6 +44,9 @@ if [ ! -x "$CAP" ] || [ "$(stat -c %Y "$CAP")" -lt "$newest" ]; then
         -I"$S"/zstd-1.5.7/lib/common -I"$X"/linux/include/linux -I"$X"/userspace \
         -Wl,--wrap=malloc,--wrap=calloc,--wrap=realloc,--wrap=free -o "$CAP" "${srcs[@]}" -lm || { echo "BUILD FAILED (cap)"; exit 1; }
 fi
+# the catalog parser on its own, over eight real entries of the Kiwix catalog
+gcc -std=gnu11 -O1 -g -fsanitize=address,undefined -fno-omit-frame-pointer -Wall -Wextra -I"$B" -I"$Z"/nvzim     -o /tmp/bib_cat_test "$T"/cat_test.c "$B"/cat.c || { echo "BUILD FAILED (cat_test)"; exit 1; }
+UBSAN_OPTIONS=halt_on_error=1:print_stacktrace=1 /tmp/bib_cat_test "$T/opds_ita.xml" || exit 1
 ROOT=/tmp/bibroot
 rm -rf "$ROOT"
 mkdir -p "$ROOT/zim" "$ROOT/appdata"
@@ -55,9 +58,11 @@ for n in "${names[@]}"; do
     mkdir -p "$O/$n"
     rm -f "$O/$n"/*.ppm "$O/$n"/*.png
     rm -rf "$ROOT/appdata" && mkdir -p "$ROOT/appdata"   # every script starts from a fresh install
+    rm -rf "$ROOT/zim" && mkdir -p "$ROOT/zim"             # ...and the fixtures alone (a script deletes, another downloads)
+    for f in "$FIXTURES"/*.zim; do ln -s "$f" "$ROOT/zim/$(basename "$f")"; done
     [ -f "$T/$n.empty" ] && rm -f "$ROOT/zim"/*   # a library with nothing in it
     echo "== $n"
-    if ! BIB_ROOT="$ROOT" ASAN_OPTIONS=detect_leaks=1 UBSAN_OPTIONS=halt_on_error=1:print_stacktrace=1 \
+    if ! BIB_ROOT="$ROOT" BIB_TESTDATA="$T" BIB_DL_FIXTURE="$(ls "$FIXTURES"/*.zim | head -1)" ASAN_OPTIONS=detect_leaks=1 UBSAN_OPTIONS=halt_on_error=1:print_stacktrace=1 \
         "$BIN" "$T/$n.script" "$O/$n" >"$O/$n/log.txt" 2>&1; then
         echo "FAIL $n"; tail -30 "$O/$n/log.txt"; fail=1
     else
@@ -65,7 +70,7 @@ for n in "${names[@]}"; do
     fi
     rm -rf "$ROOT/appdata" && mkdir -p "$ROOT/appdata"   # again, within the device's memory budget
     mkdir -p "$O/$n/cap"
-    BIB_ROOT="$ROOT" "$CAP" "$T/$n.script" "$O/$n/cap" >"$O/$n/cap/log.txt" 2>&1
+    BIB_ROOT="$ROOT" BIB_TESTDATA="$T" BIB_DL_FIXTURE="$(ls "$FIXTURES"/*.zim | head -1)" "$CAP" "$T/$n.script" "$O/$n/cap" >"$O/$n/cap/log.txt" 2>&1
     grep -E "^memory:" "$O/$n/cap/log.txt" || { echo "FAIL $n (memory budget run)"; tail -5 "$O/$n/cap/log.txt"; fail=1; }
     rm -rf "$O/$n/cap"/*.ppm
     if grep -qE "ERROR: AddressSanitizer|runtime error|LeakSanitizer" "$O/$n/log.txt"; then

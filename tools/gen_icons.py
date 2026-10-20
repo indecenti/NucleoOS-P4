@@ -32,6 +32,7 @@ ICONS = [
     ('calculator', 'calc'),
     ('todo_list', 'tasks'),
     ('document', 'notes'),   # Notes app (was reusing the todo/tasks icon)
+    ('data_sheet', 'sheets'),   # Fogli (spreadsheet)
     ('shop', 'apps'),        # Apps store (WASM app manager) — colorful storefront
     ('puzzle', 'wasm'),      # installed WASM app tiles
     ('multiple_devices', 'screen'),   # Second Screen (USB extended display) — laptop + 2nd device

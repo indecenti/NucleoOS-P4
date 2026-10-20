@@ -926,7 +926,7 @@ void sysmon_build(lv_obj_t *content) {
 }
 
 const NvApp kSysmonApp = {"sysmon", "System Monitor", &nv_icon_sysmon, 768u << 10, sysmon_build,
-                          NV_STR_APP_SYSMON, nullptr, 0u, sysmon_close};
+                          NV_STR_APP_SYSMON, nullptr, 0u, nullptr, sysmon_close};
 
 }  // namespace
 
