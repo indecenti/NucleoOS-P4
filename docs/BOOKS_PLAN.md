@@ -31,9 +31,12 @@ vecchio non lo vede e non si rompe), gli EPUB nelle Release dello stesso repo. N
 
 - **EPUB**: asset delle Release `books-<lang>-<n>` (max 1000 asset per release, < 2 GiB per file, nessun limite
   totale né di banda secondo la documentazione GitHub). Mai in git, mai su Pages.
-- **Indici**: Pages `books/` (pochi MB anche con decine di migliaia di titoli). Pages oggi pesa ~790 MB su 1 GB:
-  niente copertine su Pages; nel catalogo l'app disegna copertine tipografiche (titolo/autore su colore
-  generato), la copertina vera si estrae dall'EPUB dopo il download.
+- **Indici**: Pages `books/` (pochi MB anche con decine di migliaia di titoli).
+- **Copertine**: Pages `books/covers/<id>.jpg`, miniature 132x192 JPEG (~5 KB), solo per i libri con una
+  copertina vera (Standard Ebooks, scansioni/illustrazioni originali; non le copertine di testo generate da
+  Gutenberg). Pages oggi pesa ~790 MB su 1 GB: copertine + indici entro ~120 MB, priorità ai libri più letti.
+  Senza copertina l'app disegna una copertina tipografica (titolo/autore su colore generato); dopo il
+  download usa quella dell'EPUB.
 - **Sulla scheda**: `/home/books/` (visibile in File, `.epub` apribili anche da lì), stato dell'app in `/appdata`.
 
 ### D3. Cosa entra (diritti)
@@ -102,6 +105,7 @@ Base: `https://indecenti.github.io/nucleoos-p4-store/books/`
 - `s` + `h` obbligatori: l'app scarica con `nv_dl_start({"url","size","sha256","dest":"/books/<id>.epub"})`,
   il downloader di sistema verifica, riprende, sopravvive ai riavvii; `u2` = mirror se GitHub non risponde.
 - `lic`: `pd`, `cc0`, `cc-by`, `cc-by-sa`, `gfdl`, `mit`, ...; `src` + `lic` mostrati nella scheda del libro.
+- `cv`: 1 quando esiste `books/covers/<id>.jpg` (132x192).
 - Ogni campo nuovo è opzionale; `format` sale solo se cambia qualcosa di incompatibile.
 
 ## 3. L'app Libri

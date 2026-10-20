@@ -1,0 +1,18 @@
+# The library with every fixture: covers read while idle, sorting, a book's sheet (long press)
+wait 120
+shot 01_library
+drag 500 500 500 200 12
+wait 40
+shot 02_scrolled
+tap 790 32
+wait 3
+shot 03_sort
+tap 700 116
+wait 30
+shot 04_by_title
+hold 94 300 50
+wait 4
+shot 05_book_sheet
+back
+wait 3
+shot 06_back
