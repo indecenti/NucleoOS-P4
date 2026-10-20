@@ -81,18 +81,78 @@ def board_picture(cells, values, ndig, w=256, h=64):
     return img
 
 
-class Overlay:
-    """Small topmost windows over the score windows of the backglass picture, on the backglass monitor; their
-    own Tk thread (Tk must stay in one thread), fed through a queue; a window is redrawn only when its value
-    changes."""
 
-    def __init__(self, boxes, styles, ndig):
-        self.boxes, self.styles, self.ndig = boxes, styles, ndig
+
+def _hex(c):
+    return "#%02x%02x%02x" % tuple(int(v) for v in c[:3])
+
+
+KEY = "#ff00fe"   # the overlay's see-through colour: the backglass picture shows between our drums
+
+
+def _no_focus(top):
+    """A window of ours never takes the keyboard from the game (FP reads its keys from the foreground window):
+    no activation, no taskbar button. Windows only."""
+    if os.name != "nt":
+        return
+    import ctypes
+    u = ctypes.windll.user32
+    u.GetParent.restype = ctypes.c_void_p
+    u.GetWindowLongW.restype = ctypes.c_long
+    hwnd = u.GetParent(ctypes.c_void_p(top.winfo_id())) or top.winfo_id()   # Tk's frame around its window
+    GWL_EXSTYLE, WS_EX_NOACTIVATE, WS_EX_TOOLWINDOW = -20, 0x08000000, 0x00000080
+    style = u.GetWindowLongW(ctypes.c_void_p(hwnd), GWL_EXSTYLE)
+    u.SetWindowLongW(ctypes.c_void_p(hwnd), GWL_EXSTYLE, style | WS_EX_NOACTIVATE | WS_EX_TOOLWINDOW)
+    return hwnd
+
+
+def _foreground():
+    if os.name != "nt":
+        return None
+    import ctypes
+    ctypes.windll.user32.GetForegroundWindow.restype = ctypes.c_void_p
+    return ctypes.windll.user32.GetForegroundWindow()
+
+
+def _give_back(fg):
+    """The keyboard back to the window that had it (the game) if showing ours took it."""
+    if os.name != "nt" or not fg:
+        return
+    import ctypes
+    if _foreground() != fg:
+        ctypes.windll.user32.SetForegroundWindow(ctypes.c_void_p(fg))
+
+
+def _on_top(hwnd):
+    """Back above every other window, without activating it (Popper's windows may come over ours)."""
+    if os.name != "nt" or not hwnd:
+        return
+    import ctypes
+    HWND_TOPMOST, SWP_NOSIZE, SWP_NOMOVE, SWP_NOACTIVATE = -1, 0x1, 0x2, 0x10
+    ctypes.windll.user32.SetWindowPos(ctypes.c_void_p(hwnd), ctypes.c_void_p(HWND_TOPMOST), 0, 0, 0, 0,
+                                      SWP_NOSIZE | SWP_NOMOVE | SWP_NOACTIVATE)
+
+
+class Overlay:
+    """Our windows on the backglass monitor, in their own Tk thread (Tk must stay in one thread), fed through a
+    queue: the backglass picture on the whole monitor when it is ours to show (background: (PIL image, (x, y, w,
+    h) on the desktop)), and topmost windows over its score windows, each redrawn only when its value changes.
+    None of them ever takes the keyboard from the game.
+    displays (set_displays): [{"box": (x, y, w, h) on the desktop, "style": "reel" | "lit", "digits": n,
+                "cells": [(x, y, w, h) inside the box, one per digit] or None (n even cells),
+                "face", "ink", "edge": colours of the reels}]"""
+
+    def __init__(self, background=None):
+        self.background = background
+        self.displays = []
         self.q = queue.Queue()
         self.ready = threading.Event()
         self.t = threading.Thread(target=self._run, daemon=True)
         self.t.start()
         self.ready.wait(5)
+
+    def set_displays(self, displays):
+        self.q.put(("displays", list(displays)))
 
     def show(self, values):
         self.q.put(("show", list(values)))
@@ -105,38 +165,70 @@ class Overlay:
         import tkinter as tk
         root = tk.Tk()
         root.withdraw()
-        wins, shown = [], []
-        for (x, y, w, h), style in zip(self.boxes, self.styles):
-            top = tk.Toplevel(root)
-            top.overrideredirect(True)
-            top.attributes("-topmost", True)
-            top.geometry("%dx%d+%d+%d" % (w, h, x, y))
-            c = tk.Canvas(top, width=w, height=h, highlightthickness=0, bd=0,
-                          bg="#%02x%02x%02x" % (REEL_BG if style == "reel" else (0, 0, 0)))
-            c.pack()
-            wins.append((top, c, w, h, style))
-            shown.append(None)
+        wins, shown, hwnds = [], [], []
+        photo = None
+        fg = _foreground()
+        if self.background:   # the backglass on the whole monitor, under the score windows
+            import base64
+            import io
+            img, (x, y, w, h) = self.background
+            buf = io.BytesIO()
+            img.convert("RGB").resize((w, h)).save(buf, "PNG", compress_level=1)
+            bg = tk.Toplevel(root)
+            bg.overrideredirect(True)
+            bg.attributes("-topmost", True)
+            bg.geometry("%dx%d+%d+%d" % (w, h, x, y))
+            photo = tk.PhotoImage(master=bg, data=base64.b64encode(buf.getvalue()))
+            tk.Label(bg, image=photo, bd=0, highlightthickness=0).pack()
+            bg.update_idletasks()
+            hwnds.append(_no_focus(bg))
+            bg.update()
+            _give_back(fg)
         self.ready.set()
 
+        def make(displays):
+            fg = _foreground()
+            for d in displays:
+                x, y, w, h = d["box"]
+                top = tk.Toplevel(root)
+                top.overrideredirect(True)
+                top.attributes("-topmost", True)
+                if d.get("cells"):   # our drums only, the picture around them
+                    top.attributes("-transparentcolor", KEY)
+                top.geometry("%dx%d+%d+%d" % (w, h, x, y))
+                c = tk.Canvas(top, width=w, height=h, highlightthickness=0, bd=0,
+                              bg=KEY if d.get("cells") else ("#000000" if d["style"] == "lit" else _hex(REEL_BG)))
+                c.pack()
+                top.update_idletasks()
+                hwnds.append(_no_focus(top))
+                wins.append((top, c))
+                shown.append(None)
+                self.displays.append(d)
+            root.update()
+            _give_back(fg)
+
         def draw(i, v):
-            top, c, w, h, style = wins[i]
+            d = self.displays[i]
+            c = wins[i][1]
+            w, h = d["box"][2], d["box"][3]
             c.delete("all")
-            text = digits_of(v, self.ndig[i])
+            text = digits_of(v, d["digits"])
             n = len(text)
-            if style == "reel":   # score reels: black digits on cream drums
-                cw = w / n
-                for k, ch in enumerate(text):
-                    c.create_rectangle(k * cw + 1, 1, (k + 1) * cw - 1, h - 1, fill="#e8dec4", outline="#8a826c")
-                    c.create_text((k + 0.5) * cw, h / 2, text=ch if ch != " " else "0", fill="#141414",
-                                  font=("Arial Black", -int(h * 0.62)))
-            else:   # lit display: amber 7-segment digits
-                cw = w / n
-                for k, ch in enumerate(text):
-                    polys = _seg_polys(k * cw + cw * 0.12, h * 0.12, cw * 0.76, h * 0.76)
-                    lit = _SEGS.get(ch, "")
+            cells = d.get("cells") or [(k * w / n, 0, w / n, h) for k in range(n)]
+            for (cx, cy, cw, ch), digit in zip(cells, text):
+                if d["style"] == "reel":   # a drum: its face, its edge, the digit (a reel shows 0, never blank)
+                    c.create_rectangle(cx, cy, cx + cw - 1, cy + ch - 1, fill=_hex(d.get("face", REEL_BG)),
+                                       outline=_hex(d.get("edge", (138, 130, 108))), width=max(1, int(cw * 0.05)))
+                    c.create_text(cx + cw / 2, cy + ch / 2, text=digit if digit != " " else "0",
+                                  fill=_hex(d.get("ink", REEL_FG)), font=("Arial Black", -int(ch * 0.78)))
+                else:   # a lit display: amber 7-segment digits
+                    polys = _seg_polys(cx + cw * 0.12, cy + ch * 0.12, cw * 0.76, ch * 0.76)
+                    lit = _SEGS.get(digit, "")
                     for s, poly in polys.items():
-                        col = SEG_ON if s in lit else SEG_OFF
-                        c.create_polygon([p for xy in poly for p in xy], fill="#%02x%02x%02x" % col, outline="")
+                        c.create_polygon([q for xy in poly for q in xy], fill=_hex(SEG_ON if s in lit else SEG_OFF),
+                                         outline="")
+
+        beat = [0]
 
         def tick():
             try:
@@ -145,14 +237,19 @@ class Overlay:
                     if what == "close":
                         root.destroy()
                         return
+                    if what == "displays":
+                        make(arg)
+                        continue
                     for i, v in enumerate(arg[:len(wins)]):
                         if v != shown[i]:
                             draw(i, v)
                             shown[i] = v
-                    for top, *_ in wins:   # Popper's windows may come over ours: back on top, cheaply
-                        top.lift()
             except queue.Empty:
                 pass
+            beat[0] += 1
+            if beat[0] % 10 == 1:   # once a second: ours above Popper's (the background first, the digits over it)
+                for h in hwnds:
+                    _on_top(h)
             root.after(100, tick)
 
         root.after(50, tick)
@@ -160,7 +257,7 @@ class Overlay:
             root.mainloop()
         finally:   # every Tk object let go here, in Tk's own thread: freed by another thread, Tcl aborts the process
             wins.clear()
-            del draw, tick, top, c, root
+            del draw, tick, make, root, photo
             import gc
             gc.collect()
 
@@ -173,62 +270,168 @@ def box_style(img, box):
     return "reel" if ImageStat.Stat(crop).mean[0] > 110 else "lit"
 
 
-def live(link, table, alive, log, find_displays, score_layout, ScreenCopy, rgb565, fp_pid):
-    """The whole loop for one game (bridge thread). fp_pid(): FP's process id once it runs, or None."""
+def reel_colours(img, reels):
+    """The colours of a backglass picture's painted drums: face (light), ink (the digit), edge, so that ours look
+    like them."""
+    px = []
+    for x, y, w, h in reels:
+        px += list(img.crop((x, y, x + w, y + h)).convert("RGB").resize((max(1, w // 3), max(1, h // 3))).getdata())
+    px.sort(key=sum)
+    n = len(px)
+    face, ink, edge = px[int(n * 0.85)], px[int(n * 0.04)], px[int(n * 0.25)]
+
+    def lum(c):
+        return 0.3 * c[0] + 0.59 * c[1] + 0.11 * c[2]
+    if lum(face) < 110:   # empty windows painted dark: the drums of a real machine, cream with black digits
+        face, ink, edge = REEL_BG, REEL_FG, (90, 84, 70)
+    elif lum(face) - lum(ink) < 90:   # too little contrast for a digit read from the cabinet: black on the face
+        ink = REEL_FG
+    return {"face": face, "ink": ink, "edge": edge}
+
+
+PIC_W, PIC_H = 1280, 750   # the space of fp_scores.json: the backglass picture stretched to 1280x750
+
+
+def known_displays():
+    """fp_scores.json next to this file: the score windows measured on the tables' backglass pictures, in PIC_W x
+    PIC_H space (the picture stretched to it, whatever its own size), so they follow the picture wherever Popper
+    shows it (top of the monitor above its DMD, or the whole monitor):
+    {"<table file name>": {"reels": [[x, y, w, h], ...]} (one per drum, player 1) or
+     {"box": [x, y, w, h], "style": "lit", "digits": n}}"""
+    import json
     try:
-        import fp_scores   # the reader of FP's memory (next to the bridge)
-    except ImportError:
-        log("FP scores: no fp_scores module next to the bridge")
-        return
-    name = os.path.basename(table)
-    pid = None
-    for _ in range(60):   # FP takes a while to start and load
-        if not alive():
-            return
-        pid = fp_pid()
-        if pid:
-            break
-        time.sleep(2)
-    if not pid:
-        log("FP scores of %s: FP not found" % name)
-        return
-    elems = []
-    for _ in range(12):   # its score objects exist once the table has loaded
-        if not alive():
-            return
-        try:
-            elems = fp_scores.find(pid)
-        except Exception as e:   # noqa: BLE001
-            log("FP scores of %s: %s" % (name, e))
-        if elems:
-            break
-        time.sleep(5)
-    if not elems:
-        log("FP scores of %s: no score objects in FP's memory" % name)
-        return
-    # the score windows of the backglass picture Popper shows on the second monitor
-    screen = list(link.s2) if getattr(link, "s2", None) else [1366, 0, 1280, 1024]
-    sc = ScreenCopy()
-    try:
-        pic = sc.picture(*screen)
-    finally:
-        sc.close()
+        with open(os.path.join(os.path.dirname(os.path.abspath(__file__)), "fp_scores.json"), encoding="utf-8") as f:
+            return {k: v for k, v in json.load(f).items() if not k.startswith("_")}
+    except (OSError, ValueError):
+        return {}
+
+
+def placement(pic, art, rects):
+    """Where on the monitor the backglass picture is shown: the one of rects (x, y, w, h, on the monitor) whose
+    content looks most like art (the picture, stretched), or None when none does (Popper showing something else).
+    Compared small and grey: a fraction of a second, once."""
+    from PIL import ImageChops, ImageStat
+    best, bd = None, None
+    for r in rects:
+        x, y, w, h = r
+        if w < 50 or h < 50 or x < 0 or y < 0 or x + w > pic.width or y + h > pic.height:
+            continue
+        a = art.convert("L").resize((64, 48))
+        b = pic.crop((x, y, x + w, y + h)).convert("L").resize((64, 48))
+        d = ImageStat.Stat(ImageChops.difference(a, b)).mean[0]
+        if bd is None or d < bd:
+            best, bd = r, d
+    return (best, bd) if best is not None and bd < 20 else (None, bd)
+
+
+def displays_for(name, pic, screen, find_displays, count, rect=None):
+    """The windows where the scores go: measured ones (fp_scores.json, mapped into rect: where the picture is on
+    the monitor) or found on the backglass picture."""
+    known = known_displays().get(name) if rect else None
+    if known:
+        rx, ry, rw, rh = rect
+        sx, sy = rw / PIC_W, rh / PIC_H
+
+        def m(b):   # picture space -> the monitor
+            return (int(round(rx + b[0] * sx)), int(round(ry + b[1] * sy)),
+                    max(1, int(round(b[2] * sx))), max(1, int(round(b[3] * sy))))
+    if known and known.get("reels"):
+        reels = [m(r) for r in known["reels"]]
+        x0, y0 = min(r[0] for r in reels), min(r[1] for r in reels)
+        x1, y1 = max(r[0] + r[2] for r in reels), max(r[1] + r[3] for r in reels)
+        d = {"box": (screen[0] + x0, screen[1] + y0, x1 - x0, y1 - y0), "src": (x0, y0, x1 - x0, y1 - y0),
+             "style": "reel", "digits": len(reels), "cells": [(x - x0, y - y0, w, h) for x, y, w, h in reels]}
+        d.update(reel_colours(pic, reels))
+        return [d]
+    if known and known.get("box"):
+        x, y, w, h = m(known["box"])
+        return [{"box": (screen[0] + x, screen[1] + y, w, h), "src": (x, y, w, h), "style": known.get("style", "lit"),
+                 "digits": int(known.get("digits", 6))}]
+    if known:   # measured: no score window in the picture (lamps only): the board alone
+        return []
     boxes = find_displays(pic)
-    big = [b for b in boxes if b[2] >= 2.8 * b[3]]
+    # players first (top to bottom, left to right: player 1 first), then credits / ball / match. FP's HUD has
+    # usually one display, the score of the player in turn: it goes in player 1's window
+    big = sorted((b for b in boxes if b[2] >= 2.8 * b[3]), key=lambda b: (b[1] // 40, b[0]))
     small = [b for b in boxes if b[2] < 2.8 * b[3]]
-    ordered = big + small                       # players first, then credits / ball / match
-    n = min(len(ordered), len(elems))
-    ndig = [max(1, min(8, e.get("digits") or 6)) for e in elems[:n]]
-    log("FP scores of %s: %d score objects, %d windows on the backglass, %d used" % (name, len(elems), len(ordered), n))
-    overlay = None
-    if n:
-        boxes_abs = [(screen[0] + x, screen[1] + y, w, h) for x, y, w, h in ordered[:n]]
-        overlay = Overlay(boxes_abs, [box_style(pic, b) for b in ordered[:n]], ndig)
-    cells = score_layout(ordered[:n] if n else [(0, 0, 100, 20)] * min(len(elems), 4))
-    bndig = ndig if n else [max(1, min(8, e.get("digits") or 6)) for e in elems[:len(cells)]]
-    head = b'{"w":256,"h":64,"fmt":"rgb565z"}'
-    last, sent = None, 0
+    return [{"box": (screen[0] + x, screen[1] + y, w, h), "src": (x, y, w, h), "style": box_style(pic, (x, y, w, h)),
+             "digits": 6} for x, y, w, h in (big + small)[:count]]
+
+
+def live(link, table, alive, log, find_displays, score_layout, ScreenCopy, rgb565, fp_pid, art=None, rects=(),
+         full=False):
+    """The whole loop for one game (bridge thread). fp_pid(): FP's process id once it runs, or None. art: the
+    table's backglass picture (Popper's), rects: where Popper may show it on the monitor (x, y, w, h); full: the
+    backglass is ours to show, on the whole monitor (chosen on the board), from the start of the game."""
+    name = os.path.basename(table)
+    screen = list(link.s2) if getattr(link, "s2", None) else [1366, 0, 1280, 1024]
+    full = bool(full and art is not None)
+    overlay = Overlay((art, tuple(screen))) if full else None
+    if full:
+        log("FP scores of %s: the backglass on the whole monitor" % name)
+    sent = 0
     try:
+        try:
+            import fp_scores   # the reader of FP's memory (next to the bridge)
+        except ImportError:
+            log("FP scores: no fp_scores module next to the bridge")
+            fp_scores = None
+        pid = None
+        for _ in range(60):   # FP takes a while to start and load
+            if not alive() or not fp_scores:
+                break
+            pid = fp_pid()
+            if pid:
+                break
+            time.sleep(2)
+        elems = []
+        for _ in range(12 if pid else 0):   # its score objects exist once the table has loaded
+            if not alive():
+                break
+            try:
+                elems = fp_scores.find(pid)
+            except Exception as e:   # noqa: BLE001
+                log("FP scores of %s: %s" % (name, e))
+            if elems:
+                break
+            time.sleep(5)
+        if not elems:
+            if alive():
+                log("FP scores of %s: %s" % (name, "no score objects in FP's memory" if pid else "FP not found"))
+            while alive() and full:   # the backglass stays ours to the end of the game
+                time.sleep(1)
+            return
+        if full:   # our own picture: the windows are where we put it
+            pic = art.convert("RGB").resize((screen[2], screen[3]))
+            rect, diff = (0, 0, screen[2], screen[3]), 0
+        else:   # the backglass picture Popper shows on the second monitor
+            sc = ScreenCopy()
+            try:
+                pic = sc.picture(*screen)
+            finally:
+                sc.close()
+            rect, diff = (placement(pic, art, rects) if art is not None else (None, None))
+            if rect is None and art is None and rects:
+                rect = rects[0]   # no picture to compare with: where Popper's settings put it
+        if name in known_displays() and rect is None:
+            log("FP scores of %s: the backglass picture is not on the monitor (difference %s): the board only" % (name, diff))
+            disp = []
+        else:
+            disp = displays_for(name, pic, screen, find_displays, len(elems), rect)
+        n = min(len(disp), len(elems))
+        log("FP scores of %s: %d score objects, %d windows on the backglass (%s, picture at %s)" %
+            (name, len(elems), n, "measured" if name in known_displays() else "found", rect))
+        if n:
+            if overlay is None:
+                overlay = Overlay()
+            overlay.set_displays(disp[:n])
+            cells = score_layout([d["src"] for d in disp[:n]])
+            bndig = [d["digits"] for d in disp[:n]]
+        else:   # nothing on the backglass: the board alone
+            cells = score_layout([(0, 0, 100, 20)] * min(len(elems), 4))
+            bndig = [6] * len(cells)
+        head = b'{"w":256,"h":64,"fmt":"rgb565z"}'
+        last = None
         while alive():
             try:
                 vals = fp_scores.read(pid, elems)
@@ -236,9 +439,10 @@ def live(link, table, alive, log, find_displays, score_layout, ScreenCopy, rgb56
                 break
             if vals != last:
                 last = vals
-                if overlay:
-                    overlay.show(vals[:n])
-                img = board_picture(cells, vals[:len(cells)], bndig)
+                shown = vals[:n] if n != 1 else [max(vals)]   # one window, several objects: the score is the largest
+                if overlay and n:
+                    overlay.show(shown)
+                img = board_picture(cells, shown if n else vals[:len(cells)], bndig)
                 px = zlib.compress(rgb565(img, 256, 64, (0, 0, 0)), 1)
                 if link.send("D", struct.pack("<H", len(head)) + head + px):
                     sent += 1

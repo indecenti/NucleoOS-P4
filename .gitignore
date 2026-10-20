@@ -4,6 +4,7 @@
 sdkconfig
 sdkconfig.old
 sdkconfig.ci
+sdkconfig.stale
 size.json
 flasher_args.json
 
