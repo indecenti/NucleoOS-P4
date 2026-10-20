@@ -23,13 +23,22 @@ BCE = {"it": "a.C.", "es": "a. C.", "fr": "av. J.-C.", "de": "v. Chr.", "pt": "a
        "nl": "v.Chr.", "en": "BC"}
 
 
+TITLES = r"(Sir|Lord|Lady|Baron|Baroness|Count|Countess|Graf|Gräfin|Freiherr|Freifrau|Jr\.|Sr\.|Dame|Saint|St\.|"          r"Mrs\.|Mr\.|Miss|Duke|Duchess|Marquis|Marquise|Marchesa|Marchese|Conte|Contessa|Viscount|Earl|Prince|"          r"Princess|Vicomte|Comte|Comtesse|pseud\.|Rev\.)"
+
+
 def person_name(pg_name):
-    """'Austen, Jane' -> 'Jane Austen'; 'Kennedy, John F. (John Fitzgerald)' -> 'John F. Kennedy'."""
+    """'Austen, Jane' -> 'Jane Austen'; 'Kennedy, John F. (John Fitzgerald)' -> 'John F. Kennedy';
+    'Orczy, Emmuska Orczy, Baroness' -> 'Emmuska Orczy'."""
     n = re.sub(r"\s*\([^)]*\)", "", pg_name or "").strip()
-    n = re.sub(r",\s*(Sir|Lord|Baron|Count|Graf|Freiherr|Jr\.|Sr\.|Dame|Saint|St\.)$", "", n)
+    while True:
+        m = re.sub(r",\s*%s$" % TITLES, "", n)
+        if m == n:
+            break
+        n = m
     parts = [p.strip() for p in n.split(",")]
     if len(parts) >= 2 and parts[1] and not re.match(r"^\d", parts[1]):
-        n = parts[1] + " " + parts[0]
+        given, surname = parts[1], parts[0]
+        n = given if given.split()[-1] == surname else given + " " + surname
     else:
         n = parts[0]
     return re.sub(r"\s+", " ", n).strip()
@@ -85,6 +94,8 @@ def _cut(s, n=D_MAX):
 def clean_summary(s):
     s = re.sub(r"\(This is an automatically generated summary\.\)", "", s or "")
     s = s.replace("�", "'")
+    # the Gutenberg trademark never appears in our descriptions (PG licence): drop sentences naming it
+    s = " ".join(x for x in re.split(r"(?<=[.!?])\s+", s) if "gutenberg" not in x.lower())
     return s.strip()
 
 

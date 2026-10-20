@@ -22,8 +22,9 @@ LIC_TEXT = {
     "gpl": "GNU General Public License version 2 (https://www.gnu.org/licenses/old-licenses/gpl-2.0.html)",
     "psf-2.0": "PSF License Agreement (https://docs.python.org/3/license.html)",
 }
-DROP_CLASSES = ("nav-panel", "navheader", "navfooter", "header", "footer", "sidebar", "nav-chapters", "menu-bar",
-                "mobile-nav-chapters", "toc", "contents", "nav-wrapper", "skip-link", "edit-link")
+DROP_CLASSES = ("nav-panel", "navheader", "navfooter", "sidebar", "nav-chapters", "menu-bar",
+                "mobile-nav-chapters", "toc", "contents", "nav-wrapper", "skip-link", "edit-link",
+                "copiable-link", "headerlink", "anchor-link", "header-link")
 
 
 def _fetch(http, url, dest):
@@ -45,7 +46,7 @@ def _split(root, level):
         if not p.strip():
             continue
         m = re.match(r"<%s[^>]*>(.*?)</%s>" % (tag, tag), p, re.S)
-        t = re.sub(r"\s+", " ", lhtml.fromstring("<div>%s</div>" % m.group(1)).text_content()).strip() if m else ""
+        t = re.sub(r"[\s¶]+", " ", lhtml.fromstring("<div>%s</div>" % m.group(1)).text_content()).strip() if m else ""
         chunks.append((t, p))
     return chunks
 

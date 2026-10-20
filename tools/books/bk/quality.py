@@ -35,6 +35,9 @@ SUBJECT_RX = [
     (r"united states\. congress|parliament -- |-- appropriations", "government"),
     (r"erotic|pornograph", "erotica"),
     (r"^registers|^directories|-- directories|telephone", "catalog"),
+    # courses of dead languages (the user wants living ones); "Greek language, Modern" is not matched
+    (r"^(latin|greek|anglo-saxon|gothic|sanskrit|old norse|icelandic language, old|french language -- to 1500)"
+     r"( language)? -- |^english language -- old english|^english language -- middle english", "dead_language_course"),
 ]
 # Old medical / health advice is dangerous today: only modern curated manuals cover health.
 OUTDATED_MEDICAL_RX = (r"medicine, popular|therapeutics|materia medica|hygiene|homeopathy|"

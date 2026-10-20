@@ -164,6 +164,16 @@ class Quality(unittest.TestCase):
         self.assertIsNone(quality.pg_metadata_reject(b, 300000, ["novel"]))
         self.assertIsNone(quality.pg_metadata_reject(b, 12000, ["poetry"]))
 
+    def test_dead_language_courses(self):
+        def rej(subject):
+            return quality.pg_metadata_reject({"type": "Text", "title": "X", "shelves": [], "subjects": [subject]},
+                                              50000, ["language"])
+        self.assertEqual(rej("Latin language -- Grammar"), "dead_language_course")
+        self.assertEqual(rej("English language -- Old English, ca. 450-1100 -- Grammar"), "dead_language_course")
+        self.assertIsNone(rej("English language -- Grammar"))
+        self.assertIsNone(rej("Greek language, Modern -- Grammar"))
+        self.assertIsNone(rej("Italian language -- Grammar"))
+
     def test_outdated_medical(self):
         b = {"type": "Text", "title": "Household Medicine", "shelves": [], "subjects": ["Medicine, Popular"]}
         self.assertEqual(quality.pg_metadata_reject(b, 300000, ["health"]), "outdated_medical")
@@ -192,6 +202,13 @@ class Misc(unittest.TestCase):
         self.assertEqual(describe.person_name("Austen, Jane"), "Jane Austen")
         self.assertEqual(describe.person_name("Kennedy, John F. (John Fitzgerald)"), "John F. Kennedy")
         self.assertEqual(describe.person_name("Dante Alighieri"), "Dante Alighieri")
+        self.assertEqual(describe.person_name("Orczy, Emmuska Orczy, Baroness"), "Emmuska Orczy")
+        self.assertEqual(describe.person_name("Doyle, Arthur Conan, Sir"), "Arthur Conan Doyle")
+
+    def test_no_trademark_in_descriptions(self):
+        s = describe.clean_summary('"X" by Y is a novel. This Project Gutenberg edition has notes. It tells of Z. '
+                                   '(This is an automatically generated summary.)')
+        self.assertEqual(s, '"X" by Y is a novel. It tells of Z.')
 
     def test_lang_pick(self):
         self.assertEqual(pick_lang(["it"]), "it")

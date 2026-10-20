@@ -75,6 +75,11 @@ def build(candidates, excluded, log=print, link_assets=True):
         if not ID_RX.match(r["id"]):
             excluded[r["lang"]]["bad_id"] += 1
             continue
+        if "gutenberg" in r["t"].lower():          # PG trademark never in our titles
+            excluded[r["lang"]]["trademark_in_title"] += 1
+            continue
+        if "gutenberg" in (r.get("d") or "").lower():
+            r["d"] = ""
         f = r.get("_file")
         if not f or not Path(f).exists():
             excluded[r["lang"]]["file:missing"] += 1

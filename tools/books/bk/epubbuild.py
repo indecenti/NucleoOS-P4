@@ -104,7 +104,11 @@ def build(path, title, authors, lang, chapters, license_html, identifier=None, d
     identifier = identifier or "urn:uuid:%s" % uuid.uuid4()
     files = []
     nav_items = []
+    # chapters left empty by the clean-up (a removed table of contents, a navigation page) are dropped
+    # (file names keep the original position, so links remapped by the caller to cNNN.xhtml stay right)
     for i, (ct, body) in enumerate(chapters, 1):
+        if "<img" not in body and len(re.sub(r"<[^>]+>|\s+", "", html.unescape(body))) < 80:
+            continue
         name = "c%03d.xhtml" % i
         heading = "<h2>%s</h2>" % _esc(ct) if ct and not re.match(r"\s*<h[1-3]", body) else ""
         doc = _xhtml(ct or title, heading + body, lang)
@@ -115,7 +119,7 @@ def build(path, title, authors, lang, chapters, license_html, identifier=None, d
             txt = lhtml.fromstring("<div>%s</div>" % body).text_content()
             doc = _xhtml(ct or title, heading + "".join("<p>%s</p>" % _esc(p) for p in txt.split("\n") if p.strip()), lang)
         files.append((name, doc))
-        nav_items.append((name, ct or "%d" % i))
+        nav_items.append((name, ct or title))
     lic_title = {"it": "Licenza e fonte", "de": "Lizenz und Quelle", "fr": "Licence et source",
                  "es": "Licencia y fuente"}.get(lang, "License and source")
     lic = _xhtml(lic_title, '<div class="license">%s</div>' % license_html, lang)
