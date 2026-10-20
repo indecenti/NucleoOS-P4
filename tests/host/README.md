@@ -14,7 +14,7 @@ pointer and `size_t` overflows only show up in the 32-bit build.
 | `mpeg1` | `components/nv_vplayer/pl_mpeg.h` | MPEG-PS / MPEG-1 video / MP2 audio (fuzz only) |
 | `web` | `components/nv_web/nv_web_util.cpp` | URL decoding, logical→physical paths, write guards, JSON helpers |
 | `auth` | `components/nv_auth/nv_auth_core.cpp` | pairing: token/cookie parsing, stored session list, PIN state machine |
-| `ota` | `components/nv_ota/nv_ota_manifest.cpp` | signed OTA manifest fields and the signed message |
+| `ota` | `components/nv_fwup/nv_ota_manifest.cpp` | signed OTA manifest fields and the signed message |
 | `pkg` | `components/nv_appstore/nv_store_pkg.cpp` | store `package.sig`: signed file list, hashes, sizes |
 | `netpol` | `components/nv_wasm/nv_net_policy.c`, `components/nv_mqtt/nv_mqtt_topic.c` | app network policy (LAN / internet destinations), MQTT topic filters |
 | `ha` | `components/nv_mqtt/nv_ha_proto.c` | Home Assistant REST / WebSocket replies |

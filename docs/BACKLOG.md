@@ -1,9 +1,11 @@
-# Known issues / backlog (audit 2026-09-07, re-checked 2026-10-11)
+# Known issues / backlog (audits 2026-09-07 and 2026-10-03, re-checked 2026-10-20)
 
-Findings from the 8-agent code audit that were NOT fixed in the cleanup pass, with the reason.
-Everything fixed is in the commit history; this is what remains. Severity as assessed by the
-auditors (verified by reading the code; nothing hardware-tested). Re-checked against the code on
-2026-10-11: entries fixed since were removed, partly fixed ones now list only what is left.
+Findings from the code audits that were NOT fixed, with the reason. Everything fixed is in the
+commit history; this is what remains. Severity as assessed by the auditors (verified by reading the
+code; nothing hardware-tested). Re-checked against the code on 2026-10-11: entries fixed since were
+removed, partly fixed ones now list only what is left. The 2026-10-03 audit (5 agents) was merged
+on 2026-10-20: its fixes and dead-code removals were ported, and its open findings that still hold
+in today's code were added below.
 
 ## Structural (design work, not one-liners)
 
@@ -14,6 +16,9 @@ auditors (verified by reading the code; nothing hardware-tested). Re-checked aga
 - **Store catalog is unsigned.** Every package (apps, data and content packs) is signed and checked
   file by file since 54c7922, but `store.json` itself is not: a forged catalog can hide updates or
   list fake entries (their install then fails the package signature).
+- **Recovery has no downgrade protection**: it installs any correctly signed `nvupd/next.jsn`
+  whatever its version; only the running firmware checks "newer" (`nv_ota.cpp`), recovery's
+  `run_update` does not (`recovery/main/recovery.cpp`).
 - **Provider keys are plaintext on the SD card of a board without settings encryption.** Since
   the key vault (`nucleo_anima_vault.c`) no API, shell command or WASI program reads
   `teacher.json`, and pages use the keys only through the `/api/llm` relay, which adds them. On
@@ -29,6 +34,29 @@ auditors (verified by reading the code; nothing hardware-tested). Re-checked aga
   and the online turn has a deadline, but `/api/anima/query` and `GET /api/anima` hold httpd up to
   45 s, the `/api/llm` relay holds its httpd worker for the whole streamed answer (one relay at a
   time, up to 180 s), and compaction does not share the turn deadline.
+
+## Security (audit 2026-10-03, still open)
+
+- **WASM network policy, residual gaps.** `check_dest` (`nv_wasm_net.cpp`) resolves the host once
+  and the HTTP client resolves it again: a TTL-0 DNS answer can switch public -> private between
+  the two (DNS rebinding); connecting to the checked IP would close it. The ABI v5 UDP imports
+  (`nv.net_send/bcast`) reach any LAN address with "net" alone: that is their documented purpose
+  (LAN multiplayer), but it predates the net/lan split — decide whether UDP should need "lan".
+- **KeyDeck PIN**: a wrong PIN only drops the connection (no delay, no lockout, plain TCP), so a
+  numeric PIN falls to rapid reconnects (`nv_keydeck.cpp` `handle_line`). Reuse nv_auth's lockout.
+- **`POST /api/clipboard` file paths** are prefixed with `/sdcard` and nothing else: no `map_fs`
+  (`..`, `settings.nvb`, `web` guards), and `/mnt/usbN` paths are mangled (`nv_web.cpp`).
+- **LAN teacher re-link**: when the configured LAN model server stops answering,
+  `nucleo_anima_teacher_relink` re-points `teacher.json` to ANY host on the subnet that lists a
+  model of the same name; on a shared network another machine can capture the chats.
+- **Cast `GET /api/state`** is unauthenticated with `Access-Control-Allow-Origin: *` and embeds the
+  peer / client label unescaped (`ss_cast.cpp` `send_state_json`).
+- Debug endpoints ship in release builds (paired clients only): `/api/bench/nvs` (up to 100k flash
+  reads, blocks the server), `/api/bench/sd` (reads up to 256 MB), `/api/audio/selftest` (a GET
+  that records the mic). Gate them behind a developer switch.
+- Session revoke by index (`nv_auth_session_revoke`) can hit the wrong client if a pairing evicts
+  one in between. `NV_WPERM_CAMERA`/`MIC` gate nothing yet are shown before install.
+
 ## Medium
 
 - **Shared-interrupt storms not seen on hardware yet (audit 2026-09-29, the proven ones are fixed:
@@ -39,11 +67,19 @@ auditors (verified by reading the code; nothing hardware-tested). Re-checked aga
   - DW_GDMA: common-register interrupt (bit 16) and ECC status (`int_st1`) are propagated at reset
     and never cleared by the driver; no code path provokes them today.
 - `nv_hal/nv_sd.cpp`: deferred unmount is retried every 1.5 s with a 3 s drain; cap the deferrals.
-- `nv_hal/nv_wifi.cpp` `saved_store()`: commits NVS + publishes under the wifi mutex; snapshot and
-  publish after unlock. `CONFIG_ESP_SYSTEM_EVENT_TASK_STACK_SIZE=2304` is tight for `wifi_evt`
-  (measure the high-water mark, bump to 4096 in the defaults).
+- `CONFIG_ESP_SYSTEM_EVENT_TASK_STACK_SIZE=2304` is tight for `wifi_evt` (measure the high-water
+  mark, bump to 4096 in the defaults).
+- `nv_hal/nv_hid_host.cpp`: `mouse_setup_task` keeps the device handle for ~1 s with no check that
+  the mouse is still there (use after free on unplug). The mouse parser duplicates `nv_hidr_parse`.
+- `nv_hal/nv_rtc.cpp`: `persist_cb` does blocking I2C on the esp_timer task (shared bus with touch
+  and codec, §3); its timer is stopped but never deleted.
+- `nv_web`: `h_fs_write` and `h_web_put` write in place (a dropped upload truncates the file: use the
+  temp-file rule, §5).
 - `nv_ui/nv_ui.cpp`: `open_recents` reads 6×36 KB thumbnails synchronously on the UI thread; folder
-  rename can cut UTF-8 mid-sequence (`max_length` counts chars, the copy counts bytes).
+  rename can cut UTF-8 mid-sequence (`max_length` counts chars, the copy counts bytes); the
+  launch-counter key `lu_%.11s` makes ids sharing 11 leading characters share a counter.
+- `nv_apps/anima_app.cpp`: the attachment-thumbnail callback tests `lv_obj_is_valid()` on a holder
+  that may be freed and reused by then (memory-safe, may land in the wrong object).
 - `nv_keydeck`: still runs widget/app code on its own task under the port lock (8 KB internal stack);
   marshal injections to the LVGL thread. `nv_cpu_load.cpp` duplicates `nv_sysmon_perf`.
 - `nv_apps/gallery_app.cpp`: viewer decode (6 MB + 8 MB raster) can overlap a thumb build's raster
@@ -56,35 +92,44 @@ auditors (verified by reading the code; nothing hardware-tested). Re-checked aga
 - `nv_vplayer.c`: `free_resources` ignores the frame lease (`s_hold`), so `/api/video/stop` can free
   the ring under a blit (video_app itself joins `disp_task` first); `stop_audio_task_and_wait` gives
   up after 1 s (two `vpaudio` tasks possible); frame publish uses separate volatiles.
-  `nv_vplayer_render/set_aspect/set_frame_cb` are dead (video_app blits via nv_hal; `set_aspect` only
-  feeds the dead render). `pl_mpeg.h` fork: frame allocs are checked now, other `PLM_MALLOC`s are
-  not, `plm_make_fast_vlc` uses raw `malloc` (6 KB internal); `pl_mpeg_phoboslab_orig.h` is an
-  unused upstream copy.
+  `pl_mpeg.h` fork: frame allocs are checked now, other `PLM_MALLOC`s are not,
+  `plm_make_fast_vlc` uses raw `malloc` (6 KB internal).
 - `nv_camera/nv_mp4.c`: `fwrite`/`fseek` results ignored, 32-bit `ftell` (>2 GB mdat wraps). The MP4
   path is inert on this chip revision but still built.
 - `nv_usb`: `CFG_TUD_VENDOR_RX_BUFSIZE` 10×512 could shrink (internal TinyUSB FIFO); frame pool
   (1.8 MB PSRAM) is allocated at boot even with no PC attached.
 - `nv_wasm.cpp`: bare `fopen` for assets/saves/manifest/module (use removal-safe sessions);
-  `worker_stack_to_psram` declared twice.
+  `worker_stack_to_psram` sets `esp_pthread_set_cfg` on the CALLING task (LVGL, terminal) and never
+  restores it, so a later `pthread_create` there inherits a PSRAM stack (§2).
+- `nv_ota.cpp`: `nv_ota_message` / `nv_ota_available_version` hand out strings the worker rewrites.
+- `nv_wake`: with `CONFIG_NV_WAKE_ESP_SR` (off by default) the PSRAM-stack wake task maps the model
+  partition (`esp_srmodel_init` -> `esp_partition_mmap`, which stops the cache): it would abort.
+  Give it an internal stack before enabling ESP-SR.
 - `nv_anima`: `s_l1_mode` read/written unlocked (`nucleo_anima_l1.c`); `setup_shim` returns a static
   `s_ip` across tasks; `units.txt` grows forever (append per learn, no dedupe); engine input caps
   160/256 vs the 512-B native input (truncated before matching); an oversize 200 reply (> 32 KB
   `HTTP_CAP`) still cools the provider for 15 s; ephemerality check on 79 bytes; `strncmp` prefix
-  triggers in conv.c ("cosa ricordi della guerra fredda"); UTF-8 split at byte caps in conv titles;
+  triggers in conv.c ("cosa ricordi della guerra fredda"); UTF-8 split at byte caps in conv titles
+  and in Telegram replies (4000-byte `snprintf`: Telegram rejects the whole message);
   conv cap scan sees only 24 metas and orphan `.j` are never pruned; "watched task" WDT branches in
   `online.c` are dead code (nothing calls `esp_task_wdt_add`).
 
 ## Dead code worth deleting (kept for now, no runtime cost)
 
 Removed: the ES7210 `mic_setup()` path, the simulated Wi-Fi backend, the 40 px logo, the ANIMA
-`verify_claim` / `bench` / long-form transcription leftovers. The USB bus "diag" watcher is now
-opt-in (`-DNV_USB_DIAG=1`). Still open:
+`verify_claim` / `bench` / long-form transcription leftovers; on 2026-10-20 the 2026-10-03 batch
+(nv_vplayer render/aspect/frame callback, the upstream `pl_mpeg` copy, unused TTS planner helpers
+and HAL/kernel getters, `console.html`). The USB bus "diag" watcher is now opt-in
+(`-DNV_USB_DIAG=1`). Still open:
 
 - `nv_ui_set_back` is an inline alias of `nv_ui_set_back_handler`, kept for `anima_app.cpp`; drop it
   once that app is migrated. `nv_ui.cpp`: legacy `lord%d` launcher-order migration (drop once no v1
   install is left); stale swipe-up/BOTTOM comments. `nv_i18n`: ~29 unreferenced string ids (×5
   languages; the BT_KIND ids are used by arithmetic in settings_app).
 - Hand-rolled `json_int/json_str` in nv_web_util next to cJSON.
+- Event topics nobody subscribes to: `NV_EV_CLIPBOARD`, `NV_EV_INPUT_DEVICES`.
+- `docs/AGENT_HANDOFF.md` and `docs/LOCAL_AGENT_TODO.md` describe an old working branch: move them
+  to `docs/archive/` once nobody relies on them.
 
 ## RAM ideas not yet taken
 

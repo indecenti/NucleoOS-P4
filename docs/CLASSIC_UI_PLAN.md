@@ -1,6 +1,6 @@
 # Piano: interfaccia "Classica 95", mouse e tastiera
 
-Stato: v3 (2026-10-01). Scritto e compilato, NON committato, NON provato su HW.
+Stato: v3 (2026-10-01). Scritto, compilato e committato; NON ancora provato su HW.
 - Fasi 1-2 (input, navigazione da tastiera): fatte, audit app risolto.
 - Fasi 3-6 (shell Classica) prima versione: `nv_ui_classic.cpp` (desktop, taskbar, Start, menu
   contestuali, title bar), integrazione in `nv_ui.cpp` (geometria per shell, `shell_apply`,

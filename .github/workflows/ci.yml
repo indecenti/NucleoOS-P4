@@ -172,6 +172,8 @@ jobs:
         run: python tools/ci/check_manifests.py apps
       - name: Shell reference up to date
         run: python tools/gen_shell_doc.py --check
+      - name: Precompressed web files match their sources
+        run: python tools/ci/check_web_gz.py
       - name: Store catalogs
         run: python server/appstore/test_store2.py
       # The fleet's guards: sdkconfig drift / eFuse options stop the build, an image without the

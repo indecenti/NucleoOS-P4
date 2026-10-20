@@ -45,8 +45,9 @@ recorded so nobody relaxes them by accident. Keep this file short and true.
   task. Post work instead of running it under a foreign-held lock when it involves an app's
   teardown/relaunch (WASM abort handshake, Recents thumbnail, SD writes):
   `nv_ui_open_app_id_async()`, `nv_ui_go_home_async()`, `lv_async_call()`.
-- esp_timer callbacks run on the esp_timer task (3.5 KB stack) which also drives the LVGL tick:
-  no SD/flash/blocking work there — spawn a task.
+- esp_timer callbacks run on the esp_timer task (3.5 KB stack), which every timer of the system
+  shares: no SD/flash/I2C/blocking work there — spawn a task. (LVGL's own tick reads esp_timer
+  directly through `lv_tick_set_cb`, `nv_hal.cpp`.)
 - Every app tears down in `NvApp.close(why)` and keeps per-widget cleanup on `LV_EVENT_DELETE`
   (delete timers, cancel `lv_async_call`s, null pointers); the root handler also does the full
   teardown when `close` did not run. A rebuild (`NV_APP_REBUILD`) keeps the work in flight. Bgwork
@@ -64,7 +65,7 @@ recorded so nobody relaxes them by accident. Keep this file short and true.
 - Use `nv_sd_fopen/nv_sd_fclose` (or `nv_sd_session_begin/end` around `opendir` loops) for any
   file held open longer than an instant; the hot-unmount drain only protects counted sessions.
 - Never `remove(path); rename(tmp, path)` blindly: check the writer's errors first and on a rename
-  failure KEEP the temp file (it is the only good copy). See `commit_tmp()` in nv_anima.
+  failure KEEP the temp file (it is the only good copy). See `a_commit_tmp()` in `nv_anima/anima_text.c`.
 - FATFS: LFN on, `max_files` 16, rename refuses to overwrite.
 
 ## 6. Untrusted input
@@ -189,6 +190,6 @@ handler, so the rules are about staying reachable, not about registering:
 - Text through `nv_kit_textarea*` / `nv_ime_bind*` (physical keyboard types into it).
 - App shortcuts only via `nv_ui_set_key_handler()`; never consume Tab, Esc, Win or Alt chords.
 - `LV_OBJ_FLAG_USER_1..4` are reserved by the focus engine (skip, styled, prefer, include).
-- WASM apps poll `nv_kbd_state()`: arrows/WASD, Enter/Space confirm, Esc back/pause.
+- WASM apps poll the `kbd_state` import (`nv_kbd_state()` in the SDK): arrows/WASD, Enter/Space confirm, Esc back/pause.
 
 Full checklist and test recipe (`/api/ui/hid?usage=`): skill `keyboard-support`.

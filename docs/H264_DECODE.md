@@ -69,7 +69,7 @@ This is the reason the format is not advertised.
 ### 3b. Engineering reason (ours, fixable)
 
 The I420 -> RGB565 render goes through PPA SRM with `PPA_SRM_COLOR_MODE_YUV420` input
-(`nv_vplayer.c:1260`). On hardware this **hung the whole UI**, which is why the MPEG-1 path was
+(the H.264 path of `nv_vplayer.c`, since disabled: `CONFIG_NV_VPLAYER_H264`). On hardware this **hung the whole UI**, which is why the MPEG-1 path was
 deliberately built to publish RGB565 instead (`nv_vplayer.c:1064-1066`, `1113`).
 
 Mechanism of the hang, now identified:
@@ -77,7 +77,7 @@ Mechanism of the hang, now identified:
 `xSemaphoreTake(trans_elm->sem, portMAX_DELAY)` —
 `esp-idf/components/esp_driver_ppa/src/ppa_core.c:458-460`. The semaphore is only given from the
 2D-DMA RX `on_recv_eof` ISR. If the transaction never raises EOF, the caller blocks **forever**,
-with no timeout. `nv_vplayer_render()` runs on the UI side, so the whole OS freezes.
+with no timeout. The render (`nv_vplayer_render()`, since removed) ran on the UI side, so the whole OS froze.
 
 The driver's own argument checks (even `pic_w/h`, `block_w/h`, `block_offset_x/y` for YUV420 —
 `ppa_srm.c:183-199`) return `ESP_ERR_INVALID_ARG`, not a hang, so the failing configuration is
