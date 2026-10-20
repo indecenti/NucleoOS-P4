@@ -591,6 +591,10 @@ int32_t app_hdr_h(void)     { return s_classic ? nvclassic::kTitleH : kHeaderH; 
 int32_t app_content_h(void) { return app_plane_h() - app_hdr_h() - (s_classic ? 0 : kHomeInset); }
 void (*s_app_back)(void) = nullptr; // in-app back handler; NULL => Back closes the app
 bool s_exit_locked = false;  // the setup wizard runs: bottom-edge Home / Recents do nothing
+bool (*s_leave_guard)(void) = nullptr;   // the open app asks first before the user leaves it (nv_ui_set_leave_guard)
+// The user is leaving the open app (gesture, Back, a key): true when its guard took over (it asks, and
+// leaves by itself if confirmed). Only the user's own ways out pass here, never automation's.
+bool leave_blocked(void) { return s_app && s_leave_guard && s_leave_guard(); }
 nv_ui_key_cb s_app_key = nullptr;   // in-app key handler (nv_ui_set_key_handler); NULL = none
 const NvApp *s_app_cur = nullptr;   // descriptor of the open app; NULL at home (for live re-render)
 
@@ -1627,7 +1631,7 @@ void back_clicked(lv_event_t *) {
     // the app that asked (Files, ANIMA...) instead of closing to the launcher.
     if (nv_open_on_back(s_app_back == nullptr)) return;
     if (s_app_back) s_app_back();  // in-app back (app-defined sub-page pop)
-    else close_app();
+    else if (!leave_blocked()) close_app();
 }
 
 // nv_gesture LEFT edge (strip enabled while an app OR the search overlay is up): swipe right ->
@@ -1644,7 +1648,7 @@ void left_edge_cb(lv_dir_t dir, void *) {
 void bottom_edge_cb(lv_dir_t dir, void *) {
     if (dir != LV_DIR_TOP || s_shade_open || s_exit_locked) return;
     if (search_is_open()) { search_close_deferred(); return; }  // swipe-up dismisses search too
-    if (s_app) close_app();
+    if (s_app) { if (!leave_blocked()) close_app(); }
     else       open_recents();
 }
 
@@ -1771,6 +1775,8 @@ void nv_ui_set_exit_locked(bool on) {
     nv_ui_set_shade_gesture_enabled(!on);
 }
 void nv_ui_close_app(void) { close_app(); }
+void nv_ui_set_leave_guard(bool (*fn)(void)) { s_leave_guard = fn; }
+bool nv_ui_leave_asked(void) { return leave_blocked(); }
 
 // ---- suspended-task state (nv_ui.h)
 namespace {
@@ -1988,6 +1994,7 @@ void close_app(void) {
     s_app_pill = nullptr;
     lv_obj_delete(app);
     s_app_back = nullptr;
+    s_leave_guard = nullptr;   // a question never outlives its app
     s_app_key = nullptr;
     nv_ui_set_shortcuts(nullptr, 0);
     nv_ime_set_submit_cb(nullptr, nullptr);   // a return hook never outlives its app
@@ -4752,7 +4759,7 @@ bool ui_kbd_nav(uint8_t u, uint8_t mods, bool pressed, bool repeat) {
         if (pressed) s_win_solo = true;
         else if (s_win_solo) {
             s_win_solo = false;
-            if (!(s_classic && nvclassic::start_toggle())) nv_ui_go_home();
+            if (!(s_classic && nvclassic::start_toggle()) && !leave_blocked()) nv_ui_go_home();
         }
         return true;
     }
@@ -4766,13 +4773,13 @@ bool ui_kbd_nav(uint8_t u, uint8_t mods, bool pressed, bool repeat) {
 
     // System shortcuts: work everywhere, games included (always a way out).
     if (!repeat) {
-        if (alt && u == kUsF4)          { if (s_app) close_app(); return true; }
+        if (alt && u == kUsF4)          { if (s_app && !leave_blocked()) close_app(); return true; }
         // Ctrl+W closes the app too (desktop convention), except while typing: in a field (the
         // Terminal) it deletes the previous word.
-        if (ctrl && !alt && u == 0x1A && s_app && !nv_ime_bound()) { close_app(); return true; }
+        if (ctrl && !alt && u == 0x1A && s_app && !nv_ime_bound()) { if (!leave_blocked()) close_app(); return true; }
         if (u == kUsF1 || (ctrl && u == 0x38)) { nv_ui_shortcuts_sheet(); return true; }   // F1 / Ctrl+/
         if (ctrl && !alt && u == kUsEsc) {          // Ctrl+Esc: Start, as the Win key
-            if (!(s_classic && nvclassic::start_toggle())) nv_ui_go_home();
+            if (!(s_classic && nvclassic::start_toggle()) && !leave_blocked()) nv_ui_go_home();
             return true;
         }
         if (ctrl && alt && u == kUsDel) { nv_ui_open_app_id("sysmon"); return true; }
@@ -4789,7 +4796,7 @@ bool ui_kbd_nav(uint8_t u, uint8_t mods, bool pressed, bool repeat) {
                     if (s_classic) nvclassic::task_activate(u - 0x1E);
                     return true;
                 case 0x04: open_shade(); return true;                    // Win+A: quick settings
-                case 0x2B: open_recents(); return true;                  // Win+Tab: recent apps
+                case 0x2B: if (!leave_blocked()) open_recents(); return true;   // Win+Tab: recent apps
                 case 0x16:                                               // Win+S: search
                     if (shift) break;                                    // (Win+Shift+S is the screenshot)
                     if (!(s_classic && nvclassic::start_toggle())) search_open(nullptr);
@@ -4798,6 +4805,7 @@ bool ui_kbd_nav(uint8_t u, uint8_t mods, bool pressed, bool repeat) {
                     if (s_classic) nvclassic::clipboard_history();
                     return true;
                 case 0x07:                                               // Win+D: the desktop
+                    if (leave_blocked()) return true;
                     if (s_classic) nvui::minimize(); else nv_ui_go_home();
                     return true;
                 default: break;
@@ -4809,6 +4817,7 @@ bool ui_kbd_nav(uint8_t u, uint8_t mods, bool pressed, bool repeat) {
 
     if (alt && u == kUsTab) {                       // Alt+Tab: task switcher
         if (!s_recents_ov) {
+            if (leave_blocked()) return true;
             if (s_app) { s_switching = true; close_app(); s_switching = false; }   // Recents at home
             open_recents();
             s_alt_tab = s_recents_ov != nullptr;

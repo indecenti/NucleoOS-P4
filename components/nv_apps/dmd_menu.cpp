@@ -33,6 +33,7 @@
 #include "nv_log.h"
 #include "nv_mem_attr.h"
 #include "nv_notify.h"
+#include "nv_sd.h"
 #include "nv_ui.h"
 #include "nv_ui_focus.h"
 #include "nv_ui_scale.h"
@@ -78,7 +79,7 @@ constexpr int kCacheN = 72;
 // The instructions: Popper's cards are portrait pages saved on their side (for a rotated screen). The bridge
 // turns them upright and fits them to the screen's width: a tall page, scrolled with a finger.
 constexpr int kHelpH = 1824;
-constexpr int kMaxItems = 1000;
+constexpr int kMaxItems = 2000;
 constexpr int64_t kReqTimeoutUs = 4000000;      // an image request the bridge never answered
 constexpr int64_t kRestUs = 280000;             // selection at rest this long: its card and backglass
 
@@ -87,7 +88,7 @@ constexpr int kNLists = 5;
 
 constexpr int64_t kAttractUs = 120000000;       // no touch for 2 minutes: the attract mode
 constexpr int64_t kAttractStepUs = 8000000;     // a table every 8 s
-constexpr int64_t kLaunchTimeoutUs = 25000000;  // Play pressed, no game start from Popper: tell why
+constexpr int64_t kLaunchTimeoutUs = 135000000;   // the bridge retries 5 x 25 s while Popper refuses  // Play pressed, no game start from Popper: tell why
 
 lv_color_t hx(uint32_t c) { return lv_color_hex(c); }
 
@@ -116,8 +117,19 @@ void dot_fold(char *dst, size_t n, const char *src) {
     size_t o = 0;
     for (const unsigned char *p = (const unsigned char *)src; *p && o + 1 < n; p++) {
         unsigned char c = *p;
-        if (c == 0xC3 && p[1] >= 0x80 && p[1] <= 0xBF) c = (unsigned char)kMap[*++p - 0x80];
-        else if (c >= 0x80) {   // another multi-byte character: one space for all of it
+        if (c == 0xC3 && p[1] >= 0x80 && p[1] <= 0xBF) {
+            const unsigned char l = *++p;
+            c = (unsigned char)kMap[l - 0x80];
+            // a stressed last letter keeps its accent the way Italian capitals write it without one:
+            // PIU', NOVITA', PERCHE' (a word ends after it)
+            const bool accent = (l & 0x1F) == 0x00 || (l & 0x1F) == 0x08 || (l & 0x1F) == 0x09 || (l & 0x1F) == 0x0C ||
+                                (l & 0x1F) == 0x12 || (l & 0x1F) == 0x13 || (l & 0x1F) == 0x19;   // à è é ì ò ó ù
+            const unsigned char nx = p[1];
+            if (accent && !(nx >= 'A' && nx <= 'Z') && !(nx >= 'a' && nx <= 'z') && nx < 0x80 && o + 2 < n) {
+                dst[o++] = (char)(c >= 'a' && c <= 'z' ? c - 32 : c);
+                c = '\'';
+            }
+        } else if (c >= 0x80) {   // another multi-byte character: one space for all of it
             while ((p[1] & 0xC0) == 0x80) p++;
             c = ' ';
         }
@@ -129,6 +141,16 @@ void dot_fold(char *dst, size_t n, const char *src) {
 
 // The name to show: Popper's display names often carry "(Manufacturer Year)", MAME's region and date,
 // "[...]" tags; they go (the facts are shown on their own). '_' becomes a space. Never empty.
+// A string cut by bytes may end inside a UTF-8 letter: the broken tail goes (it would draw as a box).
+void utf8_tidy(char *s) {
+    size_t n = strlen(s), k = n;
+    while (k && ((uint8_t)s[k - 1] & 0xC0) == 0x80) k--;   // continuation bytes at the end
+    if (!k) return;
+    const uint8_t lead = (uint8_t)s[k - 1];
+    const size_t need = lead >= 0xF0 ? 4 : lead >= 0xE0 ? 3 : lead >= 0xC0 ? 2 : 1;
+    if (n - (k - 1) < need) s[k - 1] = 0;
+}
+
 void clean_name(char *dst, size_t n, const char *src) {
     size_t o = 0;
     for (const char *p = src; *p && o + 1 < n; p++) {
@@ -241,6 +263,9 @@ struct Img {
     bool has_win;                 // 'f' / 'r': the DMD's window (housing) was found in it
     dmd_rect_t win;
     char key[12];                 // the bridge's key for these bytes (source file + size + options)
+    bool has_meta;                // 'f': its true width and height; 'r': the grill's x, y, w, h (as the bridge sent)
+    int16_t meta[4];
+    int64_t dead_us;              // replaced by a fresher copy (id < 0): its pixels go kGraveUs after this
 };
 
 struct Item {
@@ -257,11 +282,24 @@ struct Btn {
     DotText dot, dot_on;
 };
 
-NV_PSRAM_BSS Img s_cache[kCacheN];
-NV_PSRAM_BSS int16_t s_rgrill[4];   // the last backglass-with-grill picture's grill: x, y, w, h
-NV_PSRAM_BSS int s_rgrill_id;       // and whose (img_apply)
-NV_PSRAM_BSS int16_t s_fart[2];     // the last FullDMD art's true size (the picture is stretched to 1024x600)
-NV_PSRAM_BSS int s_fart_id;
+// The pictures' slots, allocated while the app is open (PSRAM heap: the static PSRAM is nearly full).
+// Iterated like an array; empty while unallocated.
+struct Cache {
+    Img *p;
+    Img *begin() { return p; }
+    Img *end() { return p ? p + kCacheN : p; }
+};
+NV_PSRAM_BSS Cache s_cache;
+// What a FullDMD art ('f': its true width and height, the picture being stretched to 1024x600) or a backglass
+// with grill ('r': the grill's x, y, w, h) came with: kept in the picture itself (a ring of a few entries by
+// table lost the running game's while other tables were looked at).
+const int16_t *meta_get(int id, char kind) {
+    for (const Img &m : s_cache)
+        if (m.id == id && m.kind == kind && m.has_meta) return m.meta;
+    return nullptr;
+}
+int s_comp_want;   // the composition screen's table: its pictures are asked for (0: none)
+int s_comp_subj;   // and kept in memory while the screen is open
 NV_PSRAM_BSS int16_t s_s2[4];       // the PC's second screen (the backglass monitor): x, y, w, h (w 0: none)
 NV_PSRAM_BSS uint32_t s_stamp;
 NV_PSRAM_BSS Item *s_items;                   // the list on screen: s_all through the system filter (PSRAM)
@@ -283,7 +321,11 @@ NV_PSRAM_BSS int s_list;                      // index in kLists
 NV_PSRAM_BSS int s_sel;                       // selected item (the middle of the wheel bar)
 NV_PSRAM_BSS int s_restore_id;                // table to select when the list comes (state restore)
 NV_PSRAM_BSS int64_t s_sel_us;                // when the selection last changed
+NV_PSRAM_BSS bool s_card_fetch;               // a table's card asked for to put it on the stage (not a random pick)
 NV_PSRAM_BSS bool s_hello;                    // the bridge said hello since the menu was built
+NV_PSRAM_BSS int64_t s_hello_ask_us;          // when the board last asked for it
+NV_PSRAM_BSS char s_bridge_ver[16];           // the hello's bridge version and whether Popper's database opened
+NV_PSRAM_BSS bool s_popper_ok;
 NV_PSRAM_BSS bool s_want_full;                // "Fit" is FullDMD: the bridge sends that art as a game starts
 NV_PSRAM_BSS bool s_want_list;
 NV_PSRAM_BSS bool s_visible;
@@ -294,6 +336,9 @@ NV_PSRAM_BSS bool s_card_asked;
 NV_PSRAM_BSS char s_card_name[64];
 NV_PSRAM_BSS bool s_random_pending;
 NV_PSRAM_BSS bool s_want_help;
+NV_PSRAM_BSS lv_obj_t *s_help_wait;           // "Loading..." on the instructions page until the page comes
+NV_PSRAM_BSS int64_t s_help_us;               // when the page was asked for
+NV_PSRAM_BSS int s_help_tries;
 NV_PSRAM_BSS int s_bg_id;                     // backglass behind the stage (0: none)
 
 // image requests
@@ -302,6 +347,10 @@ NV_PSRAM_BSS int64_t s_wait_us;
 constexpr int kMissingN = 4096;   // wheels and backglasses of a long list ("Tutti": hundreds of MAME games)
 NV_PSRAM_BSS uint32_t *s_missing;             // kMissingN (id << 2 | kind) the bridge has no image for (heap, PSRAM)
 NV_PSRAM_BSS int s_nmissing;
+NV_PSRAM_BSS int64_t s_missing_us;            // when the list was last emptied
+// The bridge may have a picture later (a Popper media added, a video frame made in its idle time): the
+// list is forgotten every 10 minutes and whenever the bridge says hello again
+constexpr int64_t kMissingForgetUs = 10LL * 60 * 1000000;
 
 NV_PSRAM_BSS char s_game[64];                 // the running table's name ("" = none)
 NV_PSRAM_BSS int s_game_id;                   // and its id (0: unknown)
@@ -310,7 +359,6 @@ NV_PSRAM_BSS bool s_game_dmd;                 // its DMD goes through dmdext (a 
 // half-size image the bridge sends just before it hands the port to dmdext. The source stays in the
 // cache, the picture is rebuilt for the height asked.
 constexpr int kArtW = 1024, kArtSrcW = 512, kArtSrcH = 300;
-NV_PSRAM_BSS uint16_t *s_artpx;
 // During a game the USB port is dmdext's: the board talks to Popper's Web Remote over Wi-Fi instead
 // (the bridge says where in its hello). Quit = pupEvent 15 (fEmuExit), tested on the cabinet.
 NV_PSRAM_BSS char s_pc_ip[40];
@@ -319,6 +367,9 @@ NV_PSRAM_BSS volatile int s_http_result;      // 0 idle / pending, 1 ok, -1 fail
 NV_PSRAM_BSS volatile bool s_http_busy;
 NV_PSRAM_BSS char s_http_path[64];
 NV_PSRAM_BSS int s_pending_launch;            // table to start once the running one has ended
+NV_PSRAM_BSS char s_pending_name[64];         // and its name (the card may show another table meanwhile)
+NV_PSRAM_BSS int s_launch_id;                 // the table on the "Starting" page
+NV_PSRAM_BSS char s_launch_title[64];         // and its name (shown again when the look changes)
 // A quit asked (quit_request): Popper ignores one while a heavy table is still loading (seen: TMNT ~55 s
 // after its launch), so it is asked once more after kQuitRetryUs if the game is still running.
 NV_PSRAM_BSS int64_t s_quit_us;
@@ -344,8 +395,11 @@ struct FitUi {
 };
 NV_PSRAM_BSS FitUi *s_fitui;   // on the heap while the menu exists (static PSRAM is nearly full)
 NV_PSRAM_BSS lv_obj_t *s_fitm;
-NV_PSRAM_BSS lv_image_dsc_t s_art_dsc;
-NV_PSRAM_BSS int s_art_id, s_art_h;
+// The game art made to a height, one buffer per user: the running game's whole-screen page, the game's
+// band above the DMD, the composition screen's other table (one shared buffer made them rebuild each other's
+// picture, 1024x600 on the CPU each time, and change under a descriptor still drawn).
+struct Art { uint16_t *px; lv_image_dsc_t dsc; int id, h; };
+NV_PSRAM_BSS Art s_art[3];
 NV_PSRAM_BSS int64_t s_game_us;
 NV_PSRAM_BSS void (*s_open_settings)(void);
 NV_PSRAM_BSS lv_obj_t *s_root;
@@ -372,6 +426,7 @@ NV_PSRAM_BSS lv_obj_t *s_stage_fav;
 NV_PSRAM_BSS lv_obj_t *s_stage_st1, *s_stage_st2;   // plays / last played (lines)
 NV_PSRAM_BSS lv_obj_t *s_stage_scores;
 NV_PSRAM_BSS Btn s_play, s_helpb, s_another, s_back;
+Btn *s_screens;   // the stage's "screens" button (on the heap: the PSRAM statics are nearly full)
 NV_PSRAM_BSS lv_obj_t *s_bar;
 NV_PSRAM_BSS lv_obj_t *s_slot[kSlots];
 NV_PSRAM_BSS lv_obj_t *s_slot_ph[kSlots];     // a table without a wheel: its name in the slot
@@ -408,9 +463,14 @@ uint32_t miss_key(int id, char kind, int sub) {
                      : kind == 'm' ? 8 + (uint32_t)(sub < 0 ? 0 : sub) : 0;
     return (uint32_t)id << 4 | c;
 }
+void forget_missing(void) {
+    s_nmissing = 0;
+    s_missing_us = esp_timer_get_time();
+}
 bool is_missing(int id, char kind, int sub = -1) {
     const uint32_t k = miss_key(id, kind, sub);
     if (!s_missing) return false;
+    if (esp_timer_get_time() - s_missing_us > kMissingForgetUs) forget_missing();
     for (int i = 0; i < s_nmissing && i < kMissingN; i++)
         if (s_missing[i] == k) return true;
     return false;
@@ -421,6 +481,9 @@ void set_missing(int id, char kind, int sub = -1) {
 }
 
 NV_PSRAM_BSS Img *s_zombie;                   // the copy a fresher picture replaces, until the screen moved on
+// Replaced copies (id < 0, dead_us set) wait a moment before their pixels go: the DMD app and the
+// composition screen keep a picture's descriptor and only ask again on their next tick (10 Hz) or async
+// refresh. Never freed early: a slot waiting is just not given away (img_slot skips it).
 bool s_store_nomem;                           // img_store failed for memory, not for the bytes (internal RAM)
 
 Img *img_find(int id, char kind, int w) {
@@ -434,6 +497,14 @@ void img_drop(Img &m) {
     lv_image_cache_drop(&m.dsc);   // LVGL caches decoded images by source pointer
     heap_caps_free(m.px);
     m = Img{};
+}
+
+constexpr int64_t kGraveUs = 400000;   // longer than the app's tick and an async refresh
+void grave_add(Img *m) { m->dead_us = esp_timer_get_time(); }
+void graves_reap(bool all) {
+    const int64_t now = esp_timer_get_time();
+    for (Img &m : s_cache)
+        if (m.id < 0 && m.dead_us && (all || now - m.dead_us > kGraveUs)) img_drop(m);
 }
 
 // ---- the showcase: Popper's selected table, its horizontal pictures one after the other
@@ -467,9 +538,12 @@ Img *show_find(int id, int sub) {
 // On screen right now: never given away (an lv_image would draw freed memory).
 bool img_in_use(const Img &m) {
     if (m.kind == 'h') return s_help && !lv_obj_has_flag(s_help, LV_OBJ_FLAG_HIDDEN);
-    if (m.kind == 'g' || m.kind == 'f' || m.kind == 'r') return m.id == s_game_id;   // the running game's art
+    if (m.kind == 'g' || m.kind == 'f' || m.kind == 'r')   // the running game's art, the composition's table's
+        return m.id == s_game_id || (m.id == s_comp_subj && dmd_comp_is_open());
     if (m.kind == 'm') return m.id == s_show_id;   // the showcase's pictures
-    if (m.kind == 'w' && m.w == kBigImg) return m.id == s_card_id || (m.id == s_nav_id && s_nav_id);
+    if (m.kind == 'w' && m.w == kBigImg)   // the stage's, the nav card's, the in-game page's
+        return m.id == s_card_id || (m.id == s_nav_id && s_nav_id) || (m.id == s_game_id && s_game[0]) ||
+               (m.id == s_launch_id && s_launching);
     if (m.kind == 'w' || m.kind == 'v')
         for (int i = 0; i < kSlots; i++)
             if (s_slot_id[i] == m.id) return true;
@@ -523,7 +597,7 @@ Img *img_slot(void) {   // a free slot, else the least recently used one not on 
     Img *slot = nullptr;
     for (Img &m : s_cache) {
         if (!m.id) return &m;
-        if (img_in_use(m)) continue;
+        if (m.id < 0 || img_in_use(m)) continue;   // a replaced copy still on screen, or waiting to go
         if (!slot || m.used < slot->used) slot = &m;
     }
     if (slot) img_drop(*slot);
@@ -566,19 +640,20 @@ Img *img_store(const uint8_t *p, uint32_t n) {
                       : !strcmp(ks, "b2sgrill")  ? 'r'
                                                  : 'w';
     int sub = -1;
+    int16_t meta[4] = {};
+    bool has_meta = false;
     if (kind == 'm') {
         const cJSON *sc = cJSON_GetObjectItem(o, "screen");
         for (int i = 0; cJSON_IsString(sc) && i < kShowN; i++)
             if (!strcmp(sc->valuestring, kShowScreens[i])) sub = i;
     }
-    if (kind == 'f') {   // its true shape: read by img_apply right after (0: an older bridge, 16:9 then)
-        s_fart[0] = cJSON_IsNumber(cJSON_GetObjectItem(o, "aw")) ? (int16_t)cJSON_GetObjectItem(o, "aw")->valueint : 0;
-        s_fart[1] = cJSON_IsNumber(cJSON_GetObjectItem(o, "ah")) ? (int16_t)cJSON_GetObjectItem(o, "ah")->valueint : 0;
-    }
-    if (kind == 'r') {   // where its grill is: read by img_apply right after (one such picture: the game's)
-        const char *gk[4] = {"gx", "gy", "gw", "gh"};
-        for (int i = 0; i < 4; i++)
-            s_rgrill[i] = cJSON_IsNumber(cJSON_GetObjectItem(o, gk[i])) ? (int16_t)cJSON_GetObjectItem(o, gk[i])->valueint : 0;
+    if (kind == 'f' || kind == 'r') {   // its true shape (0: an older bridge, 16:9 then) / where its grill is
+        const char *fk[4] = {"aw", "ah", "", ""}, *gk[4] = {"gx", "gy", "gw", "gh"};
+        for (int i = 0; i < 4; i++) {
+            const cJSON *e = cJSON_GetObjectItem(o, kind == 'f' ? fk[i] : gk[i]);
+            meta[i] = cJSON_IsNumber(e) ? (int16_t)e->valueint : 0;
+        }
+        has_meta = true;
     }
     const cJSON *f = cJSON_GetObjectItem(o, "fmt");
     char fs[16], key[12];
@@ -593,12 +668,16 @@ Img *img_store(const uint8_t *p, uint32_t n) {
     if (!id || w < 1 || h < 1 || w > 1024 || h > (kind == 'h' ? kHelpH : 600) || (!z && !jpg && n - 2 - jl < bytes))
         return nullptr;
     if (kind == 'm' && sub < 0) return nullptr;
+    // shapes the drawing code relies on: a wheel no taller than twice its width (the bar shrinks it to 96 px
+    // wide), the full-screen pictures at least 16 px each way (their ambient bands halve them)
+    if (kind == 'w' && (w > 512 || h > 2 * w)) return nullptr;
+    if (kind != 'w' && kind != 'h' && (w < 16 || h < 16)) return nullptr;
+    Img *stale = nullptr;   // the copy on screen this one replaces: kept until the new one is in place
     if (Img *old = kind == 'm' ? show_find(id, sub) : img_find(id, kind, w)) {
         if (!strcmp(old->key, key) && *key) { old->used = ++s_stamp; return old; }   // the same bytes
-        if (img_in_use(*old)) {   // on screen: hidden from look-ups, dropped once the screen has the new one
-            old->id = -old->id;
+        if (img_in_use(*old)) {
+            stale = old;
             old->used = ++s_stamp;
-            s_zombie = old;
         } else {
             img_drop(*old);
         }
@@ -652,14 +731,25 @@ Img *img_store(const uint8_t *p, uint32_t n) {
     slot->h = h;
     slot->alpha = alpha;
     snprintf(slot->key, sizeof slot->key, "%s", key);
+    slot->has_meta = has_meta;
+    memcpy(slot->meta, meta, sizeof meta);
     img_describe(*slot);
+    if (stale) {   // hidden from look-ups now; img_apply moves the screen onto the new copy
+        if (s_zombie) grave_add(s_zombie);
+        stale->id = -stale->id;
+        s_zombie = stale;
+    }
     return slot;
 }
 
 // A side wheel: the middle one shrunk to kSideImg (bilinear, colour and alpha) and dimmed to 55%, made
 // once here instead of scaling on every frame.
 Img *side_make(const Img &src) {
-    if (Img *m = img_find(src.id, 'v', kSideImg)) return m;
+    if (Img *m = img_find(src.id, 'v', kSideImg)) {
+        if (!strcmp(m->key, src.key)) return m;
+        m->id = -m->id;   // made from an older wheel: the bar moves onto a fresh one, this goes in a moment
+        grave_add(m);
+    }
     const int sw = src.w, sh = src.h, dw = kSideImg, dh = kSideImg * src.h / src.w;
     if (dh < 1) return nullptr;
     const Img copy = src;   // img_slot() may move things around; src stays (it is on screen)
@@ -694,6 +784,7 @@ Img *side_make(const Img &src) {
     slot->w = dw;
     slot->h = dh;
     slot->alpha = copy.alpha;
+    snprintf(slot->key, sizeof slot->key, "%s", copy.key);
     img_describe(*slot);
     return slot;
 }
@@ -792,10 +883,10 @@ void ambient_bars(uint16_t *px, int w, int h) {
 // The game art: the backglass (centred in its half-size source, black bars around it) fitted to
 // kArtW x h, its height filled; the sides an ambient glow of its own colours (a 16x6 average, enlarged
 // and darkened), like a video wall; the last rows fade to black where the DMD sits below (backbox).
-void art_build(const Img &m, int h) {
+void art_build(const Img &m, int h, Art &a) {
     if (m.w != kArtSrcW || m.h != kArtSrcH || m.alpha || h < 16 || h > kScrH) return;
-    if (!s_artpx) s_artpx = (uint16_t *)heap_caps_aligned_alloc(64, (size_t)kArtW * kScrH * 2, MALLOC_CAP_SPIRAM);
-    if (!s_artpx) return;
+    if (!a.px) a.px = (uint16_t *)heap_caps_aligned_alloc(64, (size_t)kArtW * kScrH * 2, MALLOC_CAP_SPIRAM);
+    if (!a.px) return;
     const uint16_t *src = (const uint16_t *)m.px;
     // the picture inside the source: its columns / rows with anything lit
     int x0 = 0, x1 = kArtSrcW - 1, y0 = 0, y1 = kArtSrcH - 1;
@@ -822,7 +913,7 @@ void art_build(const Img &m, int h) {
             amb[gy][gx] = n ? (uint16_t)((r / n) << 11 | (g / n) << 5 | (b / n)) : 0;
         }
     for (int y = 0; y < h; y++) {
-        uint16_t *d = s_artpx + (size_t)y * kArtW;
+        uint16_t *d = a.px + (size_t)y * kArtW;
         const int fade = h < kScrH && y >= h - 48 ? 256 * (h - y) / 48 : 256;
         const int gy = y * 6 * 256 / h - 128;
         for (int x = 0; x < kArtW; x++) {
@@ -845,17 +936,17 @@ void art_build(const Img &m, int h) {
             d[x] = fade < 256 ? dim565(c, fade) : c;
         }
     }
-    lv_image_cache_drop(&s_art_dsc);
-    s_art_dsc = lv_image_dsc_t{};
-    s_art_dsc.header.magic = LV_IMAGE_HEADER_MAGIC;
-    s_art_dsc.header.cf = LV_COLOR_FORMAT_RGB565;
-    s_art_dsc.header.w = kArtW;
-    s_art_dsc.header.h = (uint32_t)h;
-    s_art_dsc.header.stride = kArtW * 2;
-    s_art_dsc.data_size = (uint32_t)kArtW * h * 2;
-    s_art_dsc.data = (const uint8_t *)s_artpx;
-    s_art_id = m.id;
-    s_art_h = h;
+    lv_image_cache_drop(&a.dsc);
+    a.dsc = lv_image_dsc_t{};
+    a.dsc.header.magic = LV_IMAGE_HEADER_MAGIC;
+    a.dsc.header.cf = LV_COLOR_FORMAT_RGB565;
+    a.dsc.header.w = kArtW;
+    a.dsc.header.h = (uint32_t)h;
+    a.dsc.header.stride = kArtW * 2;
+    a.dsc.data_size = (uint32_t)kArtW * h * 2;
+    a.dsc.data = (const uint8_t *)a.px;
+    a.id = m.id;
+    a.h = h;
 }
 
 void bg_clear(void) {
@@ -867,11 +958,12 @@ void bg_clear(void) {
 // when it still holds, without converting or sending anything).
 // pf: a prefetch (a picture for the card, not for the screen): the bridge never drops it as out of date.
 bool req_image(int id, char kind, int w, int h, int sub, const char *have, bool pf = false) {
-    const char *ks = kind == 'h' ? "help" : kind == 'b' ? "backglass" : kind == 'm' ? "media" : "wheel";
+    const char *ks = kind == 'h' ? "help" : kind == 'b' ? "backglass" : kind == 'm' ? "media" : kind == 'g' ? "gamebg"
+                     : kind == 'f' ? "fulldmd" : kind == 'r' ? "b2sgrill" : "wheel";
     char q[320], extra[160] = "";
     if (kind == 'm') snprintf(extra, sizeof extra, ",\"screen\":\"%s\",\"box\":[32,18,960,480]", kShowScreens[sub < 0 ? 0 : sub]);
     if (kind == 'h') snprintf(extra, sizeof extra, ",\"rot\":90");
-    if (kind != 'w') {   // opaque: as JPEG, small on the cable and the card, decoded by the hardware
+    if (kind != 'w' && kind != 'f' && kind != 'r') {   // opaque: as JPEG (the art and grill: lossless, their dark is measured)
         const size_t n = strlen(extra);
         snprintf(extra + n, sizeof extra - n, ",\"jpeg\":1");
     }
@@ -920,28 +1012,31 @@ bool sd_has(int id, char kind, int w, int sub) {
 void sd_write(const char *name, const void *p, size_t n) {
     char tmp[104];
     snprintf(tmp, sizeof tmp, "%s.tmp", name);
-    FILE *f = fopen(tmp, "wb");
+    FILE *f = nv_sd_fopen(tmp, "wb");
     if (!f) return;
-    const bool ok = fwrite(p, 1, n, f) == n;
-    fclose(f);
-    if (ok) { remove(name); rename(tmp, name); }
-    else remove(tmp);
+    bool ok = fwrite(p, 1, n, f) == n;
+    ok = nv_sd_fclose(f) == 0 && ok;   // a full card shows up at the close
+    if (!ok) { remove(tmp); return; }
+    remove(name);   // FATFS's rename does not overwrite
+    if (rename(tmp, name) != 0) nv_log_write(NV_LOG_WARN, "dmd", "card: %s kept as .tmp (rename failed)", name);
 }
 uint8_t *sd_read(const char *name, uint32_t *n) {
-    FILE *f = fopen(name, "rb");
+    FILE *f = nv_sd_fopen(name, "rb");
     if (!f) return nullptr;
     fseek(f, 0, SEEK_END);
     const long sz = ftell(f);
     fseek(f, 0, SEEK_SET);
     uint8_t *b = sz > 2 && sz < 4 * 1024 * 1024 ? (uint8_t *)heap_caps_malloc((size_t)sz + 1, MALLOC_CAP_SPIRAM) : nullptr;
     if (b && fread(b, 1, (size_t)sz, f) != (size_t)sz) { heap_caps_free(b); b = nullptr; }
-    fclose(f);
+    nv_sd_fclose(f);
     if (b) { b[sz] = 0; *n = (uint32_t)sz; }
     return b;
 }
 
 NV_PSRAM_BSS uint32_t s_list_hash;            // of the list applied last (an identical one is not re-applied)
 NV_PSRAM_BSS int64_t s_list_us;               // when the list was asked last (refreshed every 5 minutes at rest)
+NV_PSRAM_BSS bool s_list_wait;                // asked, no answer yet (asked again after kListRetryUs)
+constexpr int64_t kListRetryUs = 10000000;
 
 uint32_t fnv(const char *p) {
     uint32_t h = 2166136261u;
@@ -991,6 +1086,11 @@ void pump_images(void) {
     if (s_want_help && s_card_id) {
         s_want_help = false;
         if (want(s_card_id, 'h', 1024, kHelpH)) return;
+    }
+    if (s_comp_want) {   // the composition screen's table: its FullDMD art, backglass with grill, backglass
+        const int id = s_comp_want;
+        if (want(id, 'f', 1024, 600) || want(id, 'r', 1024, 600) || want(id, 'g', kArtSrcW, kArtSrcH)) return;
+        if (s_comp_want == id) s_comp_want = 0;   // all here (or missing)
     }
     if (s_show_id) {   // the showcase: the picture on screen, then the next one
         for (int k = 0; k < 2 && k < s_show_n; k++) {
@@ -1247,9 +1347,10 @@ void rel_day(char *b, size_t n, int ago) {
     else snprintf(b, n, nv_tr(NV_STR_DMDM_DAYS_FMT), ago);
 }
 
-// "2026-10-12" -> "12.10.2026"
+// "2026-10-12" -> "12/10/2026" ("12.10.2026" in German)
 void fmt_date(char *b, size_t n, const char *iso) {
-    if (strlen(iso) >= 10) snprintf(b, n, "%.2s.%.2s.%.4s", iso + 8, iso + 5, iso);
+    const char *sep = nv_i18n_get_lang() == NV_LANG_DE ? "." : "/";
+    if (strlen(iso) >= 10) snprintf(b, n, "%.2s%s%.2s%s%.4s", iso + 8, sep, iso + 5, sep, iso);
     else snprintf(b, n, "%s", iso);
 }
 
@@ -1393,11 +1494,31 @@ void bar_fill(void) {
 
 void update_count(void) {
     if (!s_count) return;
-    char t[48] = "";
-    if (s_nitems && s_filter) snprintf(t, sizeof t, "%.16s  %d / %d", emu_name(s_filter), s_sel + 1, s_nitems);
-    else if (s_nitems) snprintf(t, sizeof t, "%d / %d", s_sel + 1, s_nitems);
+    char t[64] = "", n[24] = "";
+    if (s_nitems) snprintf(n, sizeof n, "%d / %d", s_sel + 1, s_nitems);
+    // the system's name before it, cut to the room the header leaves (both fonts have fixed-width letters:
+    // the mono label's, the dots' 6 dots at pitch 2); the numbers always whole
+    const int room = lv_obj_get_content_width(s_count);
+    const int cw = L().dots ? 12 : lv_font_get_glyph_width(&nv_font_mono_17, '0', '0');
+    const int fit = room > 0 && cw > 0 ? room / cw - 1 : 26;
+    const int name_fit = fit - (int)strlen(n) - 2;
+    if (s_nitems && s_filter && name_fit >= 4) {
+        const char *nm = emu_name(s_filter);
+        if ((int)strlen(nm) > name_fit) {
+            char cut[32];
+            snprintf(cut, sizeof cut, "%.*s", name_fit - 1, nm);
+            utf8_tidy(cut);
+            for (int k = (int)strlen(cut) - 1; k > 0 && cut[k] == ' '; k--) cut[k] = 0;   // "Visual." not "Visual ."
+            snprintf(t, sizeof t, "%s.  %s", cut, n);
+        } else {
+            snprintf(t, sizeof t, "%s  %s", nm, n);
+        }
+    } else {
+        snprintf(t, sizeof t, "%s", n);
+    }
     if (L().dots) {
-        if (*t && dot_text(s_dot_count, t, L().meta, 260, 18, 2)) {
+        const int w = room > 0 ? room : 260;
+        if (*t && (dot_text(s_dot_count, t, L().meta, w, 18, 2) || dot_text(s_dot_count, n, L().meta, w, 18, 2))) {
             lv_image_set_src(s_count, &s_dot_count.dsc);
             if (!s_browse) lv_obj_remove_flag(s_count, LV_OBJ_FLAG_HIDDEN);   // (in game: "back to the DMD" there)
         } else {
@@ -1508,7 +1629,10 @@ void bar_event(lv_event_t *e) {
         s_dragging = false;
         if (abs(s_drag) < 12) {   // a tap: that wheel to the middle
             const int dx = p.x - kScrW / 2;
-            bar_move((dx + (dx >= 0 ? kSlotStep / 2 : -kSlotStep / 2)) / kSlotStep);
+            int k = (dx + (dx >= 0 ? kSlotStep / 2 : -kSlotStep / 2)) / kSlotStep;
+            const int side = s_nitems < kSlots ? (s_nitems - 1) / 2 : kSlots / 2;   // a short list leaves slots empty
+            if (k > side || k < -side) return;
+            bar_move(k);
             return;
         }
         int n = (-s_drag + (s_drag < 0 ? kSlotStep / 2 : -kSlotStep / 2)) / kSlotStep;
@@ -1566,6 +1690,13 @@ void tabs_restyle(void) {
 }
 
 void on_list(const char *json);
+bool s_list_sd;   // on_list is reading the card's copy: nothing to write back
+
+// A request could not go over the cable: during a game whose DMD comes through dmdext the cable is
+// dmdext's until the game ends; otherwise it is busy for a moment.
+void send_fail_note(void) {
+    nv_toast(NV_NOTE_WARN, nv_tr(s_game[0] && s_game_dmd ? NV_STR_DMDM_AFTER_GAME : NV_STR_DMDM_SEND_FAIL));
+}
 
 void ask_list(void) {
     s_list_us = esp_timer_get_time();
@@ -1574,7 +1705,9 @@ void ask_list(void) {
         list_file(nm, sizeof nm, s_list);
         uint32_t n = 0;
         if (uint8_t *b = sd_read(nm, &n)) {
+            s_list_sd = true;
             on_list((const char *)b);
+            s_list_sd = false;
             heap_caps_free(b);
         }
     }
@@ -1582,12 +1715,16 @@ void ask_list(void) {
     snprintf(q, sizeof q, "{\"q\":\"list\",\"list\":\"%s\",\"limit\":%d}", kLists[s_list], kMaxItems);
     if (nv_dmd_bridge_send('Q', q)) {
         s_want_list = false;
+        s_list_wait = true;
         if (!s_nitems) show_note(nv_tr(NV_STR_DMDM_LOADING));
+    } else {
+        s_want_list = true;   // the cable is busy: again on the next tick
     }
 }
 
 void random_cb(lv_event_t *) {   // "surprise me": a random table on the stage
     s_random_pending = nv_dmd_bridge_send('Q', "{\"q\":\"random\"}");
+    if (!s_random_pending) send_fail_note();
 }
 
 // A square (DMD) or round (cabinet) icon button, in the header.
@@ -1705,6 +1842,11 @@ void find_open_cb(lv_event_t *) {
         lv_obj_t *t = text(s_find_card, &nv_font_28, lk.title);
         lv_label_set_text(t, nv_tr(NV_STR_DMDF_TITLE));
     }
+    // a visible way out (a tap beside the card or a swipe down close it too, but nothing says so)
+    lv_obj_t *x = icon_btn(s_find_card, LV_SYMBOL_CLOSE, lk.dots ? lk.tab_on : 0xFFFFFF,
+                           [](lv_event_t *) { find_close(); });
+    lv_obj_add_flag(x, LV_OBJ_FLAG_FLOATING);
+    lv_obj_align(x, LV_ALIGN_TOP_RIGHT, 10, -10);
     // systems with at least one table in this list
     lv_obj_t *row = plain(s_find_card);
     lv_obj_set_size(row, lv_pct(100), LV_SIZE_CONTENT);
@@ -1712,11 +1854,16 @@ void find_open_cb(lv_event_t *) {
     lv_obj_set_flex_align(row, LV_FLEX_ALIGN_CENTER, LV_FLEX_ALIGN_CENTER, LV_FLEX_ALIGN_CENTER);
     lv_obj_set_style_pad_column(row, 10, 0);
     lv_obj_set_style_pad_row(row, 10, 0);
-    find_key(row, nv_tr(NV_STR_DMDF_ALL), s_filter == 0, true, find_system_cb, 0, LV_SIZE_CONTENT);
+    // each with how many of this list's tables it has: in "Recent" a system counts only the ones played (the
+    // whole count is in "All"), said on the key so it is not taken for the system's size
+    char key[40];
+    snprintf(key, sizeof key, "%s  %d", nv_tr(NV_STR_DMDF_ALL), s_nall);
+    find_key(row, key, s_filter == 0, true, find_system_cb, 0, LV_SIZE_CONTENT);
     for (int e = 0; e < s_nemus; e++) {
         int n = 0;
-        for (int i = 0; i < s_nall && !n; i++) n += s_all[i].emu == s_emus[e].id;
-        if (n) find_key(row, s_emus[e].name, s_filter == s_emus[e].id, true, find_system_cb, s_emus[e].id, LV_SIZE_CONTENT);
+        for (int i = 0; i < s_nall; i++) n += s_all[i].emu == s_emus[e].id;
+        snprintf(key, sizeof key, "%s  %d", s_emus[e].name, n);
+        if (n) find_key(row, key, s_filter == s_emus[e].id, true, find_system_cb, s_emus[e].id, LV_SIZE_CONTENT);
     }
     // letters: the ones nothing starts with are shown, but off
     bool has[27] = {};
@@ -1737,6 +1884,7 @@ void find_open_cb(lv_event_t *) {
         lv_obj_t *key = find_key(grid, k ? lbl : "0-9", false, has[k], find_letter_cb, c, k ? 62 : 96);
         lv_obj_set_style_pad_hor(key, 0, 0);
     }
+    lv_obj_move_foreground(x);   // last in the focus order: Enter on the first key, not on the close
     lv_obj_remove_flag(s_find, LV_OBJ_FLAG_HIDDEN);
     lv_obj_move_foreground(s_find);
 }
@@ -1770,6 +1918,7 @@ void launch_show(const char *name, bool starting) {
     if (!s_launch) return;
     const Look &lk = L();
     char clean[64], t[128], up[96];
+    if (starting && name != s_launch_title) snprintf(s_launch_title, sizeof s_launch_title, "%s", name);
     clean_name(clean, sizeof clean, name);
     if (starting) snprintf(t, sizeof t, "%s...", nv_tr(NV_STR_DMDM_STARTING));
     else {
@@ -1790,7 +1939,7 @@ void launch_show(const char *name, bool starting) {
     // in game the time line says it all ("playing for 12 min"); the status line is for "starting"
     line_set(s_launch_txt, s_dot_launch_txt, starting ? t : "", lk.stats, 30, 3);
     // the picture behind: the game's own art (sent as it started), else the stage's backglass of it
-    const int id = starting ? s_card_id : s_game_id;
+    const int id = starting ? s_launch_id : s_game_id;
     const lv_image_dsc_t *art = starting ? nullptr : dmd_menu_game_art(kScrH);
     if (!art && s_bgpx && s_bg_id && s_bg_id == id) art = &s_bg_dsc;
     lv_image_set_src(s_launch_bg, art);
@@ -1817,22 +1966,37 @@ void launch_cancel_cb(lv_event_t *) {
 void confirm_show(void);
 
 void play_cb(lv_event_t *) {
-    if (!s_card_id) return;
+    if (!s_card_id || s_launching) return;   // one launch at a time (Enter on the button under "Starting")
     if (s_game[0]) { confirm_show(); return; }   // another table runs: ask first
     char q[64];
     snprintf(q, sizeof q, "{\"q\":\"launch\",\"id\":%d}", s_card_id);
     if (nv_dmd_bridge_send('Q', q)) {
         s_launching = true;
         s_launch_us = esp_timer_get_time();
+        s_launch_id = s_card_id;
         launch_show(s_card_name, true);
+    } else {
+        send_fail_note();
     }
 }
 
-void another_cb(lv_event_t *) { s_random_pending = nv_dmd_bridge_send('Q', "{\"q\":\"random\"}"); }
+void another_cb(lv_event_t *) {
+    s_random_pending = nv_dmd_bridge_send('Q', "{\"q\":\"random\"}");
+    if (!s_random_pending) send_fail_note();
+}
+
+// This table's composition (the PC's second screen and this screen), chosen without playing it.
+void screens_cb(lv_event_t *) {
+    if (s_card_id && s_root) dmd_comp_open_table(s_root, s_card_id, s_card_name);
+}
 
 // The page at the top of the view; a short one (a card that was already landscape) centred.
 void help_show(Img *m) {
     lv_image_set_src(s_help_img, m ? &m->dsc : nullptr);
+    if (s_help_wait) {
+        if (m) lv_obj_add_flag(s_help_wait, LV_OBJ_FLAG_HIDDEN);
+        else lv_obj_remove_flag(s_help_wait, LV_OBJ_FLAG_HIDDEN);
+    }
     lv_obj_align(s_help_img, m && m->h >= kScrH ? LV_ALIGN_TOP_MID : LV_ALIGN_CENTER, 0, 0);
     lv_obj_scroll_to_y(s_help, 0, LV_ANIM_OFF);
 }
@@ -1841,7 +2005,11 @@ void help_cb(lv_event_t *) {
     if (!s_card_id) return;
     Img *m = img_find(s_card_id, 'h', 1024);
     help_show(m);
-    if (!m) s_want_help = true;
+    if (!m) {
+        s_want_help = true;
+        s_help_us = esp_timer_get_time();
+        s_help_tries = 0;
+    }
     lv_obj_remove_flag(s_help, LV_OBJ_FLAG_HIDDEN);
     pump_images();
 }
@@ -1894,6 +2062,7 @@ bool quit_request(void) {
     return true;
 }
 void quit_game(void) {
+    if (s_quit_us || s_http_busy) { nv_toast(NV_NOTE_INFO, nv_tr(NV_STR_DMDQ_QUITTING)); return; }   // already asked
     if (quit_request()) nv_toast(NV_NOTE_INFO, nv_tr(NV_STR_DMDQ_QUITTING));
     else nv_toast(NV_NOTE_ERROR, nv_tr(NV_STR_DMDQ_NO_PC));
 }
@@ -1951,7 +2120,7 @@ void fitm_prepare(void) {
     dmd_rect_t win;
     const bool art = dmd_menu_game_full(&win) != nullptr;
     const bool grill = dmd_menu_game_grill(&win) != nullptr;
-    const bool bg = dmd_menu_game_art(kScrH - 256) != nullptr;
+    const bool bg = s_game_id && img_find(s_game_id, 'g', kArtSrcW);   // there (made when shown)
     for (int i = 1; i < kFitChoices; i++) {   // i - 1: the fit (0 stretched, 1 classic, 2 backglass + DMD,
         const int fit = i - 1;                // 3 backglass only, 4 table art, 5 tall, 6 full screen)
         const bool ok = fit == 4 || fit == 7 ? art : fit == 8 ? grill : (fit == 2 || fit == 3) ? bg : true;   // 7: art
@@ -2009,10 +2178,12 @@ void confirm_ok_cb(lv_event_t *) {
     confirm_close();
     if (!quit_request()) { nv_toast(NV_NOTE_ERROR, nv_tr(NV_STR_DMDQ_NO_PC)); return; }
     s_pending_launch = s_card_id;
+    snprintf(s_pending_name, sizeof s_pending_name, "%s", s_card_name);
     s_pending_us = esp_timer_get_time();
     browse_set(false);
     s_launching = true;
     s_launch_us = esp_timer_get_time();
+    s_launch_id = s_card_id;
     launch_show(s_card_name, true);
 }
 
@@ -2020,7 +2191,7 @@ void show_close(void);
 
 // The game is over (the bridge said so): a table waiting to start goes now.
 void game_over(void) {
-    dmd_comp_close();   // its pictures were the game's: gone with it
+    if (dmd_comp_is_open() && s_comp_subj == s_game_id) dmd_comp_close();   // its pictures were the game's
     if (s_show_game) show_close();
     s_game[0] = 0;
     s_game_id = 0;
@@ -2034,11 +2205,15 @@ void game_over(void) {
     if (s_pending_launch) {
         char q[64];
         snprintf(q, sizeof q, "{\"q\":\"launch\",\"id\":%d}", s_pending_launch);
+        s_launch_id = s_pending_launch;
         s_pending_launch = 0;
         if (nv_dmd_bridge_send('Q', q)) {
             s_launching = true;
             s_launch_us = esp_timer_get_time();
-            launch_show(s_card_name, true);
+            launch_show(s_pending_name, true);
+        } else {
+            s_launching = false;
+            send_fail_note();
         }
     }
 }
@@ -2276,7 +2451,7 @@ void show_tap_cb(lv_event_t *) {
         if (s_items[i].id == id) { select_item(i); return; }
     char q[48];   // not in this list: its card on the stage
     snprintf(q, sizeof q, "{\"q\":\"table\",\"id\":%d}", id);
-    s_random_pending = nv_dmd_bridge_send('Q', q);
+    s_card_fetch = nv_dmd_bridge_send('Q', q);
 }
 
 // Start the showcase of a table: media = the screens it has (JSON array). ingame: the game being played.
@@ -2417,6 +2592,11 @@ void nav_tap_cb(lv_event_t *) {
     s_last_touch_us = esp_timer_get_time();
     for (int i = 0; id && i < s_nitems; i++)
         if (s_items[i].id == id) { select_item(i); return; }
+    if (id) {   // not in this list: its card on the stage, as from the showcase
+        char q[48];
+        snprintf(q, sizeof q, "{\"q\":\"table\",\"id\":%d}", id);
+        s_card_fetch = nv_dmd_bridge_send('Q', q);
+    }
 }
 
 void nav_build(void) {
@@ -2514,9 +2694,9 @@ void on_table(const char *json) {
     cJSON *o = cJSON_Parse(json);
     if (!o) return;
     const int id = jint(o, "id");
-    const bool random = s_random_pending;
-    s_random_pending = false;
-    if (random) {   // "surprise me": the bar goes there if the table is in this list, else only the stage
+    const bool random = s_random_pending, fetched = s_card_fetch;
+    s_random_pending = s_card_fetch = false;
+    if (random || fetched) {   // "surprise me": the bar goes there if the table is in this list, else only the stage
         int at = -1;
         for (int i = 0; i < s_nitems; i++)
             if (s_items[i].id == id) { at = i; break; }
@@ -2524,7 +2704,7 @@ void on_table(const char *json) {
         else stage_show(id, jstr(o, "name"), jint(o, "year"), jstr(o, "maker"), jint(o, "plays"), jint(o, "secs"),
                         jint(o, "ago"), jstr(o, "last"), cJSON_IsTrue(cJSON_GetObjectItem(o, "fav")), "");
         s_card_asked = true;
-        lv_obj_remove_flag(s_another.obj, LV_OBJ_FLAG_HIDDEN);
+        if (random) lv_obj_remove_flag(s_another.obj, LV_OBJ_FLAG_HIDDEN);
     }
     if (id != s_card_id) { cJSON_Delete(o); return; }   // the selection moved on meanwhile
     if (cJSON_IsTrue(cJSON_GetObjectItem(o, "fav"))) lv_obj_remove_flag(s_stage_fav, LV_OBJ_FLAG_HIDDEN);
@@ -2584,18 +2764,26 @@ void list_apply(int keep_id) {
 void on_list(const char *json) {
     if (!s_items || !s_all) return;
     const uint32_t hsh = fnv(json);
-    if (hsh == s_list_hash && s_nall) return;   // nothing changed: the screen stays as it is
-    s_list_hash = hsh;
-    if (s_sd_ok) {
-        char nm[96];
-        cJSON *o = cJSON_Parse(json);
-        const char *which = o ? jstr(o, "list") : "";
-        for (int i = 0; i < kNLists; i++)
-            if (!strcmp(which, kLists[i])) { list_file(nm, sizeof nm, i); sd_write(nm, json, strlen(json)); }
-        if (o) cJSON_Delete(o);
+    if (hsh == s_list_hash && s_nall) {   // nothing changed (this tab's list again): the screen stays as it is
+        if (!s_list_sd) s_list_wait = false;
+        return;
     }
     cJSON *o = cJSON_Parse(json);
     if (!o) return;
+    const char *which = jstr(o, "list");
+    if (s_sd_ok) {
+        char nm[96];
+        for (int i = 0; i < kNLists; i++)
+            if (!strcmp(which, kLists[i]) && !s_list_sd) { list_file(nm, sizeof nm, i); sd_write(nm, json, strlen(json)); }
+    }
+    // another tab's list (asked before a quick change of tab, or sent again after a loss): kept on the card
+    // only, the screen shows the tab that is lit
+    if (*which && strcmp(which, kLists[s_list]) != 0) {
+        cJSON_Delete(o);
+        return;
+    }
+    if (!s_list_sd) s_list_wait = false;   // the bridge answered for this tab
+    s_list_hash = hsh;
     const cJSON *items = cJSON_GetObjectItem(o, "items");
     const int keep_id = s_restore_id ? s_restore_id : s_nitems ? s_items[s_sel].id : 0;
     s_restore_id = 0;
@@ -2613,6 +2801,8 @@ void on_list(const char *json) {
         m.fav = cJSON_IsTrue(cJSON_GetObjectItem(it, "fav"));
         snprintf(m.name, sizeof m.name, "%s", jstr(it, "name"));
         snprintf(m.maker, sizeof m.maker, "%s", jstr(it, "maker"));
+        utf8_tidy(m.name);
+        utf8_tidy(m.maker);
         snprintf(m.added, sizeof m.added, "%s", jstr(it, "added"));
     }
     cJSON_Delete(o);
@@ -2623,18 +2813,20 @@ void on_list(const char *json) {
 void img_apply(Img *m) {
     if (!m) return;
     if (m->kind == 'g') {   // the game art: the picture is made when the app asks for it
-        s_art_id = 0;
+        for (Art &a : s_art)
+            if (a.id == m->id) a.id = 0;
     } else if (m->kind == 'f') {   // FullDMD: where the DMD goes, found once here
-        s_fart_id = m->id;
         m->has_win = !m->alpha && dmd_find_window((const uint16_t *)m->px, m->w, m->h, &m->win);
         nv_log_write(NV_LOG_INFO, "dmd", "FullDMD art of %d: %dx%d, window %s %d,%d %dx%d", m->id, m->w, m->h,
                      m->has_win ? "at" : "not found", m->win.x, m->win.y, m->win.w, m->win.h);
     } else if (m->kind == 'r') {   // the backglass with its grill: the housing, searched in the grill only
         m->has_win = false;
-        s_rgrill_id = m->id;
+        static const int16_t none[4] = {};
+        const int16_t *gv = meta_get(m->id, 'r');
+        if (!gv) gv = none;
         // only in a grill: searched in a picture without one it finds dark art and black edges (tried on all
         // 68 backglasses of the cabinet: 1 housing right, 13 wrong)
-        const int gx = s_rgrill[0], gy = s_rgrill[1], gw = s_rgrill[2], gh = s_rgrill[3];
+        const int gx = gv[0], gy = gv[1], gw = gv[2], gh = gv[3];
         if (!m->alpha && gw >= 16 && gh >= 16 && gx >= 0 && gy >= 0 && gx + gw <= m->w && gy + gh <= m->h) {
             uint16_t *sub = (uint16_t *)heap_caps_malloc((size_t)gw * gh * 2, MALLOC_CAP_SPIRAM);
             if (sub) {
@@ -2652,6 +2844,11 @@ void img_apply(Img *m) {
                      gx, gy, gw, gh, m->has_win ? "at" : "not found", m->win.x, m->win.y, m->win.w, m->win.h);
     } else if (m->kind == 'm') {
         ambient_bars((uint16_t *)m->px, m->w, m->h);
+    }
+    if ((m->kind == 'f' || m->kind == 'r' || m->kind == 'g') && m->id == s_comp_subj) {
+        dmd_comp_refresh(m->id);   // the composition screen shows that table: now with this picture
+    }
+    if (m->kind == 'm') {
         if (m->id == s_show_id && s_show_at < 0 && m->sub == s_show_list[0]) show_put(0);
     } else if (m->kind == 'h') {
         if (s_card_id == m->id) help_show(m);
@@ -2675,7 +2872,7 @@ void img_apply(Img *m) {
             if (o && lv_image_get_src(o) == old) lv_image_set_src(o, &m->dsc);
         for (int k = 0; k < kSlots; k++)
             if (s_slot[k] && lv_image_get_src(s_slot[k]) == old) lv_image_set_src(s_slot[k], &m->dsc);
-        img_drop(*s_zombie);
+        grave_add(s_zombie);
         s_zombie = nullptr;
     }
 }
@@ -2707,6 +2904,10 @@ bool img_peek(const uint8_t *p, uint32_t n, int *id, char *kind, int *w, int *su
 bool img_wanted(int id, char kind, int w, int sub) {
     if (kind == 'm') return id == s_show_id || show_find(id, sub);
     if (img_find(id, kind, w)) return true;
+    // the running game's art, FullDMD and backglass with grill: whatever table the card shows (a game
+    // launched from Popper or remotely leaves the card on another one; looked for on the card once, at the
+    // game's start, before they come over the cable)
+    if ((kind == 'g' || kind == 'f' || kind == 'r') && (id == s_game_id || id == s_comp_subj)) return true;
     if (kind == 'b' || kind == 'h') return id == s_card_id;
     if (id == s_card_id || id == s_nav_id) return true;   // a wheel: the stage's, the card's, the bar's
     for (int k = 0; k < kSlots; k++)
@@ -2715,7 +2916,11 @@ bool img_wanted(int id, char kind, int w, int sub) {
 }
 
 void on_image(const uint8_t *p, uint32_t n) {
-    s_wait_id = 0;
+    {
+        int id = 0, w = 0, sub = -1;
+        char kind = 0;
+        if (!img_peek(p, n, &id, &kind, &w, &sub) || id == s_wait_id) s_wait_id = 0;   // a late answer is not the one in flight
+    }
     {
         // a picture not wanted on screen (a prefetch, or the selection moved on meanwhile): onto the card as
         // it came, not decoded (no 1.2 MB of pixels made, nothing else pushed out of the memory)
@@ -2731,13 +2936,54 @@ void on_image(const uint8_t *p, uint32_t n) {
     }
     Img *m = img_store(p, n);
     if (m && s_sd_ok && (m->kind == 'w' || m->kind == 'b' || m->kind == 'h' || m->kind == 'm' || m->kind == 'f' ||
-                         m->kind == 'r')) {
+                         m->kind == 'r' || m->kind == 'g')) {
         char nm[96];   // as it came (compressed): read back next time instead of crossing the cable
         sd_name(nm, sizeof nm, m->id, m->kind, m->w, m->sub);
         sd_write(nm, p, n);
     }
     img_apply(m);
     pump_images();
+}
+
+// A 'D' message: a table without a DMD of its own (Future Pinball EMs, reels, segments) has its score
+// displays copied by the bridge off the backglass screen and packed into one small picture - u16 LE json_len,
+// {"w","h","fmt":"rgb565z"}, then the zlib'd RGB565 pixels. Shown as the DMD: the board draws it in dots
+// with the table's own layout choices; the showcase under it is put away while scores come.
+NV_PSRAM_BSS uint16_t *s_score565;
+NV_PSRAM_BSS uint32_t *s_score888;
+void on_score(const uint8_t *p, uint32_t n) {
+    if (n < 2 || !s_game[0]) return;   // only during a game
+    const uint32_t jl = p[0] | p[1] << 8;
+    if (jl > n - 2 || jl > 256) return;
+    char js[257];
+    memcpy(js, p + 2, jl);
+    js[jl] = 0;
+    cJSON *o = cJSON_Parse(js);
+    if (!o) return;
+    const int w = jint(o, "w"), h = jint(o, "h");
+    const bool z = !strcmp(jstr(o, "fmt"), "rgb565z");
+    cJSON_Delete(o);
+    if (w < 8 || h < 8 || w > DMD_MAX_W || h > DMD_MAX_H || w * h > DMD_MAX_PX || !z) return;
+    if (!s_score565) s_score565 = (uint16_t *)heap_caps_malloc(DMD_MAX_PX * 2, MALLOC_CAP_SPIRAM);
+    if (!s_score888) s_score888 = (uint32_t *)heap_caps_malloc(DMD_MAX_PX * 4, MALLOC_CAP_SPIRAM);
+    tinfl_decompressor *d = (tinfl_decompressor *)heap_caps_malloc(sizeof(tinfl_decompressor), MALLOC_CAP_SPIRAM);
+    if (!s_score565 || !s_score888 || !d) {
+        heap_caps_free(d);
+        return;
+    }
+    size_t in_sz = n - 2 - jl, out_sz = (size_t)w * h * 2;
+    tinfl_init(d);
+    const tinfl_status st = tinfl_decompress(d, p + 2 + jl, &in_sz, (uint8_t *)s_score565, (uint8_t *)s_score565, &out_sz,
+                                             TINFL_FLAG_PARSE_ZLIB_HEADER | TINFL_FLAG_USING_NON_WRAPPING_OUTPUT_BUF);
+    heap_caps_free(d);
+    if (st != TINFL_STATUS_DONE || out_sz != (size_t)w * h * 2) return;
+    for (int i = 0; i < w * h; i++) {
+        const uint16_t c = s_score565[i];
+        const uint32_t r = (c >> 11) & 31, g = (c >> 5) & 63, b = c & 31;
+        s_score888[i] = (r << 3 | r >> 2) << 16 | (g << 2 | g >> 4) << 8 | (b << 3 | b >> 2);
+    }
+    if (s_show_game && s_show) show_close();   // the scores take the screen from the pictures
+    nv_dmd_show(s_score888, w, h, "score");
 }
 
 void on_game(const char *json) {
@@ -2760,8 +3006,15 @@ void on_game(const char *json) {
         if (!s_show_id) launch_show(s_game, false);
         img_trim();
     } else {
+        char name[64] = "";
+        if (cJSON_IsTrue(cJSON_GetObjectItem(o, "crash"))) clean_name(name, sizeof name, *jstr(o, "name") ? jstr(o, "name") : s_game);
         game_over();
         s_want_list = true;   // stats changed: the list again (the selection stays on the table)
+        if (name[0]) {
+            char t[160];
+            snprintf(t, sizeof t, nv_tr(NV_STR_DMDM_CRASHED_FMT), name);
+            nv_toast(NV_NOTE_WARN, t);
+        }
     }
     cJSON_Delete(o);
 }
@@ -2773,16 +3026,22 @@ void send_prefs(void) {
 void handle(uint8_t type, uint8_t *data, uint32_t len) {
     switch (type) {
     case 'H': {
+        forget_missing();   // the bridge again (maybe restarted, with new pictures): ask anew
         cJSON *o = cJSON_Parse((const char *)data);
         if (o) {
             const cJSON *g = cJSON_GetObjectItem(o, "game");
             if (cJSON_IsObject(g)) {
+                if (jint(g, "id") != s_game_id || !s_game[0]) s_game_us = esp_timer_get_time();   // a game found running
                 snprintf(s_game, sizeof s_game, "%s", jstr(g, "name"));
                 s_game_id = jint(g, "id");
+                s_game_dmd = !cJSON_IsFalse(cJSON_GetObjectItem(g, "dmd"));
+                s_launching = false;
                 launch_show(s_game, false);
             } else if (s_game[0]) {
                 game_over();
             }
+            snprintf(s_bridge_ver, sizeof s_bridge_ver, "%s", jstr(o, "bridge"));
+            s_popper_ok = cJSON_IsTrue(cJSON_GetObjectItem(o, "popper"));
             const cJSON *emus = cJSON_GetObjectItem(o, "emus");
             if (cJSON_IsArray(emus)) {
                 s_nemus = 0;
@@ -2791,6 +3050,21 @@ void handle(uint8_t type, uint8_t *data, uint32_t len) {
                     if (s_nemus >= 16) break;
                     s_emus[s_nemus].id = jint(e, "id");
                     snprintf(s_emus[s_nemus].name, sizeof s_emus[0].name, "%s", jstr(e, "name"));
+                    // the bridge's own categories in the board's language (its names are Italian); the
+                    // systems keep their names, and a category of the user's own keeps what they wrote
+                    static const char *const kCatKeys[] = {"shooter", "maze", "platform", "sport", "arcade", "pc"};
+                    const char *key = jstr(e, "key");
+                    for (int c = 0; c < 6; c++) {
+                        if (strcmp(key, kCatKeys[c])) continue;
+                        const char *t = nv_tr(NV_STR_DMDM_CATS);
+                        for (int k = 0; k < c && t; k++) t = strchr(t, '\n') ? strchr(t, '\n') + 1 : nullptr;
+                        if (t && *t) {
+                            const char *end = strchr(t, '\n');
+                            const int len = end ? (int)(end - t) : (int)strlen(t);
+                            snprintf(s_emus[s_nemus].name, sizeof s_emus[0].name, "%.*s", len, t);
+                        }
+                    }
+                    utf8_tidy(s_emus[s_nemus].name);
                     s_nemus++;
                 }
             }
@@ -2828,6 +3102,7 @@ void handle(uint8_t type, uint8_t *data, uint32_t len) {
     case 'L': on_list((const char *)data); break;
     case 'T': on_table((const char *)data); break;
     case 'I': on_image(data, len); break;
+    case 'D': on_score(data, len); break;
     case 'G': on_game((const char *)data); break;
     case 'S': on_showcase((const char *)data); break;
     case 'K':   // the card's copy is still the bridge's: nothing to do
@@ -2837,15 +3112,34 @@ void handle(uint8_t type, uint8_t *data, uint32_t len) {
     case 'R': {
         cJSON *o = cJSON_Parse((const char *)data);
         if (o && !strcmp(jstr(o, "q"), "exit")) {
-            if (!cJSON_IsTrue(cJSON_GetObjectItem(o, "ok"))) nv_toast(NV_NOTE_ERROR, jstr(o, "err"));
+            if (!cJSON_IsTrue(cJSON_GetObjectItem(o, "ok"))) {
+                s_quit_us = 0;
+                nv_toast(NV_NOTE_ERROR, nv_tr(NV_STR_DMDQ_QUIT_FAIL));
+                nv_log_write(NV_LOG_WARN, "dmd", "quit refused by the PC: %s", jstr(o, "err"));
+            }
         } else if (o && !strcmp(jstr(o, "q"), "s2")) {
             dmd_comp_on_result(jint(o, "id"), cJSON_IsTrue(cJSON_GetObjectItem(o, "ok")), jstr(o, "err"));
+        } else if (o && !strcmp(jstr(o, "q"), "b2sinfo")) {   // what a table's backglass file holds
+            DmdB2sInfo i{};
+            i.id = jint(o, "id");
+            i.b2s = cJSON_IsTrue(cJSON_GetObjectItem(o, "b2s"));
+            i.dual = cJSON_IsTrue(cJSON_GetObjectItem(o, "dual"));
+            i.bw = jint(o, "bw");
+            i.bh = jint(o, "bh");
+            i.grill = jint(o, "grill");
+            i.aw = jint(o, "aw");
+            i.ah = jint(o, "ah");
+            i.mode = jint(o, "mode");
+            i.s2 = jint(o, "s2");
+            i.s2dmd = cJSON_IsTrue(cJSON_GetObjectItem(o, "s2dmd"));
+            dmd_comp_on_info(&i);
+        } else if (o && !strcmp(jstr(o, "q"), "dual")) {
+            dmd_comp_on_dual(jint(o, "id"), jint(o, "mode"), cJSON_IsTrue(cJSON_GetObjectItem(o, "ok")), jstr(o, "err"));
         } else if (o && !cJSON_IsTrue(cJSON_GetObjectItem(o, "ok"))) {
             s_launching = false;
             launch_hide();
-            char t[200];
-            snprintf(t, sizeof t, nv_tr(NV_STR_DMDM_LAUNCH_FAIL_FMT), jstr(o, "err"));
-            nv_toast(NV_NOTE_ERROR, t);
+            nv_log_write(NV_LOG_WARN, "dmd", "launch refused by the PC: %s", jstr(o, "err"));
+            nv_toast(NV_NOTE_ERROR, nv_tr(NV_STR_DMDM_LAUNCH_FAIL));
         }
         if (o) cJSON_Delete(o);
         break;
@@ -2873,9 +3167,17 @@ void handle(uint8_t type, uint8_t *data, uint32_t len) {
                 for (int i = 0; i < s_show_n; i++)
                     if (s_show_list[i] != sub) s_show_list[n++] = s_show_list[i];
                 s_show_n = n;
-                if (!n) show_close();
-                else if (s_show_at < 0) show_put(0);   // the next one, if it is here already
+                if (!n) {   // none of its pictures: its wheel and name, as for a table without them
+                    const bool game = s_show_game;
+                    show_close();
+                    if (!game) nav_show("table", s_show_name, mid);
+                    else if (s_game[0] && !s_browse) launch_show(s_game, false);
+                } else if (s_show_at < 0) show_put(0);   // the next one, if it is here already
                 else if (s_show_at >= n) s_show_at = 0;
+            }
+            if (kc == 'h' && mid == s_card_id && s_help && !lv_obj_has_flag(s_help, LV_OBJ_FLAG_HIDDEN)) {
+                close_help();   // a black page would stay up waiting for nothing
+                nv_toast(NV_NOTE_INFO, nv_tr(NV_STR_DMDM_NO_HELP));
             }
             if (kc == 'w') {
                 if (mid == s_card_id) stage_wheel();
@@ -2884,6 +3186,19 @@ void handle(uint8_t type, uint8_t *data, uint32_t len) {
             }
             s_wait_id = 0;
             pump_images();
+        } else if (o) {   // a request the PC could not answer (Popper's database, a table gone)
+            const char *q = jstr(o, "q");
+            nv_log_write(NV_LOG_WARN, "dmd", "the PC could not answer \"%s\": %s", q, jstr(o, "err"));
+            if (!strcmp(q, "list")) {
+                s_list_wait = false;
+                if (!s_nitems) show_note(nv_tr(NV_STR_DMDM_LIST_FAIL));
+            } else if (!strcmp(q, "table") || !strcmp(q, "random")) {
+                s_random_pending = s_card_fetch = false;
+            } else if (!strcmp(q, "launch")) {
+                s_launching = false;
+                launch_hide();
+                nv_toast(NV_NOTE_ERROR, nv_tr(NV_STR_DMDM_LAUNCH_FAIL));
+            }
         }
         if (o) cJSON_Delete(o);
         break;
@@ -2900,6 +3215,7 @@ void dots_free_all(void) {
     for (DotText *d : all) dot_free(*d);
     for (auto &t : s_dot_tab) { dot_free(t[0]); dot_free(t[1]); }
     btn_free(s_play);
+    if (s_screens) btn_free(*s_screens);
     btn_free(s_helpb);
     btn_free(s_another);
     btn_free(s_back);
@@ -3026,15 +3342,23 @@ void build_ui(lv_obj_t *root) {
         }
     }
     tabs_restyle();
-    lv_obj_t *spacer = plain(hdr);
+    lv_obj_t *spacer = plain(hdr);   // (the room, while the count is hidden: browsing during a game)
     lv_obj_set_height(spacer, 1);
     lv_obj_set_flex_grow(spacer, 1);
+    // the count takes the room left between the tabs and the buttons, right-aligned, and is cut there: a long
+    // system name ("Visual Pinball X  28 / 72") pushed the settings button off the screen
     if (lk.dots) {
         s_count = lv_image_create(hdr);
         lv_obj_clear_flag(s_count, LV_OBJ_FLAG_CLICKABLE);
+        lv_image_set_inner_align(s_count, LV_IMAGE_ALIGN_RIGHT_MID);
+        lv_obj_set_height(s_count, 24);
     } else {
         s_count = text(hdr, &nv_font_mono_17, lk.dim);
+        lv_label_set_long_mode(s_count, LV_LABEL_LONG_DOT);
+        lv_obj_set_style_text_align(s_count, LV_TEXT_ALIGN_RIGHT, 0);
     }
+    lv_obj_set_width(s_count, 1);   // its width from the flex grow (nearly all of it), never from its text
+    lv_obj_set_flex_grow(s_count, 255);
     lv_obj_set_style_pad_hor(s_count, 6, 0);
     btn_make(s_resume_b, hdr, LV_SYMBOL_PLAY, nv_tr(NV_STR_DMD_RESUME), true, resume_cb, true);   // browsing in game
     s_resume = s_resume_b.obj;
@@ -3090,9 +3414,12 @@ void build_ui(lv_obj_t *root) {
     }
     lv_obj_add_flag(s_stage_fav, LV_OBJ_FLAG_HIDDEN);
     s_stage_scores = text(col, &nv_font_mono_17, lk.scores);
+    lv_obj_set_width(s_stage_scores, kColW);
+    lv_label_set_long_mode(s_stage_scores, LV_LABEL_LONG_WRAP);
     lv_obj_t *btns = plain(col);
     lv_obj_set_size(btns, kColW, LV_SIZE_CONTENT);
-    lv_obj_set_flex_flow(btns, LV_FLEX_FLOW_ROW);
+    lv_obj_set_flex_flow(btns, LV_FLEX_FLOW_ROW_WRAP);   // four buttons in German are wider than the column
+    lv_obj_set_style_pad_row(btns, 10, 0);
     lv_obj_set_style_pad_column(btns, 14, 0);
     lv_obj_set_style_pad_top(btns, 6, 0);
     lv_obj_set_flex_align(btns, LV_FLEX_ALIGN_START, LV_FLEX_ALIGN_CENTER, LV_FLEX_ALIGN_CENTER);
@@ -3101,6 +3428,8 @@ void build_ui(lv_obj_t *root) {
     nv_focus_prefer(s_play.obj);
     btn_make(s_helpb, btns, nullptr, nv_tr(NV_STR_DMDM_HELP), false, help_cb);
     lv_obj_add_flag(s_helpb.obj, LV_OBJ_FLAG_HIDDEN);
+    if (!s_screens) s_screens = (Btn *)heap_caps_calloc(1, sizeof(Btn), MALLOC_CAP_SPIRAM);
+    if (s_screens) btn_make(*s_screens, btns, LV_SYMBOL_IMAGE, nv_tr(NV_STR_DMDM_SCREENS), false, screens_cb);
     btn_make(s_another, btns, LV_SYMBOL_SHUFFLE, nv_tr(NV_STR_DMDM_ANOTHER), false, another_cb);
     lv_obj_add_flag(s_another.obj, LV_OBJ_FLAG_HIDDEN);
 
@@ -3152,6 +3481,9 @@ void build_ui(lv_obj_t *root) {
     s_launch = plain(s_menu);
     lv_obj_set_size(s_launch, lv_pct(100), lv_pct(100));
     lv_obj_add_flag(s_launch, LV_OBJ_FLAG_CLICKABLE);   // nothing behind it reacts
+    lv_obj_add_event_cb(s_launch, [](lv_event_t *e) {   // in game, a tap beside the buttons: the quick actions
+        if (lv_event_get_target_obj(e) == s_launch && s_game[0] && !s_launching) dmd_menu_quick_open();
+    }, LV_EVENT_CLICKED, nullptr);
     lv_obj_set_style_bg_color(s_launch, hx(0x000000), 0);
     lv_obj_set_style_bg_opa(s_launch, LV_OPA_COVER, 0);
     lv_obj_add_flag(s_launch, LV_OBJ_FLAG_HIDDEN);
@@ -3174,6 +3506,9 @@ void build_ui(lv_obj_t *root) {
     s_launch_dots = lv_image_create(lcol);
     lv_obj_clear_flag(s_launch_dots, LV_OBJ_FLAG_CLICKABLE);
     s_launch_name = text(lcol, &nv_font_28, lk.title);
+    lv_obj_set_width(s_launch_name, kScrW - 80);
+    lv_obj_set_style_text_align(s_launch_name, LV_TEXT_ALIGN_CENTER, 0);
+    lv_label_set_long_mode(s_launch_name, LV_LABEL_LONG_WRAP);
     s_launch_txt = line_make(lcol, &nv_font_20, lk.stats, kScrW - 80);
     lv_obj_set_style_text_align(lv_obj_get_child(s_launch_txt, 1), LV_TEXT_ALIGN_CENTER, 0);
     lv_obj_set_style_align(lv_obj_get_child(s_launch_txt, 0), LV_ALIGN_TOP_MID, 0);
@@ -3207,6 +3542,13 @@ void build_ui(lv_obj_t *root) {
     s_help_img = lv_image_create(s_help);
     lv_obj_align(s_help_img, LV_ALIGN_TOP_MID, 0, 0);
     lv_obj_clear_flag(s_help_img, LV_OBJ_FLAG_CLICKABLE);
+    s_help_wait = text(s_help, &nv_font_20, lk.dots ? lk.stats : 0xFFFFFF);
+    lv_label_set_text(s_help_wait, nv_tr(NV_STR_DMDM_LOADING));
+    lv_obj_add_flag(s_help_wait, LV_OBJ_FLAG_FLOATING);
+    lv_obj_center(s_help_wait);
+    lv_obj_t *hx_btn = icon_btn(s_help, LV_SYMBOL_CLOSE, lk.dots ? lk.tab_on : 0xFFFFFF, help_close_cb);
+    lv_obj_add_flag(hx_btn, LV_OBJ_FLAG_FLOATING);
+    lv_obj_align(hx_btn, LV_ALIGN_TOP_RIGHT, -16, 16);
     quick_build(root);
 }
 
@@ -3215,6 +3557,7 @@ void build_ui(lv_obj_t *root) {
 void dmd_menu_build(lv_obj_t *root, void (*open_settings)(void)) {
     s_open_settings = open_settings;
     s_root = root;
+    if (!s_cache.p) s_cache.p = (Img *)heap_caps_calloc(kCacheN, sizeof(Img), MALLOC_CAP_SPIRAM);
     if (!s_items) s_items = (Item *)heap_caps_calloc(kMaxItems, sizeof(Item), MALLOC_CAP_SPIRAM);
     if (!s_all) s_all = (Item *)heap_caps_calloc(kMaxItems, sizeof(Item), MALLOC_CAP_SPIRAM);
     sd_init();
@@ -3222,6 +3565,8 @@ void dmd_menu_build(lv_obj_t *root, void (*open_settings)(void)) {
     s_list_hash = 0;
     s_nver = 0;
     s_zombie = nullptr;
+    s_http_result = 0;   // a request of an earlier opening: not this one's to report
+    s_list_wait = false;
     s_nall = 0;
     s_filter = 0;
     if (!s_bgpx) s_bgpx = (uint16_t *)heap_caps_aligned_alloc(64, (size_t)kScrW * kScrH * 2, MALLOC_CAP_SPIRAM);
@@ -3302,7 +3647,7 @@ void dmd_menu_set_theme(int theme) {
     else if (s_hello) show_note(nv_tr(NV_STR_DMDM_EMPTY));
     if (help) help_cb(nullptr);
     if (s_game[0]) launch_show(s_game, false);
-    else if (s_launching) launch_show(s_card_name, true);
+    else if (s_launching) launch_show(s_launch_title, true);
 }
 
 bool dmd_menu_tick(bool allowed) {
@@ -3314,9 +3659,20 @@ bool dmd_menu_tick(bool allowed) {
         nv_dmd_bridge_free(data);
     }
     if (!s_menu) return false;
+    graves_reap(false);
     nv_dmd_status_t st;
     nv_dmd_get_status(&st);
     const int64_t now = esp_timer_get_time();
+    // the instructions page asked for and lost on the cable: asked again twice, then given up
+    if (s_help && !lv_obj_has_flag(s_help, LV_OBJ_FLAG_HIDDEN) && !lv_image_get_src(s_help_img) && now - s_help_us > 8000000) {
+        s_help_us = now;
+        if (++s_help_tries <= 2) {
+            s_want_help = true;
+        } else {
+            close_help();
+            nv_toast(NV_NOTE_WARN, nv_tr(NV_STR_DMDM_HELP_FAIL));
+        }
+    }
     // a game whose end never came (the bridge stopped meanwhile): forgotten after 4 hours
     if (s_game[0] && !st.bridge && now - s_game_us > 4LL * 3600 * 1000000) { s_game[0] = 0; launch_hide(); }
     if (s_launching && !s_game[0] && !s_pending_launch && now - s_launch_us > kLaunchTimeoutUs) {   // Popper never started it
@@ -3339,11 +3695,13 @@ bool dmd_menu_tick(bool allowed) {
             nv_log_write(NV_LOG_INFO, "dmd", "quit asked again (the game was still running)");
         } else {
             s_quit_us = 0;
+            nv_toast(NV_NOTE_WARN, nv_tr(NV_STR_DMDQ_QUIT_FAIL));
         }
     }
     if (s_pending_launch && now - s_pending_us > 45000000) {   // the game never ended (a quit asked twice)
         s_pending_launch = 0;
         s_launching = false;
+        nv_toast(NV_NOTE_WARN, nv_tr(NV_STR_DMDQ_QUIT_FAIL));
         if (s_game[0]) launch_show(s_game, false);
     }
     const bool show = allowed && ((st.bridge && s_hello) || s_game[0] || s_launching);
@@ -3383,14 +3741,26 @@ bool dmd_menu_tick(bool allowed) {
         else { lv_obj_add_flag(s_menu, LV_OBJ_FLAG_HIDDEN); close_help(); }
     }
     if (show && !s_game[0] && s_nall && now - s_list_us > 300000000 && now - s_last_touch_us > 60000000) s_want_list = true;
+    if (s_list_wait && now - s_list_us > kListRetryUs) { s_list_wait = false; s_want_list = true; }   // lost on the cable
+    // the bridge pings but this menu never had its hello (sent before the app opened, or lost): ask
+    if (st.bridge && !s_hello && now - s_hello_ask_us > 3000000) {
+        s_hello_ask_us = now;
+        nv_dmd_bridge_send('Q', "{\"q\":\"hello\"}");
+    }
     if (s_hello && s_want_list) ask_list();
+    dmd_comp_tick();
     if (show) pump_images();
     return show;
 }
 
 bool dmd_menu_back(void) {
     if (s_find && !lv_obj_has_flag(s_find, LV_OBJ_FLAG_HIDDEN)) { find_close(); return true; }
-    if (s_show_id) { show_close(); return true; }
+    if (s_show_id) {
+        const bool game = s_show_game;
+        show_close();
+        if (game && s_game[0] && !s_browse) launch_show(s_game, false);   // not the table browser: the game's page
+        return true;
+    }
     if (nav_visible()) { nav_close(); return true; }
     if (s_confirm && !lv_obj_has_flag(s_confirm, LV_OBJ_FLAG_HIDDEN)) { confirm_close(); return true; }
     if (s_quick && !lv_obj_has_flag(s_quick, LV_OBJ_FLAG_HIDDEN)) { quick_close(); return true; }
@@ -3404,6 +3774,7 @@ bool dmd_menu_back(void) {
 }
 
 bool dmd_menu_in_game(void) { return s_game[0] != 0; }
+int64_t dmd_menu_game_start_us(void) { return s_game[0] ? s_game_us : 0; }
 
 bool dmd_menu_ready(void) {
     nv_dmd_status_t st;
@@ -3464,51 +3835,66 @@ bool dmd_menu_covering(void) {
            (s_fitm && !lv_obj_has_flag(s_fitm, LV_OBJ_FLAG_HIDDEN)) || dmd_comp_is_open();
 }
 
-const lv_image_dsc_t *dmd_menu_game_art(int h) {
-    if (!s_game_id) return nullptr;
-    if (s_artpx && s_art_id == s_game_id && s_art_h == h) return &s_art_dsc;
-    Img *m = img_find(s_game_id, 'g', kArtSrcW);
+const lv_image_dsc_t *dmd_menu_table_art(int id, int h) {
+    if (!id) return nullptr;
+    Art &a = s_art[h == kScrH ? 0 : 1];   // the game's whole-screen page, the game's band
+    if (a.px && a.id == id && a.h == h) return &a.dsc;
+    Img *m = img_find(id, 'g', kArtSrcW);
     if (!m) return nullptr;
-    art_build(*m, h);
-    return s_art_id == s_game_id && s_art_h == h ? &s_art_dsc : nullptr;
+    art_build(*m, h, a);
+    return a.id == id && a.h == h ? &a.dsc : nullptr;
+}
+const lv_image_dsc_t *dmd_menu_game_art(int h) { return dmd_menu_table_art(s_game_id, h); }
+const lv_image_dsc_t *dmd_menu_comp_art(int id, int h) {   // the composition screen's, whatever the table
+    if (!id) return nullptr;
+    Art &a = s_art[2];
+    if (a.px && a.id == id && a.h == h) return &a.dsc;
+    Img *m = img_find(id, 'g', kArtSrcW);
+    if (!m) return nullptr;
+    art_build(*m, h, a);
+    return a.id == id && a.h == h ? &a.dsc : nullptr;
 }
 
 int dmd_menu_game_id(void) { return s_game[0] ? s_game_id : 0; }
+int dmd_menu_selected(void) { return s_card_id; }
+const char *dmd_menu_selected_name(void) { return s_card_name; }
 
-const lv_image_dsc_t *dmd_menu_game_grill(dmd_rect_t *win) {
-    if (!s_game_id) return nullptr;
-    Img *m = img_find(s_game_id, 'r', 1024);
-    static int s_sd_tried;   // the card once a game, when it did not come over the cable
-    if (!m && s_sd_tried != s_game_id) {
-        s_sd_tried = s_game_id;
-        if (sd_fetch(s_game_id, 'r', 1024, 600, -1)) m = img_find(s_game_id, 'r', 1024);
+// A FullDMD art ('f') or a backglass with grill ('r') of a table, 1024x600, from memory or the card (read
+// once per table: then the cable brings it), with the window / housing found in it.
+Img *table_pic(int id, char kind) {
+    if (!id) return nullptr;
+    Img *m = img_find(id, kind, 1024);
+    static int s_tried[2];
+    int &tried = s_tried[kind == 'f' ? 0 : 1];
+    if (!m && tried != id) {
+        tried = id;
+        if (sd_fetch(id, kind, 1024, 600, -1)) m = img_find(id, kind, 1024);
     }
-    if (!m || !m->has_win || m->h != 600) return nullptr;
+    return m && m->h == 600 ? m : nullptr;
+}
+
+const lv_image_dsc_t *dmd_menu_table_grill(int id, dmd_rect_t *win) {
+    Img *m = table_pic(id, 'r');
+    if (!m || !m->has_win) return nullptr;
     *win = m->win;
     return &m->dsc;
 }
+const lv_image_dsc_t *dmd_menu_game_grill(dmd_rect_t *win) { return dmd_menu_table_grill(s_game_id, win); }
 
-const lv_image_dsc_t *dmd_menu_game_full(dmd_rect_t *win) {
-    if (!s_game_id) return nullptr;
-    Img *m = img_find(s_game_id, 'f', 1024);
-    static int s_sd_tried;   // the card is read once a game, when the art did not come over the cable
-    if (!m && s_sd_tried != s_game_id) {
-        s_sd_tried = s_game_id;
-        if (sd_fetch(s_game_id, 'f', 1024, 600, -1)) m = img_find(s_game_id, 'f', 1024);
-    }
-    if (!m || !m->has_win || m->h != 600) return nullptr;
+const lv_image_dsc_t *dmd_menu_table_full(int id, dmd_rect_t *win) {
+    Img *m = table_pic(id, 'f');
+    if (!m || !m->has_win) return nullptr;
     *win = m->win;
     return &m->dsc;
 }
+const lv_image_dsc_t *dmd_menu_game_full(dmd_rect_t *win) { return dmd_menu_table_full(s_game_id, win); }
 
-const lv_image_dsc_t *dmd_menu_game_b2s(dmd_rect_t *box, int *grill, dmd_rect_t *housing) {
-    if (!s_game_id) return nullptr;
-    dmd_rect_t w{};
-    dmd_menu_game_grill(&w);   // the card once a game, when it did not come over the cable
-    Img *m = img_find(s_game_id, 'r', 1024);
-    if (!m || m->h != 600 || m->alpha || s_rgrill_id != s_game_id) return nullptr;
+const lv_image_dsc_t *dmd_menu_table_b2s(int id, dmd_rect_t *box, int *grill, dmd_rect_t *housing) {
+    Img *m = table_pic(id, 'r');
+    const int16_t *g = m ? meta_get(id, 'r') : nullptr;
+    if (!m || m->alpha || !g) return nullptr;
     // the bridge fits the picture whole and centred, its grill at the bottom: the rest follows
-    const int gx = s_rgrill[0], gy = s_rgrill[1], gw = s_rgrill[2], gh = s_rgrill[3];
+    const int gx = g[0], gy = g[1], gw = g[2], gh = g[3];
     const int bottom = gy + gh, h = 2 * bottom - m->h;
     if (gw < 16 || h < 16 || gx < 0 || gx + gw > m->w || bottom > m->h) return nullptr;
     *box = dmd_rect_t{gx, m->h - bottom, gw, h};
@@ -3516,11 +3902,22 @@ const lv_image_dsc_t *dmd_menu_game_b2s(dmd_rect_t *box, int *grill, dmd_rect_t 
     *housing = m->has_win ? m->win : dmd_rect_t{0, 0, 0, 0};
     return &m->dsc;
 }
+const lv_image_dsc_t *dmd_menu_game_b2s(dmd_rect_t *box, int *grill, dmd_rect_t *housing) {
+    return dmd_menu_table_b2s(s_game_id, box, grill, housing);
+}
 
-void dmd_menu_game_full_shape(int *aw, int *ah) {
-    const bool known = s_fart_id == s_game_id && s_fart[0] > 0 && s_fart[1] > 0;
-    *aw = known ? s_fart[0] : 1920;
-    *ah = known ? s_fart[1] : 1080;
+void dmd_menu_table_full_shape(int id, int *aw, int *ah) {
+    const int16_t *v = meta_get(id, 'f');
+    const bool known = v && v[0] > 0 && v[1] > 0;
+    *aw = known ? v[0] : 1920;
+    *ah = known ? v[1] : 1080;
+}
+void dmd_menu_game_full_shape(int *aw, int *ah) { dmd_menu_table_full_shape(s_game_id, aw, ah); }
+
+void dmd_menu_comp_fetch(int id) {
+    s_comp_subj = id;
+    s_comp_want = id;
+    pump_images();
 }
 
 bool dmd_menu_s2(int *w, int *h) {
@@ -3530,6 +3927,13 @@ bool dmd_menu_s2(int *w, int *h) {
 }
 
 // (never while dmdext has the cable: the bytes would reach it, not the bridge)
+void dmd_menu_send_fail_note(void) { send_fail_note(); }
+bool dmd_menu_bridge_info(char *ver, size_t n, bool *popper_ok) {
+    if (!s_hello) return false;
+    snprintf(ver, n, "%s", s_bridge_ver);
+    *popper_ok = s_popper_ok;
+    return true;
+}
 bool dmd_menu_send(const char *json) { return s_hello && !(s_game[0] && s_game_dmd) && nv_dmd_bridge_send('Q', json); }
 
 void dmd_menu_quit_and_relaunch(void) {
@@ -3539,7 +3943,7 @@ void dmd_menu_quit_and_relaunch(void) {
     }
     s_pending_launch = s_game_id;
     s_pending_us = esp_timer_get_time();
-    snprintf(s_card_name, sizeof s_card_name, "%s", s_game);
+    snprintf(s_pending_name, sizeof s_pending_name, "%s", s_game);
 }
 
 void dmd_menu_want_fulldmd(bool on) {
@@ -3555,6 +3959,9 @@ void dmd_menu_destroy(void) {
     nv_ui_state_save(&st, sizeof st);
     lv_anim_delete(&s_drag, anim_exec);
     for (Img &m : s_cache) img_drop(m);
+    heap_caps_free(s_cache.p);
+    s_cache.p = nullptr;
+    s_zombie = nullptr;
     dots_free_all();
     for (lv_indev_t *in = lv_indev_get_next(nullptr); in; in = lv_indev_get_next(in))
         lv_indev_remove_event_cb_with_user_data(in, touch_cb, &s_touch_marker);
@@ -3567,18 +3974,24 @@ void dmd_menu_destroy(void) {
     s_all = nullptr;
     heap_caps_free(s_missing);
     s_missing = nullptr;
+    heap_caps_free(s_score565);
+    heap_caps_free(s_score888);
+    s_score565 = nullptr;
+    s_score888 = nullptr;
     s_nmissing = 0;
     s_nall = 0;
-    lv_image_cache_drop(&s_art_dsc);
-    heap_caps_free(s_artpx);
-    s_artpx = nullptr;
-    s_art_id = 0;
+    for (Art &a : s_art) {
+        lv_image_cache_drop(&a.dsc);
+        heap_caps_free(a.px);
+        a = Art{};
+    }
     s_menu = s_bg = s_tabs = s_count = s_note = s_stage = s_stage_img = s_stage_dots = s_stage_title = nullptr;
     s_stage_fav = s_stage_meta = s_stage_st1 = s_stage_st2 = s_stage_scores = nullptr;
     s_bar = nullptr;
     for (lv_obj_t *&o : s_slot) o = nullptr;
     for (lv_obj_t *&o : s_slot_ph) o = nullptr;
     s_stage_ph = nullptr;
+    s_help_wait = nullptr;
     s_help = s_help_img = s_launch = s_launch_dots = s_launch_name = s_launch_txt = s_attract_txt = nullptr;
     show_close();
     s_show = s_show_name_lbl = s_show_name_dots = s_show_kind = s_show_pips = s_show_hint = nullptr;

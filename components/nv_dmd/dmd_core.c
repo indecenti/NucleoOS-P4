@@ -2,7 +2,10 @@
 #include "dmd_core.h"
 
 #include <stdio.h>
+#include <stdlib.h>
 #include <string.h>
+
+#define MAX3(a, b, c) ((a) > (b) ? ((a) > (c) ? (a) : (c)) : ((b) > (c) ? (b) : (c)))
 
 // ================================================================== SHA-1 + base64 (handshake only)
 
@@ -469,13 +472,14 @@ static bool zones(dmd_zedmd_t *z, const uint8_t *d, size_t n) {
 // A command's header is complete (or its payload): act on it. Returns DMD_Z_EV_* bits.
 static int command(dmd_zedmd_t *z, uint8_t *out, size_t cap, size_t *len) {
     int ev = 0;
+    if (z->cmd == 0x05 && z->got < z->size) return 0;     // payload still coming
+    z->cmds++;
     switch (z->cmd) {
     case 0x0C:                                             // handshake: answer at once, no chunk ack
         hello(z, out, cap, len);
         dmd_zedmd_reset(z);
         return DMD_Z_EV_HELLO;
     case 0x05:
-        if (z->got < z->size) return 0;                    // payload still coming
         if (z->comp) {
             const int k = z->inflate ? z->inflate(z->inflate_ctx, z->pay, z->size, z->raw, sizeof z->raw) : -1;
             if (k < 0 || !zones(z, z->raw, (size_t)k)) { z->err = true; return DMD_Z_EV_ERROR; }
@@ -566,18 +570,62 @@ static uint16_t sum_bytes(uint16_t s, const uint8_t *p, size_t n) {
     return s;
 }
 
-static void link_restart(dmd_link_t *l, uint8_t b) {   // resync: b may start the next magic
+bool dmd_link_reset(dmd_link_t *l) {
+    const bool cut = l->st != 0;
+    if (cut) {
+        l->bad++;
+        l->bad_type = l->st > 1 || l->n > 0 ? l->hdr[0] : 0;
+        l->bad_len = l->st > 1 ? l->len : 0;
+    }
     l->st = 0;
-    l->n = b == 'N' ? 1 : 0;
+    l->n = 0;
+    return cut;
 }
 
-void dmd_link_feed(dmd_link_t *l, const uint8_t *in, size_t n, dmd_link_cb cb, void *ctx) {
-    static const uint8_t magic[4] = {'N', 'V', 'D', 'M'};
+static const uint8_t kMagic[4] = {'N', 'V', 'D', 'M'};
+
+// Byte i of a dropped frame as it came: its payload, then its two trailer bytes.
+static uint8_t link_at(const dmd_link_t *l, uint32_t i) { return i < l->len ? l->buf[i] : l->sumb[i - l->len]; }
+
+// The frame start that may begin at i of a dropped frame (payload + trailer, n bytes): "NVDM", an upper-case
+// type and a length that fits, or, near the end, as much of that as is there (the rest comes next).
+static bool link_start_at(const dmd_link_t *l, uint32_t i, uint32_t n) {
+    const uint32_t k = n - i < 9 ? n - i : 9;
+    for (uint32_t j = 0; j < k && j < 4; j++)
+        if (link_at(l, i + j) != kMagic[j]) return false;
+    if (k > 4) {
+        const uint8_t t = link_at(l, i + 4);
+        if (t < 'A' || t > 'Z') return false;
+    }
+    if (k < 9) return true;
+    const uint32_t len = (uint32_t)link_at(l, i + 5) | (uint32_t)link_at(l, i + 6) << 8 |
+                         (uint32_t)link_at(l, i + 7) << 16 | (uint32_t)link_at(l, i + 8) << 24;
+    return len <= l->cap;
+}
+
+// Where the next frame starts inside a dropped one (payload + trailer), or len + 2 for nowhere. Only looked for
+// after a checksum failed.
+static uint32_t link_find_next(const dmd_link_t *l) {
+    const uint32_t n = l->len + 2;
+    for (uint32_t i = 0; i < l->len; i++) {
+        const uint8_t *p = memchr(l->buf + i, 'N', l->len - i);
+        if (!p) break;
+        i = (uint32_t)(p - l->buf);
+        if (link_start_at(l, i, n)) return i;
+    }
+    for (uint32_t i = l->len; i < n; i++)
+        if (link_at(l, i) == 'N' && link_start_at(l, i, n)) return i;
+    return n;
+}
+
+// again: these bytes are a dropped frame's own, fed a second time. A frame that fails among them is only
+// dropped (no second resync: one level, so crafted input cannot nest them up to the stack's end).
+static void link_feed(dmd_link_t *l, const uint8_t *in, size_t n, dmd_link_cb cb, void *ctx, bool again) {
     for (size_t i = 0; i < n; i++) {
         const uint8_t b = in[i];
         switch (l->st) {
         case 0:
-            if (b == magic[l->n]) {
+            if (b == kMagic[l->n]) {
                 if (++l->n == 4) { l->st = 1; l->n = 0; }
             } else {
                 l->n = b == 'N' ? 1 : 0;
@@ -587,7 +635,16 @@ void dmd_link_feed(dmd_link_t *l, const uint8_t *in, size_t n, dmd_link_cb cb, v
             l->hdr[l->n++] = b;
             if (l->n == 5) {
                 l->len = (uint32_t)l->hdr[1] | (uint32_t)l->hdr[2] << 8 | (uint32_t)l->hdr[3] << 16 | (uint32_t)l->hdr[4] << 24;
-                if (l->len > l->cap) { l->bad++; link_restart(l, b); break; }
+                if (l->len > l->cap) {   // not a header of ours (bytes lost before it): its 5 bytes may hold the next "NVDM"
+                    l->bad++;
+                    l->bad_type = l->hdr[0];
+                    l->bad_len = l->len;
+                    const uint8_t h[5] = {l->hdr[0], l->hdr[1], l->hdr[2], l->hdr[3], l->hdr[4]};
+                    l->st = 0;
+                    l->n = 0;
+                    link_feed(l, h, 5, cb, ctx, true);   // 5 bytes can never reach another header: one level
+                    break;
+                }
                 l->sum = sum_bytes(0, l->hdr, 5);
                 l->got = 0;
                 l->n = 0;
@@ -597,8 +654,8 @@ void dmd_link_feed(dmd_link_t *l, const uint8_t *in, size_t n, dmd_link_cb cb, v
         case 2: {   // payload: take as much as this buffer has
             size_t take = n - i;
             if (take > l->len - l->got) take = l->len - l->got;
-            memcpy(l->buf + l->got, in + i, take);
             l->sum = sum_bytes(l->sum, in + i, take);
+            memmove(l->buf + l->got, in + i, take);   // a resync feeds the buffer's own tail back in
             l->got += (uint32_t)take;
             i += take - 1;
             if (l->got == l->len) l->st = 3;
@@ -608,14 +665,36 @@ void dmd_link_feed(dmd_link_t *l, const uint8_t *in, size_t n, dmd_link_cb cb, v
             l->sumb[l->n++] = b;
             if (l->n == 2) {
                 const uint16_t want = (uint16_t)(l->sumb[0] | l->sumb[1] << 8);
-                if (want == l->sum) { if (cb) cb(ctx, l->hdr[0], l->buf, l->len); }
-                else l->bad++;
                 l->st = 0;
                 l->n = 0;
+                if (want == l->sum) {
+                    l->ok++;
+                    if (cb) cb(ctx, l->hdr[0], l->buf, l->len);
+                    break;
+                }
+                l->bad++;
+                l->bad_type = l->hdr[0];
+                l->bad_len = l->len;
+                if (again) break;
+                // Bytes went missing in this frame (the USB receive dropped some): it then took the next frame's
+                // start as its own payload and trailer, and that frame would be lost too. Found, the rest goes in
+                // again (only the start of a header, near the end: the rest of it comes next).
+                const uint32_t o = link_find_next(l), len = l->len;
+                if (o < len + 2) {
+                    const uint8_t sb[2] = {l->sumb[0], l->sumb[1]};
+                    l->resync++;
+                    l->lost = len + 2 - o;   // the next frame should have started len + 2 bytes in
+                    if (o < len) link_feed(l, l->buf + o, len - o, cb, ctx, true);
+                    link_feed(l, sb + (o > len ? o - len : 0), o > len ? 2 - (o - len) : 2, cb, ctx, true);
+                }
             }
             break;
         }
     }
+}
+
+void dmd_link_feed(dmd_link_t *l, const uint8_t *in, size_t n, dmd_link_cb cb, void *ctx) {
+    link_feed(l, in, n, cb, ctx, false);
 }
 
 void dmd_link_header(uint8_t type, uint32_t len, uint8_t out[9]) {
@@ -1100,6 +1179,36 @@ bool dmd_find_housing(const uint16_t *px, int w, int h, dmd_rect_t *out) {
 }
 
 // ================================================================== rebuilt DMD
+
+bool dmd_mono_recolor(const uint32_t *px, size_t n, uint32_t to, uint32_t *dst) {
+    if (!px || !dst || !n) return false;
+    uint32_t ref = 0;
+    int refm = 0;
+    for (size_t i = 0; i < n; i++) {   // the brightest pixel: the colour the others must be shades of
+        const uint32_t c = px[i];
+        const int m = MAX3((int)(c >> 16 & 255), (int)(c >> 8 & 255), (int)(c & 255));
+        if (m > refm) { refm = m; ref = c; }
+    }
+    if (refm < 32) return false;   // nothing lit
+    const int rr = ref >> 16 & 255, rg = ref >> 8 & 255, rb = ref & 255;
+    for (size_t i = 0; i < n; i++) {
+        const uint32_t c = px[i];
+        const int r = c >> 16 & 255, g = c >> 8 & 255, b = c & 255, m = MAX3(r, g, b);
+        if (m < 8) continue;   // off
+        // each channel where the reference's would be at this level (RGB565 rounding: a few steps of slack)
+        const int tol = 10 + m / 16;
+        if (abs(r * refm - rr * m) > tol * refm || abs(g * refm - rg * m) > tol * refm || abs(b * refm - rb * m) > tol * refm)
+            return false;
+    }
+    const int tr = to >> 16 & 255, tg = to >> 8 & 255, tb = to & 255;
+    for (size_t i = 0; i < n; i++) {
+        const uint32_t c = px[i];
+        const int m = MAX3((int)(c >> 16 & 255), (int)(c >> 8 & 255), (int)(c & 255));
+        const int l = m < 8 ? 0 : m * 255 / refm;   // the pixel's level, the brightest = full
+        dst[i] = (uint32_t)(tr * l / 255) << 16 | (uint32_t)(tg * l / 255) << 8 | (uint32_t)(tb * l / 255);
+    }
+    return true;
+}
 
 bool dmd_scale2x_rows(const uint32_t *px, int w, int h, uint32_t *dst) {
     if (!px || !dst || w < 1 || h < 1 || w > DMD_MAX_W || 2 * h > DMD_MAX_H || (size_t)w * (size_t)(2 * h) > DMD_MAX_PX)

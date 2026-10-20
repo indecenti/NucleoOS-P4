@@ -106,14 +106,22 @@ is shown instead.
 
 ### Finding a table among hundreds
 
-- **"Go to" (A-Z)**: the systems of the list as chips (Visual Pinball X, Pinball FX2, Future Pinball, MAME,
-  PC Games, the Godot games — from the bridge's hello) and the letters as keys: a system filters the list
-  (on the board, nothing asked to the PC), a letter jumps to its first table; letters nothing starts with
-  are off; digits and the rest are "0-9".
+- **"Go to" (A-Z)**: the categories of the list as chips, each with how many of the open list's tables it has
+  (in "Recent" a system counts only the ones played: "Visual Pinball X 41", in "All" 72), and the letters as
+  keys: a category filters the list (on the board, nothing asked to the PC), a letter jumps to its first
+  table; letters nothing starts with are off; digits and the rest are "0-9".
+- **Categories** come from the bridge (`CATEGORIES` in `nucleo_bridge.py`, or `categories.json` next to it):
+  Popper's emulators gathered in a few — Visual Pinball X, Future Pinball, Pinball FX, MAME split by
+  Popper's genre (Shoot'em-ups, Mazes, Platforms, Sports and driving, Other arcade), and "PC games" for the
+  launchers with one to three games each (Downwell, HAKKEN, DOWNWHELL, UPWHELL, GRAVEFLIP). An item's `emu`
+  is its category's id; the hello's `emus` lists them with their sizes (`n`).
+- **Lists are confirmed**: the board acks a whole 'L' as it does an 'I', and the bridge sends it again if not
+  (a lost "All", 138 KB, left the menu on the card's copy); a list for another tab goes to the card only.
 - **Fling**: a quick swipe on the wheel bar keeps it going — the faster, the further (at most a third of
   the list); a slow drag moves by what it covered.
-- The count says which system is shown ("MAME 12 / 616"); in a mixed list the facts say it too ("Capcom
-  · 1990 · MAME").
+- The count says which category is shown ("Sparatutto 12 / 324"), its name cut to the room the header
+  leaves ("Visual Pin. 28 / 72"), never the buttons pushed off; in a mixed list the facts say it too
+  ("Capcom · 1990 · Sparatutto").
 - A table without a wheel shows its name in the orb and on the bar instead of an empty ring.
 
 ### Reactivity: the microSD cache
@@ -216,6 +224,17 @@ The bridge does the minimum on the PC and leaves the rest to the board:
 'T' table, 'I' image (u16 json_len, JSON, zlib pixels: `rgb565z` or `rgb565a8z`), 'G' game start / end
 (`dmd`, `showcase`), 'S' Popper's selection (table + its horizontal screens), 'R' result, 'E' error.
 Board side: `dmd_link_*` in `dmd_core.c` (unit-tested, fuzzed), `nv_dmd_bridge_*` in `nv_dmd.c`.
+
+**Losses on the cable** (measured on the cabinet with 400 KB messages back to back at ~880 KB/s): none with the
+DMD app freshly open (0 of 150), about one in six with the menu loaded. Each time up to 64 bytes (one USB
+packet) go missing, sometimes bytes are changed instead, while the receiver is never behind (longest wait
+~15 ms, no full read). The same with the driver's buffer in internal RAM and with its interrupt on CPU 0, so
+neither is the cause; the cause is still open. A missing piece makes the damaged message eat the start of
+the next one. The board confirms every whole 'I' (`{"q":"ack","n","s"}`)
+and the bridge sends a game's pictures again until they are confirmed. When a message's checksum fails, the
+board looks inside it for the next message's start and feeds it in again, so only one message is lost, not
+two. The log line for a damaged message gives the longest wait between two USB reads, the slowest pass,
+how many reads filled the buffer, and how many bytes were missing.
 
 ### Install and operate
 

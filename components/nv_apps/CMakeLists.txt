@@ -29,6 +29,7 @@ idf_component_register(
         "dmd_app.cpp"
         "dmd_menu.cpp"
         "dmd_comp.cpp"
+        "dmd_panel.cpp"
         "dmd_orb.c"
     INCLUDE_DIRS "include"
     PRIV_INCLUDE_DIRS "."

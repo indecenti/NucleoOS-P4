@@ -11,6 +11,7 @@
 // fuzzed). The tasks run on PSRAM stacks on core 0 and never touch flash or LVGL.
 #pragma once
 #include <stdbool.h>
+#include <stddef.h>
 #include <stdint.h>
 
 #ifdef __cplusplus
@@ -36,14 +37,22 @@ typedef struct {
     uint32_t    fps10;          // frames per second x10 over the last second
     int64_t     last_frame_us;  // esp_timer time of the newest frame, 0 = none yet
     int64_t     last_pc_us;     // ... of the newest frame from a PC (not nv_dmd_show), 0 = none yet
+    bool        blank;          // the newest frame is all black (dmdext clearing the panel at a table's start)
     uint32_t    bad;            // messages or connections dropped as malformed
+    uint32_t    zedmd_resets;   // USB transfers the PC gave up on half-way (no ack in time), since start
 } nv_dmd_status_t;
 
 // Start both receivers, Wi-Fi on `port` (allocates ~0.6 MB of PSRAM). True if they are running (already
-// running on the same port counts; another port restarts them).
+// running on the same port counts; already running on another port moves the Wi-Fi server only, as
+// nv_dmd_set_port()).
 bool nv_dmd_start(int port);
-// Stop them, drop the clients, give the USB port back to the console, free the buffers. Blocks until the
-// tasks have exited (< 0.5 s).
+// Move the Wi-Fi server to another port while running: only its task restarts (the Wi-Fi PC is dropped and
+// reconnects with retry = true); USB, the newest frame and the buffers the display holds stay. False when
+// not running, or when the old task did not stop within 2 s (it then keeps the old port).
+bool nv_dmd_set_port(int port);
+// Stop them, drop the clients, give the USB port back to the console, free the buffers. Waits for the
+// tasks (normally < 0.2 s), 2 s each at most: a task still running then keeps its buffers (logged), and the
+// next nv_dmd_stop() / nv_dmd_start() waits for it again.
 void nv_dmd_stop(void);
 // Monochrome colour for gray frames: -1 = the PC's (dmdext "color"), else 0x00RRGGBB.
 void nv_dmd_set_color(int32_t override_rgb);
@@ -57,6 +66,9 @@ uint32_t nv_dmd_latest(void);
 // nv_dmd_release() (kept for the API's symmetry: the receivers never wait on the display).
 const uint32_t *nv_dmd_acquire(int *w, int *h, uint32_t *gen);
 void nv_dmd_release(void);
+// The newest frame copied into dst (cap values) under the lock, for anyone but the display (a snapshot): it
+// never touches the display's copy. False when there is none or it is over cap.
+bool nv_dmd_copy(uint32_t *dst, size_t cap, int *w, int *h);
 
 void nv_dmd_get_status(nv_dmd_status_t *out);
 

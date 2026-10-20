@@ -50,7 +50,11 @@ Studio, scelte e dettagli: `docs/DMD_POPPER.md` nel repository NucleoOS-P4.
    in 2 secondi.)
 5. Avvio con Windows: `powershell -ExecutionPolicy Bypass -File ponte.ps1 installa` (attività pianificata
    all'accesso, senza finestre, priorità bassa, riavviata se si chiude; `rimuovi` la toglie). Altri comandi:
-   `avvia`, `ferma`, `riavvia`, `stato`, `controllo`. Registro: `%LOCALAPPDATA%\nucleo_bridge\ponte.log`.
+   `avvia`, `ferma`, `riavvia`, `stato`, `controllo`. Registro: `%LOCALAPPDATA%\nucleo_bridge\ponte.log`
+   (oltre 5 MB diventa `ponte.log.1`, ne resta una sola copia vecchia). `ferma` chiude anche il dmdext
+   che il ponte ha avviato per il DMD di Future Pinball (altrimenti terrebbe occupata la porta della
+   scheda); se il ponte viene chiuso in altro modo, al riavvio successivo chiude lui quel dmdext rimasto.
+   Senza Python `stato` e `ferma` funzionano lo stesso.
    Riavviarlo durante una partita si può: all'avvio guarda una volta i processi e, se un tavolo è aperto,
    lo riconosce (riga "a game was already running" nel registro); con VPX lascia la porta a dmdext.
    Se Popper non avvisa la fine di un gioco (emulatore andato in crash o chiuso a forza), il ponte se ne
@@ -63,6 +67,12 @@ Studio, scelte e dettagli: `docs/DMD_POPPER.md` nel repository NucleoOS-P4.
 ## Cache e reattività
 
 - Sul PC: ogni immagine è convertita una volta sola e tenuta in `%LOCALAPPDATA%\nucleo_bridge\cache`.
+  Una volta per avvio (20 minuti dopo, solo a cabinato fermo) il ponte cancella i file della cache non
+  usati da 60 giorni (versioni vecchie di immagini cambiate, tavoli tolti); i file `.json` (indici e
+  composizioni del secondo schermo, `s2.json`) non vengono mai toccati.
+- Le richieste della scheda sono servite una alla volta (le modifiche a `B2STableSettings.xml`,
+  `DmdDevice.ini` e `s2.json` non si sovrappongono più); Gioca, Esci e il saluto hanno una coda propria,
+  così una conversione d'immagine non li fa aspettare.
 - Sulla scheda: ogni immagine ricevuta resta sulla microSD (`/sdcard/data/dmd`), insieme alle ultime liste.
   La scheda la rilegge da lì e poi chiede al ponte solo "è ancora questa?" (la chiave dell'immagine): il
   ponte risponde in pochi byte senza convertire nulla, o manda quella nuova se in Popper è cambiata.
@@ -82,6 +92,12 @@ python nucleo_bridge.py --check [--report FILE]
 - Il ponte apre la porta con DTR e RTS bassi: sulla porta USB-JTAG dell'ESP32-P4 certe sequenze di
   DTR/RTS resettano la scheda.
 - Le immagini (wheel, istruzioni GameHelp) arrivano alla scheda già ridimensionate, in RGB565.
+- Nomi di tavolo con accenti: lo script di Popper li passa a curl nella codifica del batch (UTF-8, cp1252
+  o cp850); il ponte le prova tutte e confronta i nomi senza maiuscole né accenti.
+- Le categorie del filtro "Vai a" arrivano alla scheda nel messaggio di saluto (`H`, campo `emus`): ognuna
+  ha il nome mostrato (`name`, in italiano) e una chiave fissa ASCII (`key`: `vpx`, `fp`, `fx`, `shooter`,
+  `maze`, `platform`, `sport`, `arcade`, `pc`) per tradurla sulla scheda. In `categories.json` si può dare
+  `key`; senza, è il nome senza accenti in minuscolo.
 - Sono esclusi i tavoli nascosti (`Visible` diverso da 1). Preferiti: `PlayListDetails.isFav` = 1
   (playlist) o 2 (globali).
 - Prova senza cabinato: `python make_test_popper.py C:\temp\FakePUP --serve 8099` crea un finto Popper

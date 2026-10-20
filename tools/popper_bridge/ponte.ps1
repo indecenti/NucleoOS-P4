@@ -1,7 +1,7 @@
 # Il ponte Popper <-> scheda DMD (nucleo_bridge.py): avvio con Windows, stato, avvio/arresto a mano.
 #   powershell -NoProfile -ExecutionPolicy Bypass -File ponte.ps1 installa|rimuovi|avvia|ferma|riavvia|stato|controllo
 # installa: parte a ogni accesso di Windows (attivita' pianificata, senza finestre, priorita' bassa) e subito.
-# Il registro e' in %LOCALAPPDATA%\nucleo_bridge\ponte.log.
+# Il registro e' in %LOCALAPPDATA%\nucleo_bridge\ponte.log (oltre 5 MB il ponte lo sposta in ponte.log.1).
 param([ValidateSet('installa', 'rimuovi', 'avvia', 'ferma', 'riavvia', 'stato', 'controllo')][string]$cmd = 'stato')
 $ErrorActionPreference = 'Stop'
 $here = $PSScriptRoot
@@ -10,9 +10,14 @@ $data = Join-Path $env:LOCALAPPDATA 'nucleo_bridge'
 New-Item -ItemType Directory -Force $data | Out-Null
 $log = Join-Path $data 'ponte.log'
 $py = Join-Path $env:LOCALAPPDATA 'Programs\Python\Python312\python.exe'
-if (-not (Test-Path $py)) { $py = (Get-Command python.exe -ErrorAction SilentlyContinue).Source }
-$pyw = Join-Path (Split-Path $py) 'pythonw.exe'
-if (-not (Test-Path $pyw)) { $pyw = $py }
+if (-not (Test-Path $py)) { $py = (Get-Command python.exe -ErrorAction SilentlyContinue | Select-Object -First 1).Source }
+# Without Python only the commands that start it fail (Need-Python): stato and ferma still work.
+$pyw = $null
+if ($py) {
+    $pyw = Join-Path (Split-Path $py) 'pythonw.exe'
+    if (-not (Test-Path $pyw)) { $pyw = $py }
+}
+function Need-Python { if (-not $py) { throw "Python non trovato (ne' in Programs\Python\Python312 ne' nel PATH)" } }
 $bridgeArgs = "-u `"$here\nucleo_bridge.py`" --log `"$log`""
 
 # The running bridge, whoever started it (the logon task, this script, by hand); --check runs excluded.
@@ -28,7 +33,7 @@ function Board {
 
 function Start-Bridge {
     if (Bridge) { "Il ponte e' gia' acceso (pid $((Bridge).ProcessId -join ', '))."; return }
-    if (-not $py) { throw 'Python non trovato' }
+    Need-Python
     $port = Board
     if (-not $port) { "Attenzione: la scheda (USB 303A:1001) non risulta collegata; il ponte la aspetta." }
     if ((Get-ScheduledTask -TaskName $task -ErrorAction SilentlyContinue)) {
@@ -51,12 +56,21 @@ function Start-Bridge {
 function Stop-Bridge {
     $b = Bridge
     if (-not $b) { "Il ponte e' gia' spento."; return }
-    $b | ForEach-Object { Stop-Process -Id $_.ProcessId -Force }
+    # Its dmdext children too (the Future Pinball DMD mirror): killed with -Force the bridge cannot close
+    # them, and a dmdext left running keeps the board's COM port.
+    $ids = @($b | ForEach-Object { $_.ProcessId })
+    Get-CimInstance Win32_Process -Filter "Name = 'dmdext.exe'" | Where-Object { $ids -contains $_.ParentProcessId } |
+        ForEach-Object {
+            Stop-Process -Id $_.ProcessId -Force -ErrorAction SilentlyContinue
+            "Chiuso anche dmdext (pid $($_.ProcessId)), avviato dal ponte."
+        }
+    $b | ForEach-Object { Stop-Process -Id $_.ProcessId -Force -ErrorAction SilentlyContinue }
     "Ponte spento; la porta della scheda e' libera."
 }
 
 switch ($cmd) {
     'installa' {
+        Need-Python
         $action = New-ScheduledTaskAction -Execute $pyw -Argument $bridgeArgs -WorkingDirectory $here
         $me = [System.Security.Principal.WindowsIdentity]::GetCurrent().Name   # PC\user (over SSH USERDOMAIN is WORKGROUP)
         $trigger = New-ScheduledTaskTrigger -AtLogOn -User $me
@@ -90,6 +104,7 @@ switch ($cmd) {
         if (Test-Path $log) { '--- ultime righe del registro'; Get-Content $log -Tail 12 }
     }
     'controllo' {
+        Need-Python
         & $py "$here\nucleo_bridge.py" --check --report (Join-Path $data 'controllo.txt')
     }
 }

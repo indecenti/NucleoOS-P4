@@ -64,7 +64,11 @@ extern "C" int LLVMFuzzerTestOneInput(const uint8_t *d, size_t n) {
         auto cb = [](void *, uint8_t, const uint8_t *p, uint32_t len) {
             if (len > sizeof lb || (len && !p)) abort();
         };
-        for (size_t o = 0; o < n; o += 7) dmd_link_feed(&l, d + o, n - o < 7 ? n - o : 7, cb, nullptr);
+        for (size_t o = 0; o < n; o += 7) {
+            dmd_link_feed(&l, d + o, n - o < 7 ? n - o : 7, cb, nullptr);
+            if (d[0] & 0x80 && (o / 7) % 5 == 4) dmd_link_reset(&l);   // the receiver's timeout, now and then
+        }
+        if (l.st < 0 || l.st > 3 || l.got > l.cap) abort();
     }
 
     // The same bytes as a ZeDMD serial stream, in pieces (chunk size and split from the first byte).

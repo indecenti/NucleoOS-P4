@@ -14,6 +14,7 @@
 
 #include "cJSON.h"
 #include "dmd_menu.h"
+#include "dmd_panel.h"
 #include "lvgl.h"
 #include "nv_dmd.h"
 #include "nv_gesture.h"
@@ -125,7 +126,12 @@ extern "C" bool nv_dmd_bridge_send(uint8_t type, const char *json) {
         else snprintf(name, sizeof name, "img_%s_%d_%d", kind, id, w);
         const char *have = cJSON_GetStringValue(cJSON_GetObjectItem(o, "have"));
         g_same_req[name]++;
-        if (load(name, m)) {
+        if (!load(name, m) && (!strcmp(kind, "fulldmd") || !strcmp(kind, "b2sgrill") || !strcmp(kind, "gamebg"))) {
+            snprintf(name, sizeof name, "img_%s_%d", kind, id);   // recorded at a game's start: no width
+            if (strcmp(kind, "gamebg")) load(name, m);
+            else { snprintf(name, sizeof name, "img_gamebg_%d_512", id); load(name, m); }
+        }
+        if (!m.data.empty() || load(name, m)) {
             // the board's card copy: still the same bytes? (the key in the picture's JSON header)
             std::string hdr(m.data.begin() + 2, m.data.begin() + 2 + (m.data[0] | m.data[1] << 8));
             const size_t kp = hdr.find("\"k\": \"");
@@ -147,6 +153,17 @@ extern "C" bool nv_dmd_bridge_send(uint8_t type, const char *json) {
                      scr ? scr : "");
             push_json('E', e);
         }
+    } else if (!strcmp(q, "b2sinfo")) {   // as the bridge read the cabinet's files (Dracula: a dual backglass)
+        char r[300];
+        snprintf(r, sizeof r, "{\"q\":\"b2sinfo\",\"id\":%d,\"b2s\":true,\"bw\":%d,\"bh\":%d,\"grill\":%d,\"aw\":1920,"
+                 "\"ah\":1080,\"dual\":%s,\"dmdtype\":3,\"mode\":1,\"s2\":0,\"s2dmd\":false}", id,
+                 id == 784 ? 2000 : 3000, id == 784 ? 1900 : 2915, id == 784 ? 330 : 820, id == 784 ? "true" : "false");
+        push_json('R', r);
+    } else if (!strcmp(q, "dual")) {
+        char r[120];
+        snprintf(r, sizeof r, "{\"q\":\"dual\",\"id\":%d,\"mode\":%d,\"ok\":true,\"err\":\"\"}", id,
+                 cJSON_GetObjectItem(o, "mode") ? cJSON_GetObjectItem(o, "mode")->valueint : 1);
+        push_json('R', r);
     } else if (!strcmp(q, "launch") || !strcmp(q, "exit")) {
         char r[96];
         snprintf(r, sizeof r, "{\"q\":\"%s\",\"id\":%d,\"ok\":true,\"err\":\"\"}", q, id);
@@ -167,6 +184,7 @@ extern "C" bool nv_dmd_bridge_take(uint8_t *type, uint8_t **data, uint32_t *len)
     return true;
 }
 extern "C" void nv_dmd_bridge_free(uint8_t *data) { free(data); }
+extern "C" bool nv_dmd_show(const uint32_t *, int, int, const char *) { return false; }   // no DMD in the simulator
 extern "C" void nv_dmd_get_status(nv_dmd_status_t *st) {
     memset(st, 0, sizeof *st);
     st->bridge = g_bridge;
@@ -238,7 +256,6 @@ static void settings_cb(void) { printf("  [settings]\n"); }
 static int g_dot[1000];
 int dmd_app_table_dot(int g) { return g > 0 && g < 1000 ? g_dot[g] : 0; }
 void dmd_app_set_table_dot(int g, int d) { if (g > 0 && g < 1000) g_dot[g] = d & 7; printf("  [dot] table %d -> %d\n", g, d); }
-int dmd_app_fit_all(void) { return 1; }
 void dmd_app_dmd_size(int *w, int *h) { *w = 128; *h = 32; }
 bool dmd_app_snapshot(uint32_t *dst, size_t cap, int *w, int *h) {
     if (cap < 128 * 32) return false;
@@ -247,29 +264,58 @@ bool dmd_app_snapshot(uint32_t *dst, size_t cap, int *w, int *h) {
     *h = 32;
     return true;
 }
-bool dmd_app_fit_rect(int fit, int dot, dmd_rect_t *out) {
+static int g_fit_all = 1;
+int dmd_app_fit_all(void) { return g_fit_all; }
+void dmd_app_set_fit_all(int fit) { g_fit_all = fit; printf("  [fit] every table -> %d\n", fit); }
+void dmd_app_look(int *shape, bool *glow, int *bright, int *rot) { *shape = 0; *glow = false; *bright = 100; *rot = 0; }
+bool dmd_app_fit_geom(int fit, int dot, const dmd_rect_t *wp, dmd_geom_t *g) {
     dmd_rect_t win{};
-    if (fit == 7 && !dmd_menu_game_full(&win)) return false;
-    if (fit == 8 && !dmd_menu_game_grill(&win)) return false;
+    if (fit == 9) {   // automatic: from the running game's pictures (as the app)
+        dmd_rect_t w{};
+        fit = dmd_app_fit_suggested(dmd_menu_game_full(&w) != nullptr, dmd_menu_game_grill(&w) != nullptr);
+    }
+    if (wp) win = *wp;
+    else if (fit == 7 && !dmd_menu_game_full(&win)) return false;
+    else if (fit == 8 && !dmd_menu_game_grill(&win)) return false;
+    if ((fit == 7 || fit == 8) && (win.w <= 0 || win.h <= 0)) return false;
     if (fit == 3) return false;
-    static dmd_geom_t g;
     const int m = (dot >> 1) & 3, fill = dot & 1 ? DMD_FIT_SQUARE : DMD_FIT_FILL;
     const int gw = 128 + 2 * m, gh = (fit == 6 ? 64 : 32) + 2 * m;
     bool ok;
     if (fit == 7 || fit == 8) {
         const dmd_rect_t in = dmd_inset(win);
-        ok = dmd_geom(gw, gh, 0, fill, in.w, in.h, &g);
-        g.ox += in.x;
-        g.oy += in.y;
+        ok = dmd_geom(gw, gh, 0, fill, in.w, in.h, g);
+        g->ox += in.x;
+        g->oy += in.y;
     } else if (fit == 6) {
-        ok = dmd_geom(gw, gh, 0, fill, 1024, 600, &g);
+        ok = dmd_geom(gw, gh, 0, fill, 1024, 600, g);
     } else if (fit == 4 || fit == 5) {
-        ok = dmd_geom(gw, gh, 0, fill, 1024, 320, &g);
-        g.oy = fit == 5 ? (600 - g.gh) / 2 : 600 - g.gh;
+        ok = dmd_geom(gw, gh, 0, fill, 1024, 320, g);
+        g->oy = fit == 5 ? (600 - g->gh) / 2 : 600 - g->gh;
     } else {
-        ok = dmd_geom(gw, gh, 0, fit == 2 || fit == 1 ? DMD_FIT_SQUARE : fill, 1024, 600, &g);
-        if (fit == 2) g.oy = 600 - g.gh;
+        ok = dmd_geom(gw, gh, 0, fit == 2 || fit == 1 ? DMD_FIT_SQUARE : fill, 1024, 600, g);
+        if (fit == 2) g->oy = 600 - g->gh;
     }
+    return ok;
+}
+// the device's fallbacks (dmd_app.cpp fit_shown, rotation 0): a missing picture, a DMD too tall to rebuild
+int dmd_app_fit_shown(int fit, bool full, bool art, int w, int h) {
+    if (fit == 4 || fit == 7 || fit == 8) return full ? fit : art ? 2 : 0;
+    if (fit == 2 || fit == 3) return art ? fit : 1;
+    if (fit == 6) return 2 * h <= DMD_MAX_H && w * 2 * h <= DMD_MAX_PX ? 6 : 1;
+    return fit == 9 ? 1 : fit;
+}
+bool dmd_app_fit_geom_wh(int fit, int dot, const dmd_rect_t *win, int, int, dmd_geom_t *g) {
+    dmd_rect_t w{};
+    if (win) w = *win;
+    if ((fit == 7 || fit == 8) && (w.w <= 0 || w.h <= 0)) return false;
+    return dmd_app_fit_geom(fit, dot, &w, g);
+}
+int dmd_app_art_h(int, int, int) { return 600 - 256; }
+void dmd_app_rebuild_rows(int, int h, int *r0, int *n) { *r0 = 0; *n = h; }
+bool dmd_app_fit_rect(int fit, int dot, const dmd_rect_t *win, dmd_rect_t *out) {
+    static dmd_geom_t g;
+    const bool ok = dmd_app_fit_geom(fit, dot, win, &g);
     if (ok) *out = dmd_rect_t{g.ox, g.oy, g.gw, g.gh};
     return ok;
 }
@@ -307,10 +353,18 @@ static void comp_scenes(void) {
         run(800);
         snprintf(n, sizeof n, "comp_%d_a", id);
         shot(n);
-        tap(id == 811 ? 700 : 560, 340);   // a second-screen composition
+        // (the quick action opens on this screen's page)
+        tap(150, 72);                      // the monitor's page
+        run(400);
+        snprintf(n, sizeof n, "comp_%d_a2_monitor", id);
+        shot(n);
+        tap(id == 811 ? 700 : 560, 138 + 238 + 60);   // a second-screen composition
         run(500);
-        tap(696, 96);                      // original dots
-        tap(528 + 2 * 70 + 30, 162);       // a margin of 2
+        tap(400, 72);                      // this screen again
+        run(300);
+        tap(316 + 158 + 75, 138 + 136);    // original dots
+        run(400);
+        tap(316 + 340 + 2 * 62 + 27, 138 + 136);   // a margin of 2
         run(500);
         snprintf(n, sizeof n, "comp_%d_b", id);
         shot(n);
@@ -320,6 +374,109 @@ static void comp_scenes(void) {
         run(1500);
     }
 }
+// ------------------------------------------------------------------ the settings panel and the layout for every table
+static const int32_t kSimColors[7] = {-1, 0xFF4500, 0xFF0000, 0xFFC000, 0x20FF40, 0x00C8FF, 0xFFFFFF};   // as dmd_app.cpp
+static void port_field(lv_obj_t *row) {   // the app puts the system's number field here
+    lv_obj_t *l = lv_label_create(row);
+    lv_obj_set_style_text_font(l, &nv_font_20, 0);
+    lv_obj_set_style_text_color(l, lv_color_white(), 0);
+    lv_label_set_text(l, "9090");
+    lv_obj_center(l);
+    lv_obj_set_style_border_width(row, 2, 0);
+    lv_obj_set_style_border_color(row, lv_color_hex(0x26343C), 0);
+    lv_obj_set_style_radius(row, 8, 0);
+}
+static lv_obj_t *g_panel_root;
+static void panel_layout_cb(void) {   // as the app: the composition for every table, the card then updated
+    dmd_comp_open_all(g_panel_root, [] { dmd_panel_layout(dmd_app_fit_all(), -1); });
+}
+static void panel_scenes(void) {
+    lv_obj_t *root = lv_obj_create(lv_screen_active());
+    lv_obj_remove_style_all(root);
+    lv_obj_set_size(root, W, H);
+    g_panel_root = root;
+    static DmdPanelIo io;
+    io.theme = 1;
+    io.color = 1;
+    io.bright = 100;
+    io.colors = kSimColors;
+    io.ncolors = 7;
+    io.boot = true;
+    io.layout = panel_layout_cb;
+    io.make_port = port_field;
+    lv_obj_t *resume = nullptr;
+    lv_obj_t *panel = dmd_panel_build(root, &io, &resume);
+    lv_obj_remove_flag(panel, LV_OBJ_FLAG_HIDDEN);
+    dmd_panel_status("USB  \xC2\xB7  ZeDMD 128x32  \xC2\xB7  59.8 fotogrammi/s  \xC2\xB7  Attack from Mars", "Wi-Fi:  ws://192.168.1.50:9090/dmd");
+    dmd_panel_layout(dmd_app_fit_all(), -1);
+    run(300);
+    shot("panel_01");
+    lv_obj_scroll_to_y(panel, 200, LV_ANIM_OFF);
+    run(100);
+    shot("panel_02_scrolled");
+    lv_obj_scroll_to_y(panel, 0, LV_ANIM_OFF);
+    run(100);
+    panel_layout_cb();   // "choose with previews"
+    run(400);
+    shot("layout_01_all");
+    tap(20 + 0 * 198 + 90, 276 + 60);   // the first card: the full-screen DMD
+    run(300);
+    shot("layout_02_fullscreen");
+    tap(20 + 3 * 198 + 90, 276 + 60);   // the stretched DMD
+    run(300);
+    shot("layout_03_stretched");
+    tap(20 + 1 * 198 + 90, 276 + 60);   // the classic DMD
+    run(300);
+    shot("layout_04_classic");
+    dmd_comp_close();
+    run(300);
+    shot("panel_03_after");
+    lv_obj_t *first = nullptr;   // the question before leaving the app (dmd_app.cpp leave_guard)
+    lv_obj_t *ask = dmd_panel_ask(root, nv_tr(NV_STR_DMDX_LEAVE_TITLE), nv_tr(NV_STR_DMDX_LEAVE_GAME), nv_tr(NV_STR_DMDX_STAY),
+                                  nv_tr(NV_STR_DMDX_LEAVE_OK), nullptr, nullptr, &first);
+    run(300);
+    shot("panel_04_leave");
+    lv_obj_delete(ask);
+}
+
+// ------------------------------------------------------------------ a table's screens from the menu (no game)
+static void screens_scenes(void) {
+    g_half = false;
+    lv_obj_t *root = lv_obj_create(lv_screen_active());
+    lv_obj_remove_style_all(root);
+    lv_obj_set_size(root, W, H);
+    lv_obj_set_style_bg_color(root, lv_color_black(), 0);
+    lv_obj_set_style_bg_opa(root, LV_OPA_COVER, 0);
+    g_q.clear();
+    g_bridge = true;
+    dmd_menu_set_theme(0);
+    dmd_menu_build(root, settings_cb);
+    push_file("hello");
+    push_json('H', "{\"bridge\":\"1.1\",\"popper\":true,\"tables\":817,\"game\":null,\"ip\":\"192.168.1.60\",\"web\":80,\"s2\":[1366,0,1280,1024]}");
+    run(4000);
+    shot("screens_00_card");
+    const int ids[2] = {811, 784};
+    for (int id : ids) {
+        char n[64];
+        dmd_comp_open_table(root, id, id == 811 ? "Teenage Mutant Ninja Turtles" : "Bram Stoker's Dracula");
+        run(3000);   // its pictures: from the bridge, the screen rebuilt as they come
+        snprintf(n, sizeof n, "screens_%d_a_monitor", id);
+        shot(n);
+        tap(956, 242);   // a DMD on the monitor too: yes
+        run(400);
+        snprintf(n, sizeof n, "screens_%d_b_monitor_dmd", id);
+        shot(n);
+        tap(852, 242);   // and back: no
+        run(300);
+        tap(340, 72);         // this screen's page
+        run(400);
+        snprintf(n, sizeof n, "screens_%d_c_panel", id);
+        shot(n);
+        dmd_comp_close();
+        run(300);
+    }
+}
+
 // where to tap in the "go to" card (from its shot; overridable: FIND=x,y LETTER=x,y ALL=x,y)
 static int g_find_x = 600, g_find_y = 200, g_letter_x = 420, g_letter_y = 330, g_all_x = 300, g_all_y = 200;
 static void xy(const char *env, int *x, int *y) { const char *v = getenv(env); if (v) sscanf(v, "%d,%d", x, y); }
@@ -536,6 +693,8 @@ int main(int argc, char **argv) {
     const char *only = argc > 3 ? argv[3] : "";
     if (!strcmp(only, "sel")) { sel_scenes(); return 0; }
     if (!strcmp(only, "comp")) { comp_scenes(); return 0; }
+    if (!strcmp(only, "panel")) { panel_scenes(); return 0; }
+    if (!strcmp(only, "screens")) { screens_scenes(); return 0; }
     if (!*only || !strcmp(only, "cab")) scenes(0, "cab");
     if (!*only || !strcmp(only, "dmd")) scenes(1, "dmd");
     printf("bridge requests: %d, pictures sent: %d, card copies confirmed: %d\n", g_requests, g_images, g_same);

@@ -499,6 +499,36 @@ int main() {
         CHECK(dmd_zedmd_busy(&z));
         dmd_zedmd_reset(&z);
         CHECK(cmd(0x06) == DMD_Z_EV_RENDER && ol == 6);
+        // every parsed command counts as a sign of life, keep-alives too (the USB session times out on it)
+        const uint32_t c0 = z.cmds;
+        cmd(0x0B);
+        CHECK(z.cmds == c0 + 1);
+        // a packet that inflates past DMD_Z_RAW_MAX is refused, never written past raw[]
+        {
+            std::vector<uint8_t> huge;
+            for (int k = 0; k < 80; k++) { huge.push_back(0); for (int i = 0; i < 64; i++) huge.push_back((uint8_t)i); }
+            CHECK(huge.size() > DMD_Z_RAW_MAX);
+            mz_ulong hl = mz_compressBound((mz_ulong)huge.size());
+            std::vector<uint8_t> hc(hl);
+            CHECK(mz_compress(hc.data(), &hl, huge.data(), (mz_ulong)huge.size()) == MZ_OK && hl < 128 - 14);
+            std::vector<uint8_t> t = {'F', 'R', 'A', 'M', 'E', 'Z', 'e', 'D', 'M', 'D', 0x05, (uint8_t)(hl >> 8), (uint8_t)hl, 1};
+            t.insert(t.end(), hc.begin(), hc.begin() + (long)hl);
+            t.resize(128, 0);
+            ol = 0;
+            CHECK(dmd_zedmd_feed(&z, t.data(), t.size(), outb, sizeof outb, &ol) == DMD_Z_EV_ERROR);
+            CHECK(ol == 6 && !memcmp(outb, "ZeDMDF", 6) && !dmd_zedmd_busy(&z));
+        }
+        // a zone cut short (its index and 10 of its 64 bytes): refused, the picture keeps what it had
+        {
+            img[0] = 0x123456;
+            std::vector<uint8_t> t = {'F', 'R', 'A', 'M', 'E', 'Z', 'e', 'D', 'M', 'D', 0x05, 0, 11, 0, 0};
+            t.resize(t.size() + 10, 0xFF);
+            t.resize(128, 0);
+            ol = 0;
+            CHECK(dmd_zedmd_feed(&z, t.data(), t.size(), outb, sizeof outb, &ol) == DMD_Z_EV_ERROR);
+            CHECK(ol == 6 && !memcmp(outb, "ZeDMDF", 6) && img[0] == 0x123456);
+            CHECK(cmd(0x0B) == 0 && ol == 6 && !memcmp(outb, "ZeDMDA", 6));   // and the next transfer works
+        }
     }
     // ---- the menu link: "NVDM" type len payload sum16, in any split, among noise and ZeDMD traffic
     {
@@ -549,6 +579,105 @@ int main() {
         got.v.clear();
         for (size_t o = 0; o < m.size(); o += 333) dmd_link_feed(&l, m.data() + o, std::min<size_t>(333, m.size() - o), cb, &got);
         CHECK(got.v.size() == 1 && got.v[0].second == big);
+        // bytes lost inside a message (the USB receive dropped them): it runs into the next one, whose start is
+        // found in its payload and fed again, so only the damaged one is lost
+        auto lossy = msgv('I', std::string(3000, 'y'));
+        lossy.erase(lossy.begin() + 1000, lossy.begin() + 1100);
+        auto nxt = msgv('I', std::string(2500, 'z')), last = msgv('G', "{\"game\":\"start\"}");
+        std::vector<uint8_t> s2 = lossy;
+        s2.insert(s2.end(), nxt.begin(), nxt.end());
+        s2.insert(s2.end(), last.begin(), last.end());
+        for (int split : {1, 97, 4096}) {
+            dmd_link_init(&l, lbuf.data(), (uint32_t)lbuf.size());
+            got.v.clear();
+            for (size_t o = 0; o < s2.size(); o += split) dmd_link_feed(&l, s2.data() + o, std::min<size_t>(split, s2.size() - o), cb, &got);
+            CHECK(got.v.size() == 2 && got.v[0].second == std::string(2500, 'z') && got.v[1].first == 'G');
+            CHECK(l.bad == 1 && l.resync == 1 && l.lost == 100 && l.bad_type == 'I' && l.bad_len == 3000 && l.ok == 2);
+        }
+        // a small next message wholly inside the damaged one's payload, then a following one
+        auto lossy2 = msgv('T', std::string(400, 'a'));
+        lossy2.erase(lossy2.begin() + 50, lossy2.begin() + 80);
+        auto tiny = msgv('P', ""), tail = msgv('L', "{}"), after = msgv('R', "{\"q\":\"exit\",\"ok\":true}");
+        std::vector<uint8_t> s3 = lossy2;   // the damaged one ends 6 bytes into "after", which still arrives
+        s3.insert(s3.end(), tiny.begin(), tiny.end());
+        s3.insert(s3.end(), tail.begin(), tail.end());
+        s3.insert(s3.end(), after.begin(), after.end());
+        dmd_link_init(&l, lbuf.data(), (uint32_t)lbuf.size());
+        got.v.clear();
+        dmd_link_feed(&l, s3.data(), s3.size(), cb, &got);
+        CHECK(got.v.size() == 3 && got.v[0].first == 'P' && got.v[1].first == 'L' && got.v[2].first == 'R');
+        CHECK(l.resync == 1 && l.bad == 1);
+        // k = 1..12 bytes lost at the end of a message: the next header then starts in its trailer (k <= 2), straddles
+        // payload and trailer, or lies in the payload; it is found in all of them, also when only its first bytes are
+        // there (the rest comes in the next feed)
+        for (int k = 1; k <= 12; k++) {
+            for (int split : {0, 1, 5}) {   // 0: all at once; else the rest comes in pieces of `split`
+                auto dam = msgv('I', std::string(200, 'q'));
+                dam.erase(dam.end() - 2 - k, dam.end() - 2);   // k payload bytes gone, the trailer kept
+                auto n1 = msgv('L', "{\"a\":1}"), n2 = msgv('G', "{}");
+                std::vector<uint8_t> st = dam;
+                st.insert(st.end(), n1.begin(), n1.end());
+                st.insert(st.end(), n2.begin(), n2.end());
+                dmd_link_init(&l, lbuf.data(), (uint32_t)lbuf.size());
+                got.v.clear();
+                const size_t first = dam.size() + (split ? 0 : st.size() - dam.size());
+                dmd_link_feed(&l, st.data(), first, cb, &got);   // up to where the damaged frame ends
+                for (size_t o = first; o < st.size(); o += split)
+                    dmd_link_feed(&l, st.data() + o, std::min<size_t>(split, st.size() - o), cb, &got);
+                CHECK(got.v.size() == 2 && got.v[0].first == 'L' && got.v[0].second == "{\"a\":1}" && got.v[1].first == 'G');
+                CHECK(l.bad == 1 && l.resync == 1 && l.lost == (uint32_t)k && l.ok == 2);
+            }
+        }
+        // crafted: damaged frames nested inside each other, thousands deep: one level of resync, then dropped (no
+        // recursion to the stack's end), and the parser is still in step for the next message
+        {
+            std::vector<uint8_t> big(64 * 1024);
+            dmd_link_t ln;
+            dmd_link_init(&ln, big.data(), (uint32_t)big.size());
+            std::vector<uint8_t> st;
+            const int depth = 5000;
+            for (int d = 0; d < depth; d++) {   // each header claims exactly what follows it
+                uint8_t h[9];
+                dmd_link_header('I', (uint32_t)((depth - 1 - d) * 9 + 4), h);
+                st.insert(st.end(), h, h + 9);
+            }
+            st.resize(st.size() + 6, 0);
+            got.v.clear();
+            dmd_link_feed(&ln, st.data(), st.size(), cb, &got);
+            CHECK(got.v.empty() && ln.bad == 2 && ln.resync == 1 && !dmd_link_busy(&ln));
+            dmd_link_reset(&ln);
+            auto ok = msgv('P', "");
+            dmd_link_feed(&ln, ok.data(), ok.size(), cb, &got);
+            CHECK(got.v.size() == 1 && got.v[0].first == 'P');
+        }
+        // a header whose length is over the buffer is dropped with its type and length said; its 5 bytes still give
+        // up the next "NVDM" when one starts inside them
+        {
+            dmd_link_init(&l, lbuf.data(), (uint32_t)lbuf.size());
+            got.v.clear();
+            std::vector<uint8_t> h = {'N', 'V', 'D', 'M', 'I', 0xFF, 0xFF, 0xFF, 0x7F};
+            dmd_link_feed(&l, h.data(), h.size(), cb, &got);
+            CHECK(l.bad == 1 && l.bad_type == 'I' && l.bad_len == 0x7FFFFFFFu && !dmd_link_busy(&l));
+            auto p = msgv('P', "");   // "NVDM" + "Z" + "NVDM...": the header bytes hold the next message's start
+            std::vector<uint8_t> h2 = {'N', 'V', 'D', 'M', 'Z', 'N', 'V', 'D', 'M'};
+            h2.insert(h2.end(), p.begin() + 4, p.end());
+            dmd_link_feed(&l, h2.data(), h2.size(), cb, &got);
+            CHECK(l.bad == 2 && l.bad_type == 'Z' && got.v.size() == 1 && got.v[0].first == 'P');
+        }
+        // a message that stops half-way: reset drops it (counted, its type and length), the next one arrives
+        {
+            dmd_link_init(&l, lbuf.data(), (uint32_t)lbuf.size());
+            got.v.clear();
+            auto cut = msgv('I', std::string(3000, 'c'));
+            dmd_link_feed(&l, cut.data(), 1200, cb, &got);
+            CHECK(dmd_link_busy(&l));
+            CHECK(dmd_link_reset(&l) && l.bad == 1 && l.bad_type == 'I' && l.bad_len == 3000 && !dmd_link_busy(&l));
+            CHECK(!dmd_link_reset(&l) && l.bad == 1);   // nothing in progress: nothing counted
+            dmd_link_feed(&l, a.data(), a.size(), cb, &got);
+            CHECK(got.v.size() == 1 && got.v[0].first == 'L' && l.ok == 1);
+            dmd_link_feed(&l, a.data(), 6, cb, &got);   // only the magic and the type: no length yet
+            CHECK(dmd_link_reset(&l) && l.bad == 2 && l.bad_type == 'L' && l.bad_len == 0);
+        }
     }
     {   // FullDMD: the dark window left for the DMD in the art
         const int W = 1024, H = 600;
@@ -770,6 +899,21 @@ int main() {
         CHECK(f[0] == 0xF800 && f[1] == 0xF800 && f[2] == 0 && f[3] == 0x1082 && f[5] == 0 && f[12] == 0);
         dmd_fill565(f.data(), 6, 3, {-1, -1, 3, 3}, 7);
         CHECK(f[0] == 7 && f[7] == 7 && f[2] == 0);
+    }
+    {   // a monochrome ZeDMD frame in the panel's colour; a coloured one left alone
+        // orange from RGB565 (dmdext's default), full, half and off
+        const uint32_t mono[4] = {0xFF6D00, 0x803400, 0, 0x401B00};
+        uint32_t out[4] = {1, 1, 1, 1};
+        CHECK(dmd_mono_recolor(mono, 4, 0x00FF00, out));
+        CHECK(out[0] == 0x00FF00 && out[2] == 0);
+        CHECK((out[1] >> 8 & 255) > 120 && (out[1] >> 8 & 255) < 135 && (out[1] >> 16) == 0);
+        const uint32_t colour[3] = {0xFF6D00, 0x00FF00, 0x200000};   // ColorDMD: two hues
+        uint32_t keep[3] = {9, 9, 9};
+        CHECK(!dmd_mono_recolor(colour, 3, 0x00FF00, keep) && keep[0] == 9);
+        const uint32_t dark[2] = {0x080000, 0};
+        CHECK(!dmd_mono_recolor(dark, 2, 0x00FF00, keep));   // nothing lit
+        uint32_t inplace[2] = {0xFFFFFF, 0x7F7F7F};   // white, in place
+        CHECK(dmd_mono_recolor(inplace, 2, 0xFF0000, inplace) && inplace[0] == 0xFF0000 && (inplace[1] >> 16) == 127);
     }
     return TEST_DONE("dmd");
 }

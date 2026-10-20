@@ -508,7 +508,7 @@ void menu_open(lv_point_t p, const MenuItem *items, int n) {
 }
 
 void open_app_fn(const NvApp *a) { if (a) nv_ui_open_app(a); }
-void close_fn(const NvApp *) { nv_ui_close_app(); }
+void close_fn(const NvApp *) { if (!nv_ui_leave_asked()) nv_ui_close_app(); }
 void min_fn(const NvApp *) { nvui::minimize(); }
 void back_fn(const NvApp *) { nvui::back(); }
 void display_fn(const NvApp *) { nv_ui_open_app_id("settings"); }
@@ -1246,6 +1246,7 @@ void preview_cb(lv_event_t *e) {
 }
 
 void close_task_fn(const NvApp *a) {
+    if (a == nv_ui_current_app() && nv_ui_leave_asked()) return;   // the app asks first
     run_remove(a);
     if (a == nv_ui_current_app()) nv_ui_close_app();   // the close callback refreshes the bar
     else tasks_refresh();
@@ -2090,7 +2091,9 @@ void bar_build(void) {
 
 void title_back_cb(lv_event_t *) { nvui::back(); }
 void title_min_cb(lv_event_t *) { lv_async_call([](void *) { nvui::minimize(); }, nullptr); }
-void title_close_cb(lv_event_t *) { lv_async_call([](void *) { nv_ui_close_app(); }, nullptr); }
+void title_close_cb(lv_event_t *) {
+    lv_async_call([](void *) { if (!nv_ui_leave_asked()) nv_ui_close_app(); }, nullptr);
+}
 
 void title_menu_cb(lv_event_t *e) {
     lv_obj_t *h = lv_event_get_current_target_obj(e);

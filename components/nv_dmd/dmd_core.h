@@ -139,6 +139,7 @@ typedef struct {
     uint8_t   cmd;
     bool      comp;
     uint16_t  size, got;
+    uint32_t  cmds;             // commands parsed so far, keep-alives included (a PC that is still there)
     uint8_t   pay[DMD_Z_PAY_MAX];
     uint8_t   raw[DMD_Z_RAW_MAX];
 } dmd_zedmd_t;
@@ -173,12 +174,26 @@ typedef struct {
     uint8_t  sumb[2];
     uint32_t len, got;
     uint16_t sum;
-    uint32_t bad;          // frames dropped (checksum, too long)
+    uint32_t bad;          // frames dropped (checksum, too long, cut short)
+    uint32_t ok;           // frames delivered
+    uint8_t  bad_type;     // the last dropped frame: its type and length
+    uint32_t bad_len;
+    uint32_t resync;       // dropped frames that held the next frame's start (bytes lost): it was saved
+    uint32_t lost;         // the last of those: how many bytes were missing
 } dmd_link_t;
 
 void dmd_link_init(dmd_link_t *l, uint8_t *buf, uint32_t cap);
-// Feed received bytes; cb runs once per complete, valid message.
+// Feed received bytes; cb runs once per complete, valid message. A frame whose checksum fails because bytes
+// went missing has run into the next frame: that frame's start is looked for in its payload and trailer
+// (or, at the very end, the first bytes of one) and fed again. One level: a frame that fails among those
+// bytes is only dropped.
 void dmd_link_feed(dmd_link_t *l, const uint8_t *in, size_t n, dmd_link_cb cb, void *ctx);
+// Back to looking for "NVDM", counters kept: call when a message stops arriving half-way (the sender gave up
+// or bytes were lost in its length). True when one was cut short: counted in bad (bad_type / bad_len: 0 when
+// its header had not come yet).
+bool dmd_link_reset(dmd_link_t *l);
+// Inside a message (its header or payload has started).
+static inline bool dmd_link_busy(const dmd_link_t *l) { return l->st != 0; }
 // The 9-byte header and the 2-byte trailer of a message (write header, payload, trailer).
 void dmd_link_header(uint8_t type, uint32_t len, uint8_t out[9]);
 void dmd_link_trailer(uint8_t type, uint32_t len, const uint8_t *payload, uint8_t out[2]);
@@ -271,6 +286,11 @@ void dmd_sprites_reset(dmd_sprites_t *sc);
 void dmd_render_rows(uint16_t *dst, int stride, const dmd_geom_t *g, const dmd_masks_t *mk, const uint32_t *px,
                      int w, int h, int rot, int bright, bool clear_margins, int scr_w, int cy0, int cy1,
                      dmd_sprites_t *sc);
+
+// A monochrome frame (every lit pixel a darker copy of the brightest one, as dmdext sends a ZeDMD a plain
+// orange DMD) redrawn in `to`, each pixel keeping its level; false, `dst` untouched, for a frame in colours
+// (ColorDMD, Serum, a coloured palette) or an empty one. `dst` may be `px`.
+bool dmd_mono_recolor(const uint32_t *px, size_t n, uint32_t to, uint32_t *dst);
 
 // ---- Rebuilt DMD: twice as many rows
 // The frame px (w x h, 0x00RRGGBB) with twice its rows, into dst (w x 2h): the rows in between are made

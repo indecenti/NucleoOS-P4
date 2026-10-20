@@ -8,6 +8,8 @@ instruction card) already sized for the board, and launching a table through Pop
 
 A Windows COM port has one owner at a time, so the bridge hands the port over around every game:
   * Popper's emulator Launch script calls  http://127.0.0.1:58090/game/start  -> the bridge tells the
+    (a game that draws its own DMD and sends it as a ZeDMD, as GRAVEFLIP does, adds &dmd=1: the port is handed
+    over as for a VPX table, whatever its emulator)
     board "a game starts" and closes the port; dmdext opens it and the board shows the DMD;
   * the Close script calls  http://127.0.0.1:58090/game/end  -> the bridge waits for dmdext to let go,
     opens the port again and the board shows the menu.
@@ -32,6 +34,7 @@ import http.server
 import io
 import json
 import os
+import queue
 import random
 import re
 import socketserver
@@ -41,6 +44,7 @@ import subprocess
 import sys
 import threading
 import time
+import unicodedata
 import urllib.parse
 import urllib.request
 import zlib
@@ -54,27 +58,93 @@ BOARD_VID_PID = (0x303A, 0x1001)          # Espressif USB-Serial-JTAG: the board
 # keeps the bridge on the port: the board shows the game's pictures and its quick actions instead.
 ALT_MEDIA = re.compile(r"^\s*\(\d+\)$")   # what may follow a game's name in an alternative media file
 DMD_EMUS = {1}
+# The board's system filter ("Go to"): Popper's emulators gathered into a few categories, in this order. A rule
+# takes the games of the emulators whose name (EmuName or EmuDisplay) matches `emu`; `genre`, when given, only
+# those whose Popper Category matches it (MAME's 616 games split by kind). The first rule a game matches wins;
+# a game no rule takes goes to the last one (PC games, the Godot games: launchers with one to three games each,
+# no use as chips of their own). A category's id is the lowest EMUID it holds (VPX stays 1 on the board), or
+# 1000 + its place for the genres of one emulator. categories.json next to this file, a list of
+# {"name", "emu", "genre", "key"}, replaces these.
+# "name" is shown by the board as it is (Italian here); "key" is a stable ASCII id of the category, sent next to
+# it in the hello's "emus" so that a board in another language can show its own word for it (a rule without
+# one gets its name made ASCII: category_key()).
+CATEGORIES = [
+    {"name": "Visual Pinball X", "emu": r"visual ?pinball", "key": "vpx"},
+    {"name": "Future Pinball", "emu": r"future ?pinball", "key": "fp"},
+    {"name": "Pinball FX", "emu": r"pinball ?fx", "key": "fx"},
+    {"name": "Sparatutto", "emu": r"mame", "genre": r"shoot|shooter", "key": "shooter"},
+    {"name": "Labirinti", "emu": r"mame", "genre": r"maze", "key": "maze"},
+    {"name": "Piattaforme", "emu": r"mame", "genre": r"platform|climbing", "key": "platform"},
+    {"name": "Sport e corse", "emu": r"mame", "genre": r"sport|driving|motorcycle", "key": "sport"},
+    {"name": "Altri arcade", "emu": r"mame", "key": "arcade"},
+    {"name": "Giochi PC", "emu": r"", "key": "pc"},
+]
 # Processes of a running table, to notice one already running when the bridge starts (a restart mid-game):
 # name prefixes, lower case, and whether its DMD goes through dmdext (which then holds the board's port).
 GAME_EXES = (("vpinball", True), ("pinball fx", False), ("pinballfx", False), ("future pinball", False),
              ("futurepinball", False), ("mame", False), ("pinball arcade", False))
 DEFAULT_POPPER_DIRS = [r"C:\vPinball\PinUPSystem", r"C:\PinUPSystem", r"D:\vPinball\PinUPSystem"]
 IMAGE_EXTS = (".png", ".jpg", ".jpeg", ".apng", ".gif", ".bmp")
+# Popper's videos: where a table has only one (most Future Pinball backglasses, nearly every DMD), the board
+# shows a frame of it, taken once with Popper's own ffmpeg (poster())
+VIDEO_EXTS = (".mp4", ".f4v", ".m4v", ".mkv", ".avi", ".mov", ".webm", ".wmv")
 
 
 LOG_FILE = None   # --log: pythonw has no console
+LOG_MAX = 5 << 20   # past this the log is set aside as .1 (one old copy kept): the bridge runs for months
+LOG_LOCK = threading.Lock()
+_log_lines = 0
+
+
+def rotate_log():
+    """The log moved to .1 when over LOG_MAX (the old .1 dropped). At start, and every few thousand lines."""
+    try:
+        if LOG_FILE and os.path.getsize(LOG_FILE) > LOG_MAX:
+            os.replace(LOG_FILE, LOG_FILE + ".1")
+    except OSError:   # none yet, or open in a reader for a moment (ponte.ps1 stato): next time
+        pass
 
 
 def log(*a):
+    global _log_lines
     line = " ".join([time.strftime("%H:%M:%S")] + [str(x) for x in a])
     if LOG_FILE:
-        try:
-            with open(LOG_FILE, "a", encoding="utf-8") as f:
-                f.write(line + "\n")
-        except OSError:
-            pass
+        with LOG_LOCK:   # many threads log: whole lines, and one rotation at a time
+            _log_lines += 1
+            if _log_lines % 2000 == 0:
+                rotate_log()
+            try:
+                with open(LOG_FILE, "a", encoding="utf-8") as f:
+                    f.write(line + "\n")
+            except OSError:
+                pass
     elif sys.stdout:
         print(line, flush=True)
+
+
+def tmp_name(path):
+    """A temporary file next to path, its own for this thread: two threads converting the same picture (the
+    pictures prepared ahead and a request of the board) must not write into one .tmp, which Windows lets both
+    open: the cache would keep a mix of the two."""
+    return "%s.%d.%d.tmp" % (path, os.getpid(), threading.get_ident())
+
+
+def keep_cached(path):
+    """A cache file just used: its time renewed when it is old, so the cache pruning (prune_cache) keeps it.
+    Windows mostly does not update the last-access time, so the file's own time says when it was used last;
+    renewed only once a month (one stat per use, a write a month)."""
+    try:
+        if time.time() - os.stat(path).st_mtime > 30 * 86400:
+            os.utime(path, None)
+    except OSError:
+        pass
+
+
+def fold(s):
+    """A name for comparing: lower case, without accents (a name written by a batch file in another code page
+    may lose them or have them differently)."""
+    s = unicodedata.normalize("NFKD", s or "")
+    return "".join(c for c in s if not unicodedata.combining(c)).casefold()
 
 
 # ------------------------------------------------------------------------------------------------ framing
@@ -143,6 +213,7 @@ class Popper:
         self.web_port = web_port
         self.dirs = {}     # media folder -> (mtime, its image files)
         self.shapes = {}   # (file, mtime) -> wider than tall
+        self.cats = None   # (database mtime, categories, (EMUID, Category) -> category id): categories()
 
     def q(self, sql, args=()):
         last = None
@@ -160,7 +231,7 @@ class Popper:
         raise last
 
     BASE = ("SELECT g.GameID, g.GameName, g.GameDisplay, g.GameFileName, g.GameYear, g.Manufact, g.GameRating, "
-            "g.DateAdded, g.EMUID, s.LastPlayed, s.NumberPlays, s.TimePlayedSecs "
+            "g.DateAdded, g.EMUID, g.Category, s.LastPlayed, s.NumberPlays, s.TimePlayedSecs "
             "FROM Games g LEFT JOIN GamesStats s ON s.GameID = g.GameID WHERE g.Visible = 1 AND ")
 
     @staticmethod
@@ -179,7 +250,8 @@ class Popper:
         except sqlite3.OperationalError:   # no playlists table: no favourites
             return set()
 
-    def item(self, r, favs=None):
+    def item(self, r, favs=None, cats=None):
+        cats = cats if cats is not None else self.categories()[1]
         return {
             "id": r["GameID"],
             "name": (r.get("GameDisplay") or r.get("GameName") or "?").strip(),
@@ -192,14 +264,15 @@ class Popper:
             "added": (r.get("DateAdded") or "")[:10],
             "rating": r.get("GameRating") or 0,
             "fav": r["GameID"] in (favs if favs is not None else self.favourites()),
-            "emu": r.get("EMUID") or 0,
+            "emu": cats.get((r.get("EMUID"), r.get("Category") or ""), r.get("EMUID") or 0),   # its category
         }
 
     def tables(self, which, limit):
         cond = self.LIST_SQL.get(which, self.LIST_SQL["all"])
         rows = self.q(self.BASE + cond + " LIMIT ?", (int(limit),))
         favs = self.favourites()
-        return [self.item(r, favs) for r in rows]
+        cats = self.categories()[1]
+        return [self.item(r, favs, cats) for r in rows]
 
     def table(self, gid):
         rows = self.q("SELECT g.*, s.LastPlayed, s.NumberPlays, s.TimePlayedSecs, s.HighScores "
@@ -246,13 +319,22 @@ class Popper:
         return files
 
     def media(self, r, screen):
-        """The image file of a game for a Popper screen folder (Wheel, GameHelp, GameInfo, Backglass, ...)."""
+        """The image file of a game for a Popper screen folder (Wheel, GameHelp, GameInfo, Backglass, ...);
+        without one, a frame of the game's video there (poster())."""
         folder = os.path.join(self.media_dir(r["EMUID"]), screen)
         stem = (r.get("GameName") or "").lower()
         if not stem:
             return None
+        found = self.named(self.images_in(folder), folder, stem)
+        if found:
+            return found
+        video = self.named(self.files_in(folder, VIDEO_EXTS), folder, stem)
+        return self.poster(video) if video else None
+
+    @staticmethod
+    def named(files, folder, stem):
         best = None
-        for base, f in self.images_in(folder):
+        for base, f in files:
             if base == stem:
                 return os.path.join(folder, f)
             # Popper's alternatives, "Name(1).png" / "Name (2).png"; not any name that only starts the same
@@ -260,6 +342,67 @@ class Popper:
             if best is None and base.startswith(stem) and ALT_MEDIA.match(base[len(stem):]):
                 best = os.path.join(folder, f)
         return best
+
+    def files_in(self, folder, exts):
+        """images_in() for other files (the videos): listed again only when the folder changes."""
+        try:
+            mt = os.stat(folder).st_mtime_ns
+        except OSError:
+            return []
+        hit = self.dirs.get((folder, exts))
+        if hit and hit[0] == mt:
+            return hit[1]
+        files = sorted((os.path.splitext(f)[0].lower(), f) for f in os.listdir(folder) if f.lower().endswith(exts))
+        self.dirs[(folder, exts)] = (mt, files)
+        return files
+
+    def poster(self, video):
+        """A frame of a Popper video as a PNG in the cache, made once per video version with Popper's ffmpeg
+        (Recordings\\ffmpeg.exe): at 3 s (past a black start), at 8 s if that one is nearly black; None when it
+        cannot be made (no ffmpeg, a damaged file: noted, not tried again)."""
+        try:
+            st = os.stat(video)
+        except OSError:
+            return None
+        key = "%08x" % zlib.crc32(("poster|%s|%d|%d" % (video, st.st_mtime_ns, st.st_size)).encode())
+        out = os.path.join(cache_dir(), key + ".poster.png")
+        if os.path.exists(out):
+            keep_cached(out)
+            return out
+        if os.path.exists(out + ".none"):
+            keep_cached(out + ".none")
+            return None
+        ffmpeg = os.path.join(self.root, "Recordings", "ffmpeg.exe")
+        if not os.path.isfile(ffmpeg):
+            return None
+        from PIL import Image, ImageStat
+        tmp = tmp_name(out) + ".png"   # this thread's own (the joystick and the board may ask for it at once)
+        timed_out = False
+        for at in ("3", "8", "0"):
+            try:
+                subprocess.run([ffmpeg, "-v", "error", "-ss", at, "-i", video, "-frames:v", "1", "-y", tmp],
+                               capture_output=True, timeout=30,
+                               creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0) | 0x00004000)   # below normal
+                with Image.open(tmp) as im:
+                    dark = max(ImageStat.Stat(im.convert("L")).mean) < 12
+                if dark and at != "0":
+                    continue
+                os.replace(tmp, out)
+                return out
+            except subprocess.TimeoutExpired:   # the PC was busy (a table loading), not a bad video
+                timed_out = True
+                continue
+            except Exception:   # noqa: BLE001 - too short for that point, or not a video: the next try
+                continue
+        try:
+            os.remove(tmp)
+        except OSError:
+            pass
+        if timed_out:   # tried again another time: a frame that only came too late is no reason to give up
+            log("poster of %s: ffmpeg too slow, tried again later" % os.path.basename(video))
+            return None
+        write_text(out + ".none", video)
+        return None
 
     def landscape(self, path):
         """True for a picture wider than tall (the board shows only those: a portrait manual would be
@@ -309,11 +452,59 @@ class Popper:
         return [r["GameID"] for r in self.q("SELECT GameID FROM Games WHERE Visible = 1 AND EMUID IN (%s)"
                                             % ",".join(str(e) for e in DMD_EMUS))]
 
+    def category_rules(self):
+        path = os.path.join(os.path.dirname(os.path.abspath(__file__)), "categories.json")
+        try:
+            with open(path, encoding="utf-8") as f:
+                rules = [r for r in json.load(f) if isinstance(r, dict) and r.get("name")]
+            if rules:
+                return rules
+        except FileNotFoundError:
+            pass
+        except (OSError, ValueError) as e:
+            log("categories.json not used:", e)
+        return CATEGORIES
+
+    def categories(self):
+        """(the categories with games, in order: [{id, name, key, n}], {(EMUID, Popper Category): category id}),
+        worked out again only when the database changes (CATEGORIES)."""
+        try:
+            mt = os.stat(self.db).st_mtime_ns
+        except OSError:
+            mt = None
+        if self.cats and self.cats[0] == mt:
+            return self.cats[1], self.cats[2]
+        emus = {r["EMUID"]: "%s|%s" % (r["EmuName"] or "", r["EmuDisplay"] or "")
+                for r in self.q("SELECT EMUID, EmuName, EmuDisplay FROM Emulators")}
+        rows = self.q("SELECT EMUID, IFNULL(Category, '') AS c, COUNT(*) AS n FROM Games WHERE Visible = 1 "
+                      "AND EMUID IN (SELECT EMUID FROM Emulators WHERE Visible = 1) GROUP BY EMUID, c")
+        rules = self.category_rules()
+        taken = [[] for _ in rules]   # (EMUID, category, games) of each rule
+        for r in rows:
+            name = emus.get(r["EMUID"], "")
+            k = next((i for i, rule in enumerate(rules)
+                      if re.search(rule.get("emu") or "", name, re.I)
+                      and (not rule.get("genre") or re.search(rule["genre"], r["c"], re.I))), len(rules) - 1)
+            taken[k].append((r["EMUID"], r["c"], r["n"]))
+        cats, of = [], {}
+        for i, (rule, games) in enumerate(zip(rules, taken)):
+            if not games:
+                continue
+            # an emulator split by genre: an id of its own per part (its EMUID would name all of them)
+            split = any(rule is not other and other.get("genre") and taken[j] and
+                        {e for e, _, _ in taken[j]} & {e for e, _, _ in games}
+                        for j, other in enumerate(rules)) or rule.get("genre")
+            cid = 1000 + i if split else min(e for e, _, _ in games)
+            cats.append({"id": cid, "name": rule["name"][:23], "key": category_key(rule),
+                         "n": sum(n for _, _, n in games)})
+            for e, c, _ in games:
+                of[(e, c)] = cid
+        self.cats = (mt, cats, of)
+        return cats, of
+
     def emulators(self):
-        """The visible emulators with tables: [{id, name}] (the board's system filter)."""
-        rows = self.q("SELECT e.EMUID, e.EmuName FROM Emulators e WHERE e.Visible = 1 AND EXISTS "
-                      "(SELECT 1 FROM Games g WHERE g.EMUID = e.EMUID AND g.Visible = 1) ORDER BY e.EMUID")
-        return [{"id": r["EMUID"], "name": (r["EmuName"] or "").strip()} for r in rows]
+        """The categories with games: [{id, name, key, n}] (the board's system filter; CATEGORIES)."""
+        return self.categories()[0]
 
     def emu_of(self, gid):
         rows = self.q("SELECT EMUID FROM Games WHERE GameID = ?", (int(gid),))
@@ -329,13 +520,18 @@ class Popper:
             return False, "Popper Web Remote: %s" % e
 
     def id_for_file(self, game_full_name):
-        """Popper's [GAMEFULLNAME] (a file name, maybe with a path) -> GameID."""
-        base = os.path.basename(game_full_name or "").strip().lower()
+        """Popper's [GAMEFULLNAME] (a file name, maybe with a path) -> GameID. Compared without case or accents
+        (fold()): the name comes through a batch file and curl, maybe in another code page; an exact match
+        first, so two names that differ only by an accent still find their own."""
+        base = os.path.basename((game_full_name or "").replace("/", "\\").split("\\")[-1]).strip()
         stem = os.path.splitext(base)[0]
-        for r in self.q("SELECT GameID, GameFileName, GameName FROM Games"):
-            f = os.path.basename(r.get("GameFileName") or "").lower()
-            if f == base or os.path.splitext(f)[0] == stem or (r.get("GameName") or "").lower() == stem:
-                return r["GameID"]
+        rows = self.q("SELECT GameID, GameFileName, GameName FROM Games")
+        for same in (lambda s: s.lower(), fold):
+            b, st = same(base), same(stem)
+            for r in rows:
+                f = same(os.path.basename(r.get("GameFileName") or ""))
+                if f == b or os.path.splitext(f)[0] == st or same(r.get("GameName") or "") == st:
+                    return r["GameID"]
         return None
 
     def launch(self, gid):
@@ -346,6 +542,15 @@ class Popper:
                 return resp.status == 200, ""
         except Exception as e:   # noqa: BLE001 - reported to the board as text
             return False, "Popper Web Remote: %s" % e
+
+
+def category_key(rule):
+    """A category's stable ASCII id: its "key", else its name without accents, lower case, words joined by _
+    (categories.json rules written before keys existed)."""
+    k = str(rule.get("key") or "").strip()
+    if not k:
+        k = re.sub(r"[^a-z0-9]+", "_", fold(rule.get("name") or "").encode("ascii", "ignore").decode()).strip("_")
+    return k[:23] or "other"
 
 
 def fit(img, w, h, bg, alpha=False, box=None, rot=0):
@@ -384,6 +589,81 @@ def jpeg_quality(kind):
     return 90 if kind == "help" else 80 if kind in ("backglass", "gamebg") else 85
 
 
+TRIMS = None              # alpha_trim()'s answers: "path|mtime|size" -> [l, t, r, b] or None (trim.json in the cache)
+TRIMS_LOCK = threading.Lock()
+# trim.json is rewritten whole (hundreds of entries): not once per new wheel while the board fetches a list's
+# wheels one after the other, but at most every TRIMS_EVERY seconds (a timer for the last ones) and at exit
+TRIMS_EVERY = 30
+TRIMS_DIRTY = False
+TRIMS_SAVED = 0.0
+TRIMS_TIMER = None
+
+
+def save_trims():
+    """trim.json written when alpha_trim() has new answers (save_trims_soon(); main() at exit)."""
+    global TRIMS_DIRTY, TRIMS_SAVED, TRIMS_TIMER
+    with TRIMS_LOCK:
+        TRIMS_TIMER = None
+        if not TRIMS_DIRTY or TRIMS is None:
+            return
+        try:
+            write_text(os.path.join(cache_dir(), "trim.json"), json.dumps(TRIMS))
+        except OSError as e:
+            log("trim.json:", e)
+        TRIMS_DIRTY, TRIMS_SAVED = False, time.time()
+
+
+def save_trims_soon():
+    """Called with TRIMS_LOCK held, after a new answer: written now if the last write is old enough, else once
+    TRIMS_EVERY seconds have passed (one timer pending at most)."""
+    global TRIMS_DIRTY, TRIMS_TIMER
+    TRIMS_DIRTY = True
+    wait = TRIMS_SAVED + TRIMS_EVERY - time.time()
+    if TRIMS_TIMER is None:
+        TRIMS_TIMER = threading.Timer(max(0.0, wait), save_trims)
+        TRIMS_TIMER.daemon = True
+        TRIMS_TIMER.start()
+
+
+def alpha_trim(path):
+    """The part of a transparent wheel that is not empty, (l, t, r, b), when its empty margins are wide (an
+    FX2 logo of 400x175 with the words in its middle third came out tiny on the board), else None. Worked out
+    once per file version - decoding a wheel costs ~0.1 s on the cabinet PC - and kept in the cache folder."""
+    global TRIMS
+    try:
+        st = os.stat(path)
+    except OSError:
+        return None
+    k = "%s|%d|%d" % (path, st.st_mtime_ns, st.st_size)
+    store = os.path.join(cache_dir(), "trim.json")
+    with TRIMS_LOCK:
+        if TRIMS is None:
+            try:
+                with open(store, encoding="utf-8") as f:
+                    TRIMS = json.load(f)
+            except (OSError, ValueError):
+                TRIMS = {}
+        if k in TRIMS:
+            return tuple(TRIMS[k]) if TRIMS[k] else None
+    from PIL import Image
+    box = None
+    try:
+        with Image.open(path) as im:
+            im.seek(0)
+            if im.mode in ("RGBA", "LA", "P"):
+                a = im.convert("RGBA").getchannel("A").point(lambda v: 255 if v > 24 else 0)
+                bb = a.getbbox()
+                if bb and (bb[2] - bb[0] < im.width * 0.88 or bb[3] - bb[1] < im.height * 0.88):
+                    pad = max(2, (bb[2] - bb[0]) // 30)   # a little air around the logo
+                    box = (max(0, bb[0] - pad), max(0, bb[1] - pad), min(im.width, bb[2] + pad), min(im.height, bb[3] + pad))
+    except Exception:   # noqa: BLE001 - not readable: converted (or refused) as it is
+        box = None
+    with TRIMS_LOCK:
+        TRIMS[k] = list(box) if box else None
+        save_trims_soon()
+    return box
+
+
 def picture_key(path, w, h, bg, alpha, box, rot, kind, as_jpeg):
     """The conversion's key: the same file (path, time, size) and the same request -> the same bytes."""
     st = os.stat(path)
@@ -396,6 +676,7 @@ def jpeg_file(path, kind, w, h, bg, box, rot, key):
     from PIL import Image
     cached = os.path.join(cache_dir(), key + ".nvj")
     try:
+        keep_cached(cached)   # used: kept by the cache pruning
         with open(cached, "rb") as f:
             w, h = struct.unpack("<HH", f.read(4))
             return w, h, f.read()
@@ -414,9 +695,9 @@ def jpeg_file(path, kind, w, h, bg, box, rot, key):
         data = jpeg(pic, jpeg_quality(kind))
         w, h = pic.width, pic.height
     try:
-        with open(cached + ".tmp", "wb") as f:
+        with open(tmp_name(cached), "wb") as f:
             f.write(struct.pack("<HH", w, h) + data)
-        os.replace(cached + ".tmp", cached)
+        os.replace(tmp_name(cached), cached)
     except OSError:
         pass
     return w, h, data
@@ -464,6 +745,7 @@ def fulldmd(b2s, jpg=False):
     key = "%08x" % zlib.crc32(("fulldmd2|%s|%s|%d|%d" % ("jpg" if jpg else "565", b2s, st.st_mtime_ns, st.st_size)).encode())
     cached = os.path.join(cache_dir(), key + ".fulldmd")
     try:
+        keep_cached(cached)   # used: kept by the cache pruning
         with open(cached, "rb") as f:
             head = f.read(12)
             if len(head) < 12:
@@ -492,10 +774,10 @@ def fulldmd(b2s, jpg=False):
                     px = rgb565(im, FULLDMD_W, FULLDMD_H, (0, 0, 0))
                     res = (len(px), zlib.compress(px, 6), aw, ah)
     try:
-        with open(cached + ".tmp", "wb") as f:
+        with open(tmp_name(cached), "wb") as f:
             if res:
                 f.write(struct.pack("<III", res[0], res[2], res[3]) + res[1])
-        os.replace(cached + ".tmp", cached)
+        os.replace(tmp_name(cached), cached)
     except OSError:
         pass
     return res
@@ -514,6 +796,7 @@ def b2s_grill(b2s, jpg=False):
     key = "%08x" % zlib.crc32(("b2sbg|%s|%s|%d|%d" % ("jpg" if jpg else "565", b2s, st.st_mtime_ns, st.st_size)).encode())
     cached = os.path.join(cache_dir(), key + ".b2sgrill")
     try:
+        keep_cached(cached)   # used: kept by the cache pruning
         with open(cached, "rb") as f:
             head = f.read(20)
             if head == b"none2":   # none, by this version (an empty file: by one that missed the lit / unlit pair)
@@ -556,12 +839,12 @@ def b2s_grill(b2s, jpg=False):
                     px = rgb565(im.convert("RGB"), FULLDMD_W, FULLDMD_H, (0, 0, 0))   # contain, centred
                     res = (len(px), zlib.compress(px, 6), gy, oy + h - gy, ox, w)
     try:
-        with open(cached + ".tmp", "wb") as f:
+        with open(tmp_name(cached), "wb") as f:
             if res:
                 f.write(struct.pack("<IIIII", res[0], res[2], res[3], res[4], res[5]) + res[1])
             else:
                 f.write(b"none2")
-        os.replace(cached + ".tmp", cached)
+        os.replace(tmp_name(cached), cached)
     except OSError:
         pass
     return res
@@ -592,38 +875,76 @@ def backup_once(path):
 
 def write_text(path, text):
     """Written whole or not at all; a file still open in a closing emulator (dmdext keeps DmdDevice.ini for a
-    moment after a game) is tried again for a few seconds."""
-    for i in range(20):
-        try:
-            with open(path + ".tmp", "w", encoding="utf-8", newline="") as f:
-                f.write(text)
-            os.replace(path + ".tmp", path)
-            return
-        except PermissionError:
-            if i == 19:
-                raise
-            time.sleep(0.5)
+    moment after a game) is tried again for a few seconds. UTF-8 with surrogateescape, as the files it edits are
+    read: bytes that are not UTF-8 (a cp1252 accent in DmdDevice.ini or a .res path) go back unchanged.
+    The temporary file is this thread's own (tmp_name)."""
+    tmp = tmp_name(path)
+    try:
+        for i in range(20):
+            try:
+                with open(tmp, "w", encoding="utf-8", errors="surrogateescape", newline="") as f:
+                    f.write(text)
+                os.replace(tmp, path)
+                return
+            except PermissionError:
+                if i == 19:
+                    raise
+                time.sleep(0.5)
+    finally:
+        if os.path.exists(tmp):   # not moved in place (an error): not left behind
+            try:
+                os.remove(tmp)
+            except OSError:
+                pass
 
 
-def s2_res(b2s, bg, dmd):
+# The second screen's shared files (B2STableSettings.xml, DmdDevice.ini, s2.json): read, changed and written
+# whole, so two changes at once would lose one of them. The board's requests come one at a time (Link.work),
+# this is for anything else that may write them.
+S2_LOCK = threading.RLock()
+
+
+def s2_black(folder, w, h):
+    """A black picture for B2S's background (behind a backglass that does not fill the second screen: what
+    is behind it, Popper's own backglass, must not show). Made once next to the tables."""
+    path = os.path.join(folder, "b2s_sfondo_nero_nucleo.png")
+    if not os.path.isfile(path):
+        from PIL import Image
+        Image.new("RGB", (max(16, w), max(16, h))).save(path)
+    return path
+
+
+def native_path(s):
+    """A path read from a file with surrogateescape, for the file system: its non-UTF-8 bytes (a .res saved in
+    the ANSI code page) read as that code page; the text written back keeps the original bytes."""
+    if not any("\udc80" <= c <= "\udcff" for c in s):
+        return s
+    return s.encode("utf-8", "surrogateescape").decode("mbcs" if os.name == "nt" else "latin-1", "replace")
+
+
+def s2_res(b2s, bg, dmd, x0=0, screen=None):
     """The table's .res: bg = [x, y, w, h] of the backglass, dmd = [x, y, w, h] of B2S's DMD window or None
     (both in the second screen's pixels). B2S places its DMD window from the backglass's corner (seen on the
     cabinet: a backglass at y 152 took the window 152 rows lower), so the file gets it relative to it."""
     path = os.path.splitext(b2s)[0] + ".res"
     lines = []
     if os.path.isfile(path):
-        with open(path, encoding="utf-8", errors="replace") as f:
+        with open(path, encoding="utf-8", errors="surrogateescape") as f:
             lines = [l.rstrip("\r\n") for l in f]
     if not lines or lines[0].strip() != "# V2" or len(lines) < RES_LINES + 1:
         base = os.path.join(os.path.dirname(b2s), "ScreenRes.txt")   # B2S's own default for every table
         old = []
         if os.path.isfile(base):
-            with open(base, encoding="utf-8", errors="replace") as f:
+            with open(base, encoding="utf-8", errors="surrogateescape") as f:
                 old = [l.rstrip("\r\n") for l in f]
         if old and old[0].strip() == "# V2" and len(old) >= RES_LINES + 1:
             lines = old[:RES_LINES + 1]
-        else:
-            raise ValueError("no V2 ScreenRes to start from")
+        else:   # none to start from (Goldorak: no .res, a 4-line ScreenRes.txt): a whole V2 one, made here
+            o = old[1:] if old and old[0].lstrip().startswith("#") else old   # the playfield: its first two numbers
+            pf = o[:2] if len(o) >= 2 and o[0].strip().isdigit() and o[1].strip().isdigit() else ["1366", "768"]
+            lines = ["# V2", pf[0], pf[1], "1280", "1024", "@%d" % x0] + ["0"] * 11 + [""]
+    if not os.path.isfile(path) and not os.path.exists(path + S2_BACKUP):
+        write_text(path + S2_BACKUP, "")   # an empty backup: the table had no .res (restored by setting it aside)
     backup_once(path)
     if dmd and dmd[0] == bg[0] and dmd[1] == bg[1]:
         # 0,0 from the backglass means "no DMD window" to B2S (seen: none opened): the backglass, hidden
@@ -634,16 +955,28 @@ def s2_res(b2s, bg, dmd):
     v[5], v[6] = str(int(bg[0])), str(int(bg[1]))
     d = [dmd[0] - bg[0], dmd[1] - bg[1], dmd[2], dmd[3]] if dmd else [0, 0, 0, 0]
     v[7], v[8], v[9], v[10] = str(int(d[2])), str(int(d[3])), str(int(d[0])), str(int(d[1]))
+    if screen:   # the background: the whole screen, with the table's own picture or a black one
+        pic = v[16].strip() if len(v) > 16 else ""
+        if pic and not os.path.isabs(pic):
+            pic = os.path.join(os.path.dirname(b2s), pic)
+        if not pic or not os.path.isfile(native_path(pic)):
+            pic = s2_black(os.path.dirname(b2s), screen[0], screen[1])
+        v[12], v[13], v[14], v[15] = "0", "0", str(int(screen[0])), str(int(screen[1]))
+        while len(v) < RES_LINES:
+            v.append("")
+        v[16] = pic
     write_text(path, "\r\n".join([lines[0]] + v + lines[RES_LINES + 1:]) + "\r\n")
 
 
-def s2_settings(b2s, key, hide_grill, hide_dmd):
+def s2_settings(b2s, key, hide_grill, hide_dmd, background=True):
     """The table's block of B2STableSettings.xml (next to the tables): HideGrill and HideB2SDMD."""
     path = os.path.join(os.path.dirname(b2s), "B2STableSettings.xml")
-    with open(path, encoding="utf-8", errors="replace", newline="") as f:
+    with open(path, encoding="utf-8", errors="surrogateescape", newline="") as f:
         x = f.read()
     backup_once(path)
     vals = {"HideGrill": int(bool(hide_grill)), "HideB2SDMD": int(bool(hide_dmd))}
+    if background:
+        vals["StartBackground"] = 1   # B2S shows the .res background only with it (B2SScreen.vb)
     m = re.search(r"<%s>(.*?)</%s>" % (re.escape(key), re.escape(key)), x, re.S)
     if m:
         body = m.group(1)
@@ -665,7 +998,7 @@ def s2_settings(b2s, key, hide_grill, hide_dmd):
 def s2_vdmd(ini, rom, rect):
     """dmdext's virtual DMD for one game (DmdDevice.ini, section [rom]): rect = [x, y, w, h] on the desktop,
     or None (off)."""
-    with open(ini, encoding="utf-8", errors="replace") as f:
+    with open(ini, encoding="utf-8", errors="surrogateescape") as f:
         lines = f.read().splitlines()
     backup_once(ini)
     keys = {"virtualdmd enabled": "true" if rect else "false"}
@@ -690,14 +1023,17 @@ def s2_restore(b2s, ini, rom, dmd_key=None):
     """The table as it came: its .res from the backup, its B2S block and its dmdext section as the backups
     of the shared files have them (gone when they had none). Nothing to do when it was never changed."""
     path = os.path.splitext(b2s)[0] + ".res"
-    if os.path.isfile(path + S2_BACKUP):
+    if os.path.isfile(path + S2_BACKUP) and os.path.getsize(path + S2_BACKUP) == 0:
+        if os.path.isfile(path):   # the table had none: ours set aside (nothing deleted), B2S back to its default
+            os.replace(path, path + ".creato-da-s2")
+    elif os.path.isfile(path + S2_BACKUP):
         with open(path + S2_BACKUP, "rb") as f, open(path, "wb") as o:
             o.write(f.read())
     xml = os.path.join(os.path.dirname(b2s), "B2STableSettings.xml")
     if os.path.isfile(xml + S2_BACKUP):
-        with open(xml + S2_BACKUP, encoding="utf-8", errors="replace", newline="") as f:
+        with open(xml + S2_BACKUP, encoding="utf-8", errors="surrogateescape", newline="") as f:
             old = f.read()
-        with open(xml, encoding="utf-8", errors="replace", newline="") as f:
+        with open(xml, encoding="utf-8", errors="surrogateescape", newline="") as f:
             x = f.read()
         pat = r"[ \t]*<%s>.*?</%s>[ \t]*\r?\n?" % (re.escape(rom), re.escape(rom))
         m_old, m_new = re.search(pat, old, re.S), re.search(pat, x, re.S)
@@ -714,9 +1050,9 @@ def s2_restore(b2s, ini, rom, dmd_key=None):
                 return None, None
             en = next((i for i in range(st + 1, len(lines)) if lines[i].strip().startswith("[")), len(lines))
             return st, en
-        with open(ini + S2_BACKUP, encoding="utf-8", errors="replace") as f:
+        with open(ini + S2_BACKUP, encoding="utf-8", errors="surrogateescape") as f:
             old = f.read().splitlines()
-        with open(ini, encoding="utf-8", errors="replace") as f:
+        with open(ini, encoding="utf-8", errors="surrogateescape") as f:
             cur = f.read().splitlines()
         head = "[%s]" % (dmd_key or rom)
         a, b = section(old, head)
@@ -759,6 +1095,102 @@ def b2s_dmdtype(b2s):
     with open(b2s, "rb") as f:
         m = re.search(rb'<DMDType Value="(\d+)"', f.read(1 << 20))
     return int(m.group(1)) if m else 0
+
+
+def b2s_info(b2s):
+    """What a .directb2s holds, for the board's composition screen: its backglass picture's size and grill rows,
+    its FullDMD art's size (0 x 0: none), whether it is a dual backglass (two versions, Authentic and Fantasy:
+    B2S lights a different set of pictures for each) and its DMDType. Only the pictures' headers are decoded
+    (a few KB each, not the 30-80 MB file); cached by the file's size and time."""
+    from PIL import ImageFile
+    import base64
+    st = os.stat(b2s)
+    key = "%08x" % zlib.crc32(("b2sinfo1|%s|%d|%d" % (b2s, st.st_mtime_ns, st.st_size)).encode())
+    cached = os.path.join(cache_dir(), key + ".b2sinfo")
+    try:
+        keep_cached(cached)   # used: kept by the cache pruning
+        with open(cached, encoding="utf-8") as f:
+            return json.load(f)
+    except (OSError, ValueError):
+        pass
+
+    def size_of(data, tag):
+        i = data.find(b"<%s " % tag)
+        i = data.find(b'Value="', i) if i >= 0 else -1
+        if i < 0:
+            return 0, 0
+        i += 7
+        par = ImageFile.Parser()
+        pos = i
+        while par.image is None and pos < i + (1 << 20):
+            chunk = data[pos:pos + 4096]
+            j = chunk.find(b'"')
+            raw = chunk[:j] if j >= 0 else chunk
+            raw = b"".join(raw.replace(b"&#xD;", b"").replace(b"&#xA;", b"").split())
+            raw = raw[:len(raw) // 4 * 4]
+            try:
+                par.feed(base64.b64decode(raw))
+            except Exception:   # noqa: BLE001 - not a picture we can read
+                return 0, 0
+            if j >= 0:
+                break
+            pos += 4096
+        return par.image.size if par.image is not None else (0, 0)
+
+    with open(b2s, "rb") as f:
+        data = f.read()
+
+    def value(tag):
+        m = re.search(rb'<%s Value="([^"]*)"' % tag, data[:1 << 20])
+        return m.group(1).decode("utf-8", "replace") if m else ""
+
+    bw, bh = size_of(data, b"BackglassImage")
+    aw, ah = size_of(data, b"DMDImage")
+    info = {"bw": bw, "bh": bh, "grill": int(value(b"GrillHeight") or 0), "aw": aw, "ah": ah,
+            "dual": value(b"DualBackglass") == "1", "dmdtype": int(value(b"DMDType") or 0)}
+    del data
+    try:
+        write_text(cached, json.dumps(info))
+    except OSError:
+        pass
+    return info
+
+
+def b2s_dual_mode(b2s, key):
+    """The table's dual-backglass version in B2STableSettings.xml: 1 Authentic (B2S's default), 2 Fantasy."""
+    path = os.path.join(os.path.dirname(b2s), "B2STableSettings.xml")
+    try:
+        with open(path, encoding="utf-8", errors="surrogateescape") as f:
+            x = f.read()
+    except OSError:
+        return 1
+    m = re.search(r"<%s>(.*?)</%s>" % (re.escape(key), re.escape(key)), x, re.S)
+    d = re.search(r"<DualMode>(\d)</DualMode>", m.group(1)) if m else None
+    return 2 if d and d.group(1) == "2" else 1
+
+
+def b2s_set_dual(b2s, key, mode):
+    """Writes the table's dual-backglass version (1 Authentic, 2 Fantasy) where B2S reads it when the table
+    starts (its block in B2STableSettings.xml, the file backed up once)."""
+    path = os.path.join(os.path.dirname(b2s), "B2STableSettings.xml")
+    with open(path, encoding="utf-8", errors="surrogateescape", newline="") as f:
+        x = f.read()
+    backup_once(path)
+    m = re.search(r"<%s>(.*?)</%s>" % (re.escape(key), re.escape(key)), x, re.S)
+    line = "<DualMode>%d</DualMode>" % (2 if mode == 2 else 1)
+    if m:
+        body = m.group(1)
+        if re.search(r"<DualMode>\d*</DualMode>", body):
+            body = re.sub(r"<DualMode>\d*</DualMode>", line, body)
+        else:
+            body = body.rstrip() + "\r\n    %s\r\n  " % line
+        x = x[:m.start(1)] + body + x[m.end(1):]
+    else:
+        i = x.rfind("</B2STableSettings>")
+        if i < 0:
+            raise ValueError("B2STableSettings.xml without its root")
+        x = x[:i] + "  <%s>\r\n    %s\r\n  </%s>\r\n" % (key, line, key) + x[i:]
+    write_text(path, x)
 
 
 def second_screen():
@@ -836,7 +1268,7 @@ def raise_vdmd(token_alive):
 def s2_apply(b2s, ini, rom, comp, section=None):
     """Writes one table's composition: comp = {"bg": [x,y,w,h], "grill": bool, "b2sdmd": [..] or None,
     "vdmd": [..] or None, "x0": the second screen's left on the desktop}."""
-    s2_res(b2s, comp["bg"], comp.get("b2sdmd"))
+    s2_res(b2s, comp["bg"], comp.get("b2sdmd"), comp.get("x0", 0), comp.get("screen"))
     s2_settings(b2s, rom, not comp.get("grill"), not comp.get("b2sdmd"))
     v = comp.get("vdmd")
     s2_vdmd(ini, section or rom, [v[0] + comp.get("x0", 0), v[1] + comp.get("y0", 0), v[2], v[3]] if v else None)
@@ -923,6 +1355,471 @@ def lan_ip():
         return ""
 
 
+# ---- Future Pinball: its DMD to the board through dmdext's "futurepinball" mirror (the board as a ZeDMD) ----
+# FP has no DmdDevice.dll: dmdext reads the DMD out of the running game ("mirror --source=futurepinball"), and
+# only a translite DMD (a DMD element on the backglass, not the HUD one). Most FP tables here are EMs with
+# reels or segment displays and have none: those keep the board's showcase.
+FP_DMD_RX = re.compile(rb"(?:[A-Za-z0-9_]\x00){0,30}[Dd]\x00[Mm]\x00[Dd]\x00(?:[A-Za-z0-9_]\x00){0,30}")
+
+
+# ---- Score displays to the board, for tables without a DMD (Future Pinball EMs: reels, segments, LEDs) ----
+# The bridge finds the score displays on the backglass screen once per table (find_displays), then copies only
+# them, a few times a second, packed into one small picture the board draws as a DMD ('D'). One screen read a
+# frame (the box around the displays; measured on the cabinet: ~24 ms of waiting, no CPU to speak of, the
+# table's own CPU and GPU unchanged), the scaling done by GDI in that copy, and a message only when it changed.
+SCORE_W, SCORE_H = 256, 64
+SCORE_FPS = 8
+_FD_K = 4   # display search at 1/4 size
+
+
+def _fd_overlaps(a, b):
+    return a[0] < b[0] + b[2] and b[0] < a[0] + a[2] and a[1] < b[1] + b[3] and b[1] < a[1] + a[3]
+
+
+def _fd_components(mask, w, h, extra=None):
+    """Connected areas of a mask: (count, extra-count, x0, y0, x1, y1) each (4-connected)."""
+    seen = bytearray(w * h)
+    for start in range(w * h):
+        if not mask[start] or seen[start]:
+            continue
+        stack, n, ne = [start], 0, 0
+        seen[start] = 1
+        x0 = y0 = 10 ** 9
+        x1 = y1 = -1
+        while stack:
+            i = stack.pop()
+            n += 1
+            if extra is not None:
+                ne += extra[i]
+            y, x = divmod(i, w)
+            if x < x0:
+                x0 = x
+            if x > x1:
+                x1 = x
+            if y < y0:
+                y0 = y
+            if y > y1:
+                y1 = y
+            for j in (i - 1, i + 1, i - w, i + w):
+                if 0 <= j < w * h and not seen[j] and mask[j] and abs((j % w) - x) <= 1:
+                    seen[j] = 1
+                    stack.append(j)
+        yield n, ne, x0, y0, x1, y1
+
+
+def find_displays(img):
+    """The score displays on a backglass picture: [(x, y, w, h)]. Three kinds, tried on the cabinet's
+    backglasses: a dark box with a dark outline (segments, LEDs), a dark-or-lit box with lit digits (a lit
+    display in a coloured frame), and a row of 3+ dark digits of one size evenly spaced (score reels). A
+    display is much wider than tall, or small (credits, ball, match). Pillow only (no numpy here), ~0.1 s."""
+    from PIL import Image
+    im = img.convert("RGB")
+    sm = im.resize((max(1, im.width // _FD_K), max(1, im.height // _FD_K)), Image.BOX)
+    w, h = sm.size
+    data = list(sm.getdata())
+    dark = bytearray(1 if max(p) < 60 else 0 for p in data)
+    lit = bytearray(1 if max(p) > 140 and (max(p) - min(p)) > 0.4 * max(p) else 0 for p in data)
+    boxes = []
+
+    def shaped(bw, bh, glyph):
+        return (bw >= 2.8 * bh and glyph >= 0.02) or (bw >= 1.2 * bh and bh <= h * 0.08 and glyph >= 0.08)
+
+    for n, _, x0, y0, x1, y1 in _fd_components(dark, w, h):   # 1: dark box, dark outline
+        bw, bh = x1 - x0 + 1, y1 - y0 + 1
+        if n < 12 or bh < 4 or bh > h * 0.2 or bw > w * 0.9:
+            continue
+        edge = [dark[y0 * w + x] for x in range(x0, x1 + 1)] + [dark[y1 * w + x] for x in range(x0, x1 + 1)]
+        edge += [dark[y * w + x0] for y in range(y0, y1 + 1)] + [dark[y * w + x1] for y in range(y0, y1 + 1)]
+        inner = [dark[y * w + x] for y in range(y0 + 1, y1) for x in range(x0 + 1, x1)]
+        if sum(edge) < 0.85 * len(edge) or not inner:
+            continue
+        glyph = 1 - sum(inner) / len(inner)
+        if 0.04 <= glyph <= 0.85 and shaped(bw, bh, 1):
+            boxes.append((x0, y0, bw, bh))
+    both = bytearray(a | b for a, b in zip(dark, lit))
+    for n, nl, x0, y0, x1, y1 in _fd_components(both, w, h, lit):   # 2: lit digits in a box
+        bw, bh = x1 - x0 + 1, y1 - y0 + 1
+        if bh < 5 or bh > h * 0.2 or bw > w * 0.9 or n / (bw * bh) < 0.75 or nl > 0.6 * n:
+            continue
+        r = (x0, y0, bw, bh)
+        if shaped(bw, bh, nl / n) and not any(_fd_overlaps(r, t) for t in boxes):
+            boxes.append(r)
+    glyphs = []   # 3: score reels, a row of dark digits
+    for n, _, x0, y0, x1, y1 in _fd_components(dark, w, h):
+        gw, gh = x1 - x0 + 1, y1 - y0 + 1
+        if 4 <= gh <= h * 0.1 and 0.35 * gh <= gw <= 1.6 * gh and n >= 0.2 * gw * gh:
+            glyphs.append((x0, y0, gw, gh))
+    glyphs.sort(key=lambda g: (g[1], g[0]))
+    used = set()
+    for i, g in enumerate(glyphs):
+        if i in used:
+            continue
+        row = [g] + [o for j, o in enumerate(glyphs[i + 1:], i + 1)
+                     if j not in used and 0 <= o[1] - g[1] <= 2 and abs(o[3] - g[3]) <= 2 and abs(o[2] - g[2]) <= 3
+                     and not used.add(j)]
+        row.sort()
+        run = [row[0]]
+        for o in row[1:] + [None]:
+            if o is not None and o[0] - (run[-1][0] + run[-1][2]) <= 2.5 * o[2]:
+                run.append(o)
+                continue
+            if len(run) >= 3:
+                gaps = [b[0] - a[0] for a, b in zip(run, run[1:])]
+                if max(gaps) <= 1.4 * min(gaps):
+                    x0, x1 = run[0][0], run[-1][0] + run[-1][2]
+                    y0, y1 = min(r[1] for r in run), max(r[1] + r[3] for r in run)
+                    m = max(1, (y1 - y0) // 3)
+                    r = (x0 - m, y0 - m, x1 - x0 + 2 * m, y1 - y0 + 2 * m)
+                    if not any(_fd_overlaps(r, t) for t in boxes):
+                        boxes.append(r)
+            run = [o] if o is not None else []
+    boxes.sort(key=lambda b: (b[1] // 10, b[0]))
+    return [(x * _FD_K, y * _FD_K, bw * _FD_K, bh * _FD_K) for x, y, bw, bh in boxes]
+
+
+def score_layout(boxes, cw=SCORE_W, ch=SCORE_H):
+    """Where each display goes in the board's picture: the big ones (players' scores) first in reading order,
+    the small ones (credits, ball, match) after; one column for up to 2, two columns above. Aspect kept."""
+    big = [b for b in boxes if b[2] >= 2.8 * b[3]]
+    small = [b for b in boxes if b[2] < 2.8 * b[3]]
+    order = big + small
+    cols = 1 if len(order) <= 2 else 2
+    rows = (len(order) + cols - 1) // cols
+    cellw, cellh = cw // cols, ch // rows
+    out = []
+    for i, (x, y, w, h) in enumerate(order):
+        sc = min(cellw / w, cellh / h)
+        dw, dh = max(1, int(w * sc)), max(1, int(h * sc))
+        out.append(((i % cols) * cellw + (cellw - dw) // 2, (i // cols) * cellh + (cellh - dh) // 2, dw, dh, (x, y, w, h)))
+    return out
+
+
+class ScreenCopy:
+    """GDI copies off the desktop (the user's session: the bridge's own). Handles typed: in a desktop session
+    they do not fit in a C int."""
+
+    def __init__(self):
+        import ctypes
+        from ctypes import wintypes
+        self.ct, self.wt = ctypes, wintypes
+        u, g = ctypes.windll.user32, ctypes.windll.gdi32
+        H, HDC = wintypes.HANDLE, wintypes.HDC
+        u.GetDC.restype, u.GetDC.argtypes = HDC, [wintypes.HWND]
+        u.ReleaseDC.argtypes = [wintypes.HWND, HDC]
+        g.CreateCompatibleDC.restype, g.CreateCompatibleDC.argtypes = HDC, [HDC]
+        g.CreateDIBSection.restype = wintypes.HBITMAP
+        g.CreateDIBSection.argtypes = [HDC, ctypes.c_void_p, wintypes.UINT, ctypes.POINTER(ctypes.c_void_p), H, wintypes.DWORD]
+        g.SelectObject.restype, g.SelectObject.argtypes = wintypes.HGDIOBJ, [HDC, wintypes.HGDIOBJ]
+        g.DeleteObject.argtypes = [wintypes.HGDIOBJ]
+        g.DeleteDC.argtypes = [HDC]
+        g.SetStretchBltMode.argtypes = [HDC, ctypes.c_int]
+        g.SetBrushOrgEx.argtypes = [HDC, ctypes.c_int, ctypes.c_int, ctypes.c_void_p]
+        g.BitBlt.argtypes = [HDC] + [ctypes.c_int] * 4 + [HDC, ctypes.c_int, ctypes.c_int, wintypes.DWORD]
+        g.StretchBlt.argtypes = [HDC] + [ctypes.c_int] * 4 + [HDC] + [ctypes.c_int] * 4 + [wintypes.DWORD]
+        self.u, self.g = u, g
+        self.scr = u.GetDC(None)
+        self.held = []
+
+    def surface(self, w, h):
+        """A memory DC on a 32-bit top-down DIB of w x h: (dc, pointer to its pixels)."""
+        ct, wt = self.ct, self.wt
+
+        class BMI(ct.Structure):
+            _fields_ = [("a", wt.DWORD), ("w", ct.c_long), ("h", ct.c_long), ("planes", wt.WORD), ("bits", wt.WORD),
+                        ("rest", wt.DWORD * 6)]
+        dc = self.g.CreateCompatibleDC(self.scr)
+        bmi = BMI(ct.sizeof(BMI), w, -h, 1, 32)
+        bits = ct.c_void_p()
+        bmp = self.g.CreateDIBSection(dc, ct.byref(bmi), 0, ct.byref(bits), None, 0)
+        self.g.SelectObject(dc, bmp)
+        self.g.SetStretchBltMode(dc, 4)   # HALFTONE: averaged, readable digits
+        self.g.SetBrushOrgEx(dc, 0, 0, None)
+        self.held.append((dc, bmp))
+        return dc, bits
+
+    def picture(self, x, y, w, h):
+        """The screen's x, y, w, h as a PIL image (one read)."""
+        from PIL import Image
+        dc, bits = self.surface(w, h)
+        self.g.BitBlt(dc, 0, 0, w, h, self.scr, x, y, 0x00CC0020)
+        return Image.frombuffer("RGBA", (w, h), self.ct.string_at(bits, w * h * 4), "raw", "BGRA", 0, 1).convert("RGB")
+
+    def close(self):
+        for dc, bmp in self.held:
+            self.g.DeleteDC(dc)
+            self.g.DeleteObject(bmp)
+        self.held = []
+        self.u.ReleaseDC(None, self.scr)
+
+
+def score_displays_for(table, screen, alive):
+    """The table's score displays on the backglass screen (x, y, w, h relative to it): from the cache, else
+    looked for on the screen itself at 20, 40 and 70 s into the game, keeping the try that found the most (at
+    20 s a loading picture or unlit displays may still show only part of them: seen on Galaxy, 1 of 6)."""
+    st = os.stat(table)
+    key = "%s|%d|%d" % (table, st.st_mtime_ns, st.st_size)
+    path = os.path.join(cache_dir(), "scoreview.json")
+    try:
+        with open(path, encoding="utf-8") as f:
+            known = json.load(f)
+    except (OSError, ValueError):
+        known = {}
+    if key in known:
+        return known[key]
+    found, t0 = [], time.time()
+    for at in (20, 40, 70):
+        while alive() and time.time() - t0 < at:
+            time.sleep(1)
+        if not alive():
+            return []
+        sc = ScreenCopy()
+        try:
+            got = find_displays(sc.picture(*screen))
+        finally:
+            sc.close()
+        if len(got) > len(found):
+            found = got
+    known[key] = found
+    try:
+        write_text(path, json.dumps(known))
+    except OSError:
+        pass
+    return found
+
+
+def score_view(link, table, alive):
+    """While the table is played: its score displays copied to the board (link.send 'D'), SCORE_FPS a second,
+    sent only when the picture changed. Without displays found, the board keeps the table's showcase."""
+    from PIL import Image
+    screen = list(link.s2) if getattr(link, "s2", None) else [1366, 0, 1280, 1024]
+    try:
+        boxes = score_displays_for(table, screen, alive)
+    except Exception as e:   # noqa: BLE001
+        log("score displays:", e)
+        return
+    name = os.path.basename(table)
+    if len(boxes) < 2:   # one box alone is more often a piece of art than a display (Amigo, Big Indian: seen)
+        log("score displays of %s: %d found, too few to trust: the board keeps the showcase" % (name, len(boxes)))
+        return
+    log("score displays of %s: %d, to the board as a %dx%d DMD" % (name, len(boxes), SCORE_W, SCORE_H))
+    cells = score_layout(boxes)
+    ux0, uy0 = min(b[0] for b in boxes), min(b[1] for b in boxes)
+    ux1, uy1 = max(b[0] + b[2] for b in boxes), max(b[1] + b[3] for b in boxes)
+    sc = ScreenCopy()
+    try:
+        grab, _ = sc.surface(ux1 - ux0, uy1 - uy0)
+        comp, bits = sc.surface(SCORE_W, SCORE_H)
+        head = json.dumps({"w": SCORE_W, "h": SCORE_H, "fmt": "rgb565z"}).encode()
+        last, sent = None, 0
+        while alive():
+            t = time.time()
+            sc.g.BitBlt(grab, 0, 0, ux1 - ux0, uy1 - uy0, sc.scr, screen[0] + ux0, screen[1] + uy0, 0x00CC0020)
+            for dx, dy, dw, dh, (x, y, w, h) in cells:
+                sc.g.StretchBlt(comp, dx, dy, dw, dh, grab, x - ux0, y - uy0, w, h, 0x00CC0020)
+            data = sc.ct.string_at(bits, SCORE_W * SCORE_H * 4)
+            if data != last:
+                last = data
+                img = Image.frombuffer("RGBA", (SCORE_W, SCORE_H), data, "raw", "BGRA", 0, 1).convert("RGB")
+                px = zlib.compress(rgb565(img, SCORE_W, SCORE_H, (0, 0, 0)), 1)
+                if link.send("D", struct.pack("<H", len(head)) + head + px):
+                    sent += 1
+            time.sleep(max(0.02, 1.0 / SCORE_FPS - (time.time() - t)))
+        log("score displays of %s: %d pictures sent" % (name, sent))
+    finally:
+        sc.close()
+
+
+def fp_dismiss_library_warnings(alive, seconds=120):
+    """Future Pinball stops a table at its start with a warning box for each library (.fpl) or library resource
+    it cannot find ("Unabled to Open Library ...", "Unabled to Load 'x' From Library ..."), and the cabinet has
+    no mouse to press OK: the table waits for ever. For the table's first two minutes, those boxes - and only
+    those - are answered OK (the table then runs without that library's sounds or pictures), each one logged.
+    Twice a second, a window list: nothing on this PC's CPU."""
+    if os.name != "nt":
+        return
+    import ctypes
+    from ctypes import wintypes
+    u, k = ctypes.windll.user32, ctypes.windll.kernel32
+    enum_cb = ctypes.WINFUNCTYPE(wintypes.BOOL, wintypes.HWND, wintypes.LPARAM)
+    u.EnumWindows.argtypes = [enum_cb, wintypes.LPARAM]
+    u.EnumChildWindows.argtypes = [wintypes.HWND, enum_cb, wintypes.LPARAM]
+    u.GetClassNameW.argtypes = [wintypes.HWND, wintypes.LPWSTR, ctypes.c_int]
+    u.IsWindowVisible.argtypes = [wintypes.HWND]
+    u.GetWindowThreadProcessId.argtypes = [wintypes.HWND, ctypes.POINTER(wintypes.DWORD)]
+    u.SendMessageTimeoutW.argtypes = [wintypes.HWND, wintypes.UINT, wintypes.WPARAM, ctypes.c_void_p, wintypes.UINT,
+                                      wintypes.UINT, ctypes.c_void_p]
+    u.PostMessageW.argtypes = [wintypes.HWND, wintypes.UINT, wintypes.WPARAM, wintypes.LPARAM]
+    u.GetDlgCtrlID.argtypes = [wintypes.HWND]
+    k.OpenProcess.restype = wintypes.HANDLE
+    k.QueryFullProcessImageNameW.argtypes = [wintypes.HANDLE, wintypes.DWORD, wintypes.LPWSTR,
+                                             ctypes.POINTER(wintypes.DWORD)]
+    k.CloseHandle.argtypes = [wintypes.HANDLE]
+
+    def exe_of(hwnd):
+        pid = wintypes.DWORD()
+        u.GetWindowThreadProcessId(hwnd, ctypes.byref(pid))
+        h = k.OpenProcess(0x1000, False, pid.value)   # PROCESS_QUERY_LIMITED_INFORMATION
+        if not h:
+            return ""
+        try:
+            buf, n = ctypes.create_unicode_buffer(300), wintypes.DWORD(300)
+            return os.path.basename(buf.value).lower() if k.QueryFullProcessImageNameW(h, 0, buf, ctypes.byref(n)) else ""
+        finally:
+            k.CloseHandle(h)
+
+    def text(hwnd):   # WM_GETTEXT works across processes for standard controls (GetWindowText does not)
+        buf = ctypes.create_unicode_buffer(512)
+        u.SendMessageTimeoutW(hwnd, 0x000D, 512, ctypes.cast(buf, ctypes.c_void_p), 0x0002, 300, None)
+        return buf.value
+
+    t_end = time.time() + seconds
+    answered = {}   # box -> times answered (logged once; a box that stays is clicked again, at most 10 times)
+    while time.time() < t_end and alive():
+        boxes = []
+
+        def on_top(hwnd, _):
+            cls = ctypes.create_unicode_buffer(64)
+            u.GetClassNameW(hwnd, cls, 64)
+            if cls.value == "#32770" and u.IsWindowVisible(hwnd) and exe_of(hwnd).startswith("future pinball"):
+                boxes.append(hwnd)
+            return True
+
+        u.EnumWindows(enum_cb(on_top), 0)
+        for box in boxes:
+            parts, buttons = [], []
+
+            def on_child(hwnd, _):
+                cls = ctypes.create_unicode_buffer(64)
+                u.GetClassNameW(hwnd, cls, 64)
+                t = text(hwnd)
+                (buttons if cls.value == "Button" else parts).append((hwnd, t))
+                return True
+
+            u.EnumChildWindows(box, enum_cb(on_child), 0)
+            msg = " ".join(t.strip() for _, t in parts if t.strip())
+            low = msg.lower()
+            if not ("unable" in low and "library" in low) or not buttons or answered.get(box, 0) >= 10:
+                continue   # FP writes "Unabled to ...": only those boxes
+            # the click on its OK button as the button itself reports it (WM_COMMAND, BN_CLICKED, its own id:
+            # a message box's lone OK is not always IDOK)
+            btn = next((b for b, t in buttons if t.replace("&", "").strip().lower() == "ok"), buttons[0][0])
+            u.PostMessageW(box, 0x0111, u.GetDlgCtrlID(btn) & 0xFFFF, btn)
+            if box not in answered:
+                log("Future Pinball: answered OK to:", " ".join(msg.split())[:200])
+            answered[box] = answered.get(box, 0) + 1
+        time.sleep(0.5)
+
+
+def fp_has_dmd(fpt):
+    """True when a Future Pinball table has a DMD element dmdext can mirror. The element names are kept in the
+    .fpt as UTF-16 ("DispDmd1"); DMD fonts ("DmdFont..."), the HUD's DMD ("HudDmd1") and LED displays
+    (Amigo's "leddmd": dmdext sent it nothing, seen on the cabinet) do not count. Read once per table
+    version (20-50 MB), then from the cache."""
+    st = os.stat(fpt)
+    key = "2|%s|%d|%d" % (fpt, st.st_mtime_ns, st.st_size)   # 2: the rule above (LED displays out)
+    path = os.path.join(cache_dir(), "fpdmd.json")
+    try:
+        with open(path, encoding="utf-8") as f:
+            known = json.load(f)
+    except (OSError, ValueError):
+        known = {}
+    if key not in known:
+        with open(fpt, "rb") as f:
+            data = f.read()
+        names = {m.group(0).decode("utf-16-le", "replace").lower() for m in FP_DMD_RX.finditer(data)}
+        del data
+        known[key] = any(not n.startswith(("dmdfont", "hud", "led")) for n in names)
+        try:
+            write_text(path, json.dumps(known))
+        except OSError:
+            pass
+    return known[key]
+
+
+def data_dir():
+    """The bridge's own folder (%LOCALAPPDATA%\\nucleo_bridge: the log, the cache, the mirror's pid)."""
+    d = os.path.join(os.environ.get("LOCALAPPDATA") or os.path.expanduser("~"), "nucleo_bridge")
+    os.makedirs(d, exist_ok=True)
+    return d
+
+
+# dmdext's Future Pinball mirror is the bridge's child and holds the board's port. A bridge ended by force
+# (ponte.ps1 ferma, the Task Manager: no Python code runs then) would leave it running and the port taken, so
+# its pid, program and start time are noted in this file, and the next bridge closes it at its start: only
+# that very process (the same pid with the same start time and program: never another one that got the pid).
+MIRROR_FILE = "fp_dmdext.json"
+
+
+def process_identity(pid):
+    """(program path, start time as a FILETIME number) of a running process, or None. Windows only."""
+    if os.name != "nt":
+        return None
+    import ctypes
+    from ctypes import wintypes
+    k = ctypes.windll.kernel32
+    k.OpenProcess.restype = wintypes.HANDLE
+    k.OpenProcess.argtypes = [wintypes.DWORD, wintypes.BOOL, wintypes.DWORD]
+    k.CloseHandle.argtypes = [wintypes.HANDLE]
+    k.GetExitCodeProcess.argtypes = [wintypes.HANDLE, ctypes.POINTER(wintypes.DWORD)]
+    k.GetProcessTimes.argtypes = [wintypes.HANDLE] + [ctypes.POINTER(wintypes.FILETIME)] * 4
+    k.QueryFullProcessImageNameW.argtypes = [wintypes.HANDLE, wintypes.DWORD, wintypes.LPWSTR,
+                                             ctypes.POINTER(wintypes.DWORD)]
+    h = k.OpenProcess(0x1000, False, int(pid))   # PROCESS_QUERY_LIMITED_INFORMATION
+    if not h:
+        return None
+    try:
+        code = wintypes.DWORD()
+        if not k.GetExitCodeProcess(h, ctypes.byref(code)) or code.value != 259:   # STILL_ACTIVE
+            return None
+        t = [wintypes.FILETIME() for _ in range(4)]
+        if not k.GetProcessTimes(h, *[ctypes.byref(x) for x in t]):
+            return None
+        buf, n = ctypes.create_unicode_buffer(600), wintypes.DWORD(600)
+        if not k.QueryFullProcessImageNameW(h, 0, buf, ctypes.byref(n)):
+            return None
+        return buf.value, (t[0].dwHighDateTime << 32) | t[0].dwLowDateTime
+    finally:
+        k.CloseHandle(h)
+
+
+def remember_mirror(pid, exe):
+    ident = process_identity(pid)
+    if not ident:
+        return
+    try:
+        write_text(os.path.join(data_dir(), MIRROR_FILE), json.dumps({"pid": pid, "exe": ident[0], "start": ident[1]}))
+    except OSError as e:
+        log("Future Pinball DMD: pid not noted:", e)
+
+
+def forget_mirror():
+    try:
+        os.remove(os.path.join(data_dir(), MIRROR_FILE))
+    except OSError:
+        pass
+
+
+def close_orphan_mirror():
+    """At start: the dmdext mirror a previous bridge started and left running (MIRROR_FILE), closed."""
+    path = os.path.join(data_dir(), MIRROR_FILE)
+    try:
+        with open(path, encoding="utf-8") as f:
+            rec = json.load(f)
+    except (OSError, ValueError):
+        return
+    try:
+        ident = process_identity(rec.get("pid") or 0)
+        if (ident and os.path.basename(ident[0]).lower() == "dmdext.exe" and ident[1] == rec.get("start")
+                and os.path.normcase(ident[0]) == os.path.normcase(rec.get("exe") or "")):
+            subprocess.run(["taskkill", "/F", "/PID", str(int(rec["pid"]))], capture_output=True, timeout=20,
+                           creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0))
+            log("closed the Future Pinball dmdext mirror (pid %d) a previous bridge left running: the port is free"
+                % rec["pid"])
+    except Exception as e:   # noqa: BLE001
+        log("dmdext left running:", e)
+    forget_mirror()
+
+
 def cache_dir():
     d = os.path.join(os.environ.get("LOCALAPPDATA") or os.path.expanduser("~"), "nucleo_bridge", "cache")
     os.makedirs(d, exist_ok=True)
@@ -951,6 +1848,9 @@ class Link:
         self.popper = popper
         self.sp = None
         self.lock = threading.Lock()
+        self.acks = {}               # (length, checksum) of an image sent -> its Event, set by the board's "ack"
+        self.acks_seen = False       # the board confirms images (a firmware that does not: nothing waited for)
+        self.acked_types = {"I"}     # message types the board has confirmed (send_sure)
         self.want_open = True
         self.game = None
         self.game_msg = None         # the board's "game started" message (sent again if the port reopens)
@@ -959,12 +1859,17 @@ class Link:
         self.idle_lock = threading.Lock()   # the idle-time conversions (FullDMD art, pictures ahead): one at a time
         self.active_at = 0.0         # the last move in Popper (a player at the cabinet)
         self.alive = True
-        self.board_fulldmd = False   # the board's "Fit" is FullDMD: send that picture as a game starts
+        self.fp_dmdext = None        # dmdext mirroring a Future Pinball table's DMD to the board (our child)
+        self.board_fulldmd = True    # send the FullDMD art and the backglass as a game starts (the board always
+                                     # wants them now; a hello lost after a reconnection must not leave it without)
         self.board_jpeg = False      # the board decodes JPEG (it said so in a request): opaque pictures so
         self.last_q = time.time()    # the board's last request (the menu in use)
         self.s2 = second_screen()    # the backglass monitor (the board's compositions are made for it)
         self.ended_at = 0.0          # when the last game ended (Popper needs a moment before the next)
         self.s2_store = os.path.join(cache_dir(), "s2.json")   # tables whose composition has a virtual DMD
+        self.urgent_q = queue.Queue()          # the board's quick requests (dispatch(), work())
+        self.work_q = queue.PriorityQueue()    # the others: (priority, arrival, request)
+        self.req_seq = 0                       # arrival order (only the reader counts)
 
     def find_port(self):
         if self.port_name:
@@ -1009,25 +1914,60 @@ class Link:
                 pass
             log("USB: released")
 
-    def send(self, t, payload):
+    def send(self, t, payload, wait=True):
+        """The message written whole (True), or not (False: no port, or it failed). wait=False: only if no other
+        message is being written, else None at once (the reader's ping)."""
         data = frame(t, payload)
-        with self.lock:
-            if not self.sp:
-                return False
+        if not self.lock.acquire(blocking=wait):
+            return None
+        try:
+            return self._write(data)
+        finally:
+            self.lock.release()
+
+    def _write(self, data):
+        """send()'s write, with self.lock held."""
+        if not self.sp:
+            return False
+        try:
+            # in 16 KB pieces: the board's USB-Serial-JTAG takes a few hundred KB/s, and one write of a
+            # big image would outlast the write timeout
+            for o in range(0, len(data), 16384):
+                self.sp.write(data[o:o + 16384])
+            return True
+        except Exception as e:   # noqa: BLE001
+            log("USB write failed:", e)
             try:
-                # in 16 KB pieces: the board's USB-Serial-JTAG takes a few hundred KB/s, and one write of a
-                # big image would outlast the write timeout
-                for o in range(0, len(data), 16384):
-                    self.sp.write(data[o:o + 16384])
-                return True
-            except Exception as e:   # noqa: BLE001
-                log("USB write failed:", e)
-                try:
-                    self.sp.close()
-                except Exception:   # noqa: BLE001
-                    pass
-                self.sp = None
-                return False
+                self.sp.close()
+            except Exception:   # noqa: BLE001
+                pass
+            self.sp = None
+            return False
+
+    def send_sure(self, t, payload, what):
+        """send() for a game's pictures: the board's USB receive loses bytes now and then (a damaged message is
+        dropped there), and these are sent once, right before dmdext takes the port. So: sent again until the
+        board confirms it (its "ack": length and checksum), three times at most. The lists too ('L', a firmware
+        of 20/10/2026 on: a lost one left the menu on the card's old copy); a type the board has never
+        confirmed is sent once (its confirmation still awaited once, to learn it)."""
+        data = frame(t, payload)
+        if not self.acks_seen:
+            return self.send(t, payload)
+        key = (len(data) - 11, struct.unpack("<H", data[-2:])[0])
+        ev = self.acks[key] = threading.Event()
+        tries = 3 if t in self.acked_types else 1
+        try:
+            for n in range(tries):
+                if not self.send(t, payload):
+                    return False
+                if ev.wait(1.5):
+                    self.acked_types.add(t)
+                    return True
+                if tries > 1:
+                    log("%s: not confirmed by the board%s" % (what, ", again" if n < tries - 1 else ", given up"))
+            return False
+        finally:
+            self.acks.pop(key, None)
 
     def send_json(self, t, obj):
         return self.send(t, json.dumps(obj, ensure_ascii=False, separators=(",", ":")))
@@ -1047,21 +1987,61 @@ class Link:
                              "ip": lan_ip(), "web": self.popper.web_port, "emus": emus, "s2": self.s2})
 
     # ---- requests from the board
-    def handle(self, t, payload):
+    # Answered by two worker threads, not one thread per request: after a game the board sends many at once
+    # (its compositions, "s2", each a read-change-write of B2STableSettings.xml, DmdDevice.ini and s2.json:
+    # in parallel the last writer won), and a burst of image requests would convert many pictures at once on
+    # this slow PC. The quick ones that a player waits for (launch, exit, hello, prefs) have their own worker,
+    # so a picture being converted never holds back a "Play". The board's "ack" is read by the reader itself:
+    # send_sure() waits for it while a worker is sending.
+    URGENT = ("launch", "exit", "hello", "prefs")
+    # the rest, by priority (lower first; in arrival order within one): the card and the lists, what the
+    # composition screen is waiting on, then the pictures
+    PRIORITY = {"table": 0, "random": 0, "list": 0, "b2sinfo": 1, "s2": 1, "dual": 1, "image": 2}
+
+    def dispatch(self, t, payload):
+        """From the reader: a board message to its worker (an "ack" handled here at once)."""
         if t != "Q":
             return
         try:
             r = json.loads(payload.decode("utf-8"))
         except ValueError:
             return
+        if not isinstance(r, dict):
+            return
         q = r.get("q")
+        if q == "ack":   # an image came whole (send_sure)
+            self.acks_seen = True
+            ev = self.acks.get((r.get("n"), r.get("s")))
+            if ev:
+                ev.set()
+            return
         self.last_q = time.time()
+        self.req_seq += 1
+        if q in self.URGENT:
+            self.urgent_q.put(r)
+        else:
+            self.work_q.put((self.PRIORITY.get(q, 1), self.req_seq, r))
+
+    def work(self, urgent):
+        """A worker: the board's requests one after the other (dispatch())."""
+        while self.alive:
+            try:
+                r = self.urgent_q.get() if urgent else self.work_q.get()[2]
+                self.handle(r)
+            except Exception as e:   # noqa: BLE001 - handle() reports its own; this keeps the worker alive
+                log("request worker:", e)
+                time.sleep(1)
+
+    def handle(self, r):
+        q = r.get("q")
         try:
             if q == "hello":
                 self.hello()
             elif q == "list":
                 which = r.get("list", "recent")
-                self.send_json("L", {"list": which, "items": self.popper.tables(which, min(int(r.get("limit", 40)), 1000))})
+                items = self.popper.tables(which, min(int(r.get("limit", 40)), 2000))
+                self.send_sure("L", json.dumps({"list": which, "items": items}, ensure_ascii=False, separators=(",", ":")),
+                               "list %s" % which)
             elif q in ("table", "random"):
                 gid = r.get("id") if q == "table" else self.popper.random_id()
                 t = self.popper.table(gid) if gid is not None else None
@@ -1071,8 +2051,17 @@ class Link:
             elif q == "prefs":
                 self.board_fulldmd = bool(r.get("fulldmd"))
             elif q == "s2":
-                ok, err = self.apply_s2(r)
+                with S2_LOCK:
+                    ok, err = self.apply_s2(r)
                 self.send_json("R", {"q": "s2", "id": r.get("id"), "ok": ok, "err": err})
+            elif q == "b2sinfo":
+                with S2_LOCK:   # it may write s2.json (a table's names, b2s_names)
+                    info = self.b2s_table(r)
+                self.send_json("R", info)
+            elif q == "dual":
+                with S2_LOCK:
+                    ok, err = self.set_dual(r)
+                self.send_json("R", {"q": "dual", "id": r.get("id"), "mode": r.get("mode"), "ok": ok, "err": err})
             elif q == "exit":
                 ok, err = self.popper.exit_game()
                 self.send_json("R", {"q": "exit", "ok": ok, "err": err})
@@ -1090,6 +2079,56 @@ class Link:
             # the board, instead of being asked again and again
             self.send_json("E", {"q": q, "id": r.get("id"), "kind": r.get("kind", ""), "screen": r.get("screen", ""),
                                  "err": str(e)[:200]})
+
+    def b2s_names(self, gid, b2s):
+        """(B2S's name for the table, dmdext's section): its ROM, else the names in its script (read once, kept)."""
+        rows = self.popper.q("SELECT ROM FROM Games WHERE GameID = ?", (gid,))
+        rom = (rows[0].get("ROM") or "").strip() if rows else ""
+        if rom:
+            return rom, rom
+        try:
+            with open(self.s2_store, encoding="utf-8") as f:
+                st = json.load(f)
+        except (OSError, ValueError):
+            st = {}
+        names = st.get("names", {}).get(str(gid))
+        if not names:
+            vpx = os.path.splitext(b2s)[0] + ".vpx"
+            names = list(table_names(vpx)) if os.path.isfile(vpx) else [None, None]
+            st.setdefault("names", {})[str(gid)] = names
+            write_text(self.s2_store, json.dumps(st))
+        return names[0], names[1]
+
+    def b2s_table(self, r):
+        """The board's composition screen asks what a table's backglass holds: its pictures, dual or not."""
+        gid = int(r.get("id") or 0)
+        b2s = self.popper.b2s_for(gid) if gid else None
+        if not b2s:
+            return {"q": "b2sinfo", "id": gid, "b2s": False}
+        info = dict(b2s_info(b2s))
+        info.update({"q": "b2sinfo", "id": gid, "b2s": True})
+        if info.get("dual"):
+            key = self.b2s_names(gid, b2s)[0]
+            info["mode"] = b2s_dual_mode(b2s, key) if key else 1
+        try:
+            with open(self.s2_store, encoding="utf-8") as f:
+                cur = json.load(f).get(str(gid), {})
+            info["s2"], info["s2dmd"] = int(cur.get("mode", 0)), bool(cur.get("dmd"))
+        except (OSError, ValueError):
+            info["s2"], info["s2dmd"] = 0, False
+        return info
+
+    def set_dual(self, r):
+        gid = int(r.get("id") or 0)
+        b2s = self.popper.b2s_for(gid) if gid else None
+        if not b2s:
+            return False, "no .directb2s"
+        key = self.b2s_names(gid, b2s)[0]
+        if not key:
+            return False, "no game name in the table"
+        b2s_set_dual(b2s, key, int(r.get("mode") or 1))
+        log("backglass version of %d: %s" % (gid, "fantasy" if int(r.get("mode") or 1) == 2 else "authentic"))
+        return True, ""
 
     def apply_s2(self, r):
         """A table's composition for the second screen, from the board: written now, read by B2S and dmdext
@@ -1129,7 +2168,8 @@ class Link:
             if not self.s2:
                 return False, "no second screen"
             s2_apply(b2s, ini, rom, {"bg": r["bg"], "grill": bool(r.get("grill")), "b2sdmd": r.get("art"),
-                                     "vdmd": r.get("dmd"), "x0": self.s2[0], "y0": self.s2[1]}, section)
+                                     "vdmd": r.get("dmd"), "x0": self.s2[0], "y0": self.s2[1],
+                                     "screen": [self.s2[2], self.s2[3]]}, section)
         try:
             with open(self.s2_store, encoding="utf-8") as f:
                 st = json.load(f)
@@ -1172,8 +2212,10 @@ class Link:
         alpha = bool(r.get("alpha"))
         box = r.get("box")
         box = tuple(int(v) for v in box) if isinstance(box, list) and len(box) == 4 else None
-        if kind == "fulldmd":
-            self.send_fulldmd(gid)
+        if kind in ("fulldmd", "b2sgrill"):   # (a game sends them itself; the composition screen asks)
+            ok = self.send_fulldmd(gid) if kind == "fulldmd" else self.send_grill(gid)
+            if not ok:
+                self.send_json("E", {"q": "image", "id": gid, "kind": kind, "screen": "", "err": "no image"})
             return
         if r.get("jpeg"):
             self.board_jpeg = True
@@ -1191,6 +2233,9 @@ class Link:
         t0 = time.time()
         # converted once, then served from disk: same file, size and background -> same bytes
         key = picture_key(path, w, h, bg, alpha, box, rot, kind, as_jpeg)
+        trim = alpha_trim(path) if kind == "wheel" and alpha else None   # a small logo on a wide empty canvas
+        if trim:
+            key = "%08x" % zlib.crc32(("%s|trim%s" % (key, trim)).encode())
         if r.get("have") == key:   # the board has these very bytes (its microSD cache): just say so
             self.send_json("K", {"id": gid, "kind": kind, "w": w, "screen": r.get("screen", ""), "k": key})
             return
@@ -1198,6 +2243,7 @@ class Link:
         if as_jpeg:
             return self.image_jpeg(r, gid, kind, path, w, h, bg, box, rot, key, t0)
         try:
+            keep_cached(cached)   # used: kept by the cache pruning
             with open(cached, "rb") as f:
                 size = struct.unpack("<I", f.read(4))[0]
                 w, h = struct.unpack("<HH", f.read(4))   # the picture's own size (a page may be narrower)
@@ -1222,19 +2268,21 @@ class Link:
                         tw = tw * 85 // 100
                     w, h = p2.width, p2.height
                 else:
-                    px = rgb565(im, w, h, ((bg >> 16) & 255, (bg >> 8) & 255, bg & 255), alpha, box, rot)
+                    px = rgb565(im.crop(trim) if trim else im, w, h, ((bg >> 16) & 255, (bg >> 8) & 255, bg & 255),
+                                alpha, box, rot)
                     z = None
             # zlib (the board inflates it with the ESP ROM's tinfl): instruction cards shrink a lot, wheels too
             size, z = len(px), (z if z is not None else zlib.compress(px, 6))
             try:
-                with open(cached + ".tmp", "wb") as f:
+                with open(tmp_name(cached), "wb") as f:
                     f.write(struct.pack("<I", size) + struct.pack("<HH", w, h) + z)
-                os.replace(cached + ".tmp", cached)
+                os.replace(tmp_name(cached), cached)
             except OSError:
                 pass
         head = json.dumps({"id": gid, "kind": kind, "w": w, "h": h, "fmt": "rgb565a8z" if alpha else "rgb565z", "size": size,
                            "screen": r.get("screen", ""), "k": key}).encode()
-        ok = self.send("I", struct.pack("<H", len(head)) + head + z)
+        msg = struct.pack("<H", len(head)) + head + z
+        ok = self.send_sure("I", msg, "image %s %s" % (kind, gid)) if kind == "gamebg" else self.send("I", msg)
         log("image %s %s %dx%d %s: %d KB in %.0f ms%s" % (kind, gid, w, h, os.path.basename(path), len(z) >> 10,
                                                         (time.time() - t0) * 1000, "" if ok else " NOT SENT"))
 
@@ -1246,7 +2294,8 @@ class Link:
         w, h, data = jpeg_file(path, kind, w, h, bg, box, rot, key)
         head = json.dumps({"id": gid, "kind": kind, "w": w, "h": h, "fmt": "jpeg", "size": len(data),
                            "screen": r.get("screen", ""), "k": key}).encode()
-        ok = self.send("I", struct.pack("<H", len(head)) + head + data)
+        msg = struct.pack("<H", len(head)) + head + data
+        ok = self.send_sure("I", msg, "image %s %s" % (kind, gid)) if kind == "gamebg" else self.send("I", msg)
         log("image %s %s %dx%d %s: %d KB jpeg in %.0f ms%s" % (kind, gid, w, h, os.path.basename(path), len(data) >> 10,
                                                              (time.time() - t0) * 1000, "" if ok else " NOT SENT"))
 
@@ -1260,7 +2309,7 @@ class Link:
             return False
         head = json.dumps({"id": gid, "kind": "fulldmd", "w": FULLDMD_W, "h": FULLDMD_H, "fmt": "jpeg" if jpg else "rgb565z",
                            "size": got[0], "aw": got[2], "ah": got[3]}).encode()
-        ok = self.send("I", struct.pack("<H", len(head)) + head + got[1])
+        ok = self.send_sure("I", struct.pack("<H", len(head)) + head + got[1], "fulldmd %s" % gid)
         log("fulldmd %s: %d KB in %.0f ms%s" % (gid, len(got[1]) >> 10, (time.time() - t0) * 1000, "" if ok else " NOT SENT"))
         return ok
 
@@ -1274,7 +2323,7 @@ class Link:
             return False
         head = json.dumps({"id": gid, "kind": "b2sgrill", "w": FULLDMD_W, "h": FULLDMD_H, "fmt": "jpeg" if jpg else "rgb565z",
                            "size": got[0], "gy": got[2], "gh": got[3], "gx": got[4], "gw": got[5]}).encode()
-        ok = self.send("I", struct.pack("<H", len(head)) + head + got[1])
+        ok = self.send_sure("I", struct.pack("<H", len(head)) + head + got[1], "backglass with grill %s" % gid)
         log("backglass with grill %s: %d KB in %.0f ms%s" % (gid, len(got[1]) >> 10, (time.time() - t0) * 1000,
                                                              "" if ok else " NOT SENT"))
         return ok
@@ -1310,6 +2359,8 @@ class Link:
         log("fulldmd: %d of %d tables have one" % (done, len(ids)))
 
     def reader(self):
+        threading.Thread(target=self.work, args=(True,), daemon=True).start()
+        threading.Thread(target=self.work, args=(False,), daemon=True).start()
         parser = Parser()
         last_ping = 0
         misses = 0   # opens in a row that found no board
@@ -1333,9 +2384,11 @@ class Link:
                 self.close()
                 continue
             for t, payload in parser.feed(data):
-                threading.Thread(target=self.handle, args=(t, payload), daemon=True).start()
-            if time.time() - last_ping > 2:
-                self.send("P", b"")
+                self.dispatch(t, payload)
+            # the ping only when no message is being written: waiting for the lock behind a big picture (a
+            # second or more) would stop this loop reading the board's acks, and send_sure() would time out
+            # and send it again; while something is sent the board hears from us anyway
+            if time.time() - last_ping > 2 and self.send("P", b"", wait=False) is not None:
                 last_ping = time.time()
 
     # ---- Popper's selection (the cabinet's joystick)
@@ -1367,26 +2420,40 @@ class Link:
                 continue
             if not isinstance(cur, dict):   # "" for a moment while Popper changes screen or list: next reading
                 continue
-            gid, attract = int(cur.get("GameID") or 0), str(cur.get("inAttractMode", "0")) == "1"
-            what = gid if gid > 0 else nav_item(cur)
-            if attract:
-                if not last_attract:
-                    self.show_id = 0
-                    self.send_json("S", {"idle": True})
-            elif last_attract or what != last:
-                self.active_at = time.time()
-                if gid > 0:
-                    sc = self.popper.showcase(gid)
-                    if sc:
-                        self.show_id = gid
-                        self.send_json("S", sc)
-                else:
-                    self.show_id = 0
-                    self.send_json("S", {"id": 0, "nav": what[0], "name": what[1]})
-            last, last_attract = what, attract
+            # what follows may fail too (a GameID that is not a number, the database locked by Popper, a damaged
+            # picture): never the end of this thread, or the board would stop following the joystick until the
+            # bridge restarts
+            try:
+                gid, attract = int(cur.get("GameID") or 0), str(cur.get("inAttractMode", "0")) == "1"
+                what = gid if gid > 0 else nav_item(cur)
+                if attract:
+                    if not last_attract:
+                        self.show_id = 0
+                        self.send_json("S", {"idle": True})
+                elif last_attract or what != last:
+                    self.active_at = time.time()
+                    if gid > 0:
+                        sc = self.popper.showcase(gid)
+                        if sc:
+                            self.show_id = gid
+                            self.send_json("S", sc)
+                    else:
+                        self.show_id = 0
+                        self.send_json("S", {"id": 0, "nav": what[0], "name": what[1]})
+                last, last_attract = what, attract
+            except Exception as e:   # noqa: BLE001 - the same selection is tried again at the next reading
+                log("Popper selection:", e)
+                time.sleep(2)
+
+    def busy(self):
+        """Someone at the cabinet: a game runs, or Popper (its joystick) or the board's menu was used in the
+        last half minute. The idle-time work (pictures ahead, cache pruning) waits meanwhile."""
+        now = time.time()
+        return bool(self.game) or now - self.active_at < 30 or now - self.last_q < 30
 
     def prepare_pictures(self):
-        """In idle time — no game, nobody at Popper for half a minute — the showcase pictures and backglasses
+        """In idle time — no game, nobody at Popper or at the board's menu for half a minute (busy()): a
+        conversion here would slow the board's own requests — the showcase pictures and backglasses
         of every table are converted ahead, once (the PC's cache keeps them): then a joystick move only reads
         a file (~5 ms instead of ~300 on this PC). One picture at a time, at below-normal priority, resting
         6x as long as it worked (measured: resting 2x took ~18% of a core): ~13 minutes of a slow core,
@@ -1404,6 +2471,10 @@ class Link:
         t_start = time.time()
         for gid in ids:
             jobs = []
+            while self.alive and self.busy():
+                time.sleep(10)   # someone is playing or at Popper: later (a lookup may make a video's frame)
+            if not self.alive:
+                return
             try:
                 sc = self.popper.showcase(gid)
                 for screen in (sc["media"] if sc else []):
@@ -1414,13 +2485,15 @@ class Link:
             for kind, path, w, h, box in jobs:
                 if not path:
                     continue
-                while self.alive and (self.game or time.time() - self.active_at < 30):
+                while self.alive and self.busy():
                     time.sleep(10)   # someone is playing or at Popper: later
                 if not self.alive:
                     return
                 try:
                     key = picture_key(path, w, h, 0, False, box, 0, kind, True)
-                    if os.path.exists(os.path.join(cache_dir(), key + ".nvj")):
+                    ready = os.path.join(cache_dir(), key + ".nvj")
+                    if os.path.exists(ready):
+                        keep_cached(ready)   # wanted ahead: not pruned (only old versions and gone tables are)
                         had += 1
                         continue
                     with self.idle_lock:   # never alongside the FullDMD preparation: one conversion at a time
@@ -1433,14 +2506,67 @@ class Link:
                     continue
         log("pictures ahead: %d converted, %d were ready, %.0f min" % (made, had, (time.time() - t_start) / 60))
 
-    # ---- Popper's launch / close scripts
-    def game_start(self, name):
-        gid = None
+    # the cache's indexes and the compositions (s2.json) are small and always wanted: never pruned
+    CACHE_KEEP = (".json",)
+    CACHE_DAYS = 60
+
+    def prune_cache(self):
+        """Once, 20 minutes after the start and only in idle time: the cache files not used for CACHE_DAYS days
+        deleted (the conversions of a picture or backglass that changed or is gone: their key had its old time
+        and size). Used means its time renewed by keep_cached() on every hit, or read lately (last access, where
+        Windows keeps it). A directory listing (its times come with it on Windows) and a delete now and then:
+        paused while someone is at the cabinet."""
+        time.sleep(1200)
+        d = cache_dir()
+        limit = time.time() - self.CACHE_DAYS * 86400
+        gone = freed = seen = 0
         try:
-            gid = self.popper.id_for_file(name)
-        except Exception:   # noqa: BLE001
-            pass
-        self.begin_game(gid, os.path.splitext(os.path.basename(name))[0], name)
+            entries = list(os.scandir(d))
+        except OSError as e:
+            log("cache pruning:", e)
+            return
+        for e in entries:
+            seen += 1
+            if seen % 200 == 0:
+                time.sleep(0.5)   # a few hundred files at a time: no burst of disk work
+            while self.alive and self.busy():
+                time.sleep(30)
+            if not self.alive:
+                return
+            try:
+                if not e.is_file() or e.name.endswith(self.CACHE_KEEP):
+                    continue
+                st = e.stat()
+                if max(st.st_mtime, st.st_atime) >= limit:
+                    continue
+                os.remove(e.path)
+                gone += 1
+                freed += st.st_size
+            except OSError:   # in use right now: kept
+                continue
+        log("cache pruning: %d of %d files not used for %d days deleted (%d MB)"
+            % (gone, len(entries), self.CACHE_DAYS, freed >> 20))
+
+    # ---- Popper's launch / close scripts
+    def game_start(self, names, dmd=False):
+        """names: the readings of the hook's name (hook_query; one string is taken too): the first one that names
+        a table in Popper, else the first that is a file here, else the first."""
+        names = [names] if isinstance(names, str) else [n for n in names if n] or [""]
+        gid, name = None, None
+        for n in names:
+            try:
+                gid = self.popper.id_for_file(n)
+            except Exception as e:   # noqa: BLE001
+                log("game start: Popper database:", e)
+                break
+            if gid is not None:
+                name = n
+                break
+        if name is None:
+            name = next((n for n in names if os.path.isfile(n)), names[0])
+        if gid is None:
+            log("game start: no table in Popper for", " / ".join(repr(n) for n in names))
+        self.begin_game(gid, os.path.splitext(os.path.basename(name))[0], name, force_dmd=dmd)
 
     def adopt_running_game(self):
         """At start only: a table already running (the bridge restarted mid-game, or started after it).
@@ -1477,7 +2603,13 @@ class Link:
                 break
         if not pid:
             return
+        from ctypes import wintypes
         k32 = ctypes.windll.kernel32
+        # handles typed (as process_identity and fp_dismiss_library_warnings type them): not a C int
+        k32.OpenProcess.restype = wintypes.HANDLE
+        k32.OpenProcess.argtypes = [wintypes.DWORD, wintypes.BOOL, wintypes.DWORD]
+        k32.WaitForSingleObject.argtypes = [wintypes.HANDLE, wintypes.DWORD]
+        k32.CloseHandle.argtypes = [wintypes.HANDLE]
         h = k32.OpenProcess(0x00100000, False, pid)   # SYNCHRONIZE: enough to wait on it
         if not h:
             return
@@ -1489,9 +2621,9 @@ class Link:
         close_orphans()
         if self.game_token is token and self.game:
             log("the emulator exited without Popper's end hook: game over")
-            self.game_end()
+            self.game_end(crash=True)
 
-    def begin_game(self, gid, shown, name, dmd_default=True):
+    def begin_game(self, gid, shown, name, dmd_default=True, force_dmd=False):
         if gid is not None:
             try:
                 t = self.popper.table(gid)
@@ -1502,6 +2634,16 @@ class Link:
             dmd = dmd_default if gid is None else self.popper.emu_of(gid) in DMD_EMUS
         except Exception:   # noqa: BLE001
             dmd = dmd_default
+        if name.lower().endswith(".fpt"):
+            dmd = False   # Future Pinball (known by its file even when Popper does not list the table): no DmdDevice
+        dmd = dmd or force_dmd
+        fp = None
+        if not dmd and name.lower().endswith(".fpt") and os.path.isfile(name):
+            try:
+                if fp_has_dmd(name):
+                    dmd, fp = True, name   # its DMD to the board: dmdext started once the port is free
+            except Exception as e:   # noqa: BLE001
+                log("Future Pinball DMD:", e)
         self.game = {"id": gid, "name": shown, "dmd": dmd}
         log("game start:", name, gid, shown, "(DMD through dmdext)" if dmd else "(no DMD: showcase)")
         msg = {"game": "start", "id": gid, "name": shown, "dmd": dmd}
@@ -1513,6 +2655,12 @@ class Link:
                 log("showcase:", e)
         self.game_msg = msg
         self.game_token = token = object()
+        if name.lower().endswith(".fpt"):   # Future Pinball: its missing-library boxes answered (no mouse here)
+            threading.Thread(target=fp_dismiss_library_warnings, args=(lambda: self.game_token is token,),
+                             daemon=True).start()
+            if not dmd and os.path.isfile(name):   # no DMD of its own: its score displays as the board's DMD
+                threading.Thread(target=score_view, args=(self, name, lambda: self.game_token is token),
+                                 daemon=True).start()
         threading.Thread(target=self.watch_game, args=(token,), daemon=True).start()
         if gid is not None and self.vdmd_wanted(gid):   # a DMD over the backglass: in front of B2S
             threading.Thread(target=raise_vdmd, args=(lambda: self.game_token is token,), daemon=True).start()
@@ -1537,32 +2685,112 @@ class Link:
         time.sleep(0.8)
         self.want_open = False
         self.close()             # dmdext takes the port for the DMD
+        if fp:
+            threading.Thread(target=self.keep_fp_dmdext, args=(fp, lambda: self.game_token is token), daemon=True).start()
 
-    def game_end(self):
+    def keep_fp_dmdext(self, fpt, alive):
+        """dmdext for the whole game: it quits when it finds no DMD in Future Pinball, and a big table is still
+        loading then (Terminator 2 Skynet: ~2 minutes; seen quitting at once). Started again every 15 s while it
+        is not running and the game goes on, 20 times at most; a check every 2 s otherwise (no CPU)."""
+        for n in range(20):
+            if not alive():
+                return
+            self.start_fp_dmdext(fpt, quiet=n > 0)
+            while alive() and self.fp_dmdext and self.fp_dmdext.poll() is None:
+                time.sleep(2)
+            if not alive():
+                return
+            time.sleep(15)
+        log("Future Pinball DMD: dmdext keeps quitting: no DMD found in this table")
+
+    def start_fp_dmdext(self, fpt, quiet=False):
+        """dmdext mirrors the FP table's DMD to the board (its DmdDevice.ini: ZeDMD on, virtual DMD off). It waits
+        for Future Pinball itself; closed at the game's end (stop_fp_dmdext)."""
+        fpdir = os.path.dirname(os.path.dirname(fpt))   # ...\FuturePinball\Tables\x.fpt -> ...\FuturePinball
+        exe = os.path.join(fpdir, "dmdext.exe")
+        if not os.path.isfile(exe):
+            log("Future Pinball DMD: no dmdext.exe in", fpdir)
+            return
+        self.stop_fp_dmdext()
+        game = os.path.splitext(os.path.basename(fpt))[0]
+        try:
+            self.fp_dmdext = subprocess.Popen(
+                [exe, "mirror", "--source=futurepinball", "-q", "--fps", "60", "-g", game,
+                 "--use-ini=" + os.path.join(fpdir, "DmdDevice.ini")],
+                cwd=fpdir, creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0) | 0x00004000)   # below normal
+            if not quiet:
+                log("Future Pinball DMD: dmdext mirror for %s (pid %d)" % (game, self.fp_dmdext.pid))
+            remember_mirror(self.fp_dmdext.pid, exe)
+        except OSError as e:
+            log("Future Pinball DMD: dmdext:", e)
+
+    def stop_fp_dmdext(self):
+        p, self.fp_dmdext = self.fp_dmdext, None
+        if p and p.poll() is None:
+            p.terminate()
+            try:
+                p.wait(5)
+            except subprocess.TimeoutExpired:
+                p.kill()
+            log("Future Pinball DMD: dmdext closed")
+        if p:
+            forget_mirror()
+
+    def game_end(self, crash=False):
         log("game end")
         self.ended_at = time.time()
         kept = bool(self.game and not self.game.get("dmd", True) and self.sp)
+        # the emulator went away by itself (a crash, a kill): the board says so, the table stays on its card
+        end = {"game": "end"}
+        if crash and self.game:
+            end.update({"crash": True, "id": self.game.get("id"), "name": self.game.get("name", "")})
+        self.stop_fp_dmdext()    # a Future Pinball table's DMD mirror: the port back to us
         self.game = self.game_msg = self.game_token = None
         self.show_id = 0
         if kept:                 # the port never left: just say so
-            self.send_json("G", {"game": "end"})
+            self.send_json("G", end)
             return
         time.sleep(1.5)          # dmdext closes the port as the emulator exits
         self.want_open = True    # the reader reopens it (retrying while dmdext still has it)
         for _ in range(40):
             if self.sp:
-                self.send_json("G", {"game": "end"})
+                self.send_json("G", end)
                 return
             time.sleep(0.25)
+
+
+def hook_query(query):
+    """A hook's query string: {key: [the value's possible readings]}. Popper's script is a batch file and curl
+    sends the name's bytes as cmd hands them over: UTF-8, or the ANSI code page (cp1252), or the console's
+    (cp850), never said which. parse_qs would read them all as UTF-8 and turn an accented letter of cp1252 into
+    U+FFFD (no table found). So every reading that decodes, UTF-8 first (bytes of another code page almost never
+    form valid UTF-8); game_start() keeps the one that names a table."""
+    out = {}
+    for part in query.split("&"):
+        if not part:
+            continue
+        k, _, v = part.partition("=")
+        raw = urllib.parse.unquote_to_bytes(v.replace("+", " "))
+        readings = []
+        for enc in ("utf-8", "cp1252", "cp850"):
+            try:
+                s = raw.decode(enc)
+            except UnicodeDecodeError:
+                continue
+            if s not in readings:
+                readings.append(s)
+        out.setdefault(urllib.parse.unquote(k.replace("+", " ")), []).extend(readings or [raw.decode("latin-1")])
+    return out
 
 
 def hook_server(link):
     class H(http.server.BaseHTTPRequestHandler):
         def do_GET(self):   # noqa: N802
             u = urllib.parse.urlparse(self.path)
-            qs = urllib.parse.parse_qs(u.query)
+            qs = hook_query(u.query)
             if u.path == "/game/start":
-                threading.Thread(target=link.game_start, args=(qs.get("name", [""])[0],), daemon=True).start()
+                threading.Thread(target=link.game_start, args=(qs.get("name", [""]), qs.get("dmd", [""])[0] == "1"),
+                                 daemon=True).start()
             elif u.path == "/game/end":
                 threading.Thread(target=link.game_end, daemon=True).start()
             elif u.path != "/status":
@@ -1617,6 +2845,7 @@ def check(popper_dir, args):
                 out("  emulator %s '%s' media=%s visible=%s" % (e["EMUID"], e["EmuName"], e["DirMedia"], e["Visible"]))
                 out("    launch script has hook: %s" % ("58090/game/start" in (e.get("LaunchScript") or "")))
                 out("    close script has hook:  %s" % ("58090/game/end" in (e.get("PostScript") or "")))
+            out("  board's systems: %s" % ", ".join("%s (%d)" % (c["name"], c["n"]) for c in p.emulators()))
             first = p.tables("all", 3)
             for i in first:
                 for scr in ("Wheel", "GameHelp", "GameInfo"):
@@ -1680,19 +2909,29 @@ def main():
         return
     if not popper_dir:
         sys.exit("PinUP Popper not found: give its folder with --popper (the one with PUPDatabase.db)")
+    rotate_log()
     low_priority()
+    close_orphan_mirror()       # a mirror left by a bridge ended by force would keep the board's port
     link = Link(a.port, Popper(popper_dir, a.web_port))
     link.adopt_running_game()   # before the port: dmdext may hold it for a table already running
     hook_server(link)
     threading.Thread(target=link.follow_popper, daemon=True).start()
     threading.Thread(target=link.prepare_fulldmd, daemon=True).start()
     threading.Thread(target=link.prepare_pictures, daemon=True).start()
+    threading.Thread(target=link.prune_cache, daemon=True).start()
     log("nucleo_bridge %s, Popper in %s" % (VERSION, popper_dir))
     log("second screen:", link.s2)
     try:
         link.reader()
     except KeyboardInterrupt:
+        pass
+    finally:   # any end that runs Python code (Ctrl+C, an error): nothing of ours left holding the port
         link.alive = False
+        try:
+            link.stop_fp_dmdext()
+        except Exception as e:   # noqa: BLE001
+            log("dmdext at exit:", e)
+        save_trims()
         link.close()
 
 

@@ -9,7 +9,7 @@ only = sys.argv[1] if len(sys.argv) > 1 else ""
 os.makedirs(os.path.join(HERE, "out"), exist_ok=True)
 for f in glob.glob(os.path.join(HERE, "out", "*")):
     os.remove(f)
-cmd = "cd '%s' && make -j8 -s && FIND=613,234 LETTER=827,420 ALL=334,176 ./build/sim data out %s" % (wsl, only)
+cmd = "cd '%s' && make -j8 -s && FIND=512,148 LETTER=827,449 ALL=284,148 ./build/sim data out %s" % (wsl, only)
 r = subprocess.run(["wsl", "-e", "bash", "-lc", cmd])
 if r.returncode:
     sys.exit(r.returncode)

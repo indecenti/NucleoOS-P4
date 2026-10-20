@@ -33,15 +33,19 @@ $(B)/dmd_menu.o: $(ROOT)/components/nv_apps/dmd_menu.cpp $(ROOT)/components/nv_a
 	@mkdir -p $(B)
 	$(CXX) -std=gnu++2b $(CFLAGS) -DDMD_SIM_TRACE -DDMD_CACHE_DIR=\"sdcache\" -Wall -Wextra -Wno-unused-parameter -Wno-missing-field-initializers -c $< -o $@
 
-$(B)/dmd_comp.o: $(ROOT)/components/nv_apps/dmd_comp.cpp $(ROOT)/components/nv_apps/dmd_menu.h
+$(B)/dmd_comp.o: $(ROOT)/components/nv_apps/dmd_comp.cpp $(ROOT)/components/nv_apps/dmd_menu.h $(ROOT)/components/nv_apps/dmd_ui.h
 	@mkdir -p $(B)
 	$(CXX) -std=gnu++2b $(CFLAGS) -Wall -Wextra -Wno-unused-parameter -Wno-missing-field-initializers -c $< -o $@
 
-$(B)/sim.o: sim.cpp
+$(B)/dmd_panel.o: $(ROOT)/components/nv_apps/dmd_panel.cpp $(ROOT)/components/nv_apps/dmd_panel.h $(ROOT)/components/nv_apps/dmd_ui.h
+	@mkdir -p $(B)
+	$(CXX) -std=gnu++2b $(CFLAGS) -Wall -Wextra -Wno-unused-parameter -Wno-missing-field-initializers -c $< -o $@
+
+$(B)/sim.o: sim.cpp $(ROOT)/components/nv_apps/dmd_menu.h $(ROOT)/components/nv_apps/dmd_panel.h
 	@mkdir -p $(B)
 	$(CXX) -std=gnu++2b $(CFLAGS) -c $< -o $@
 
-$(B)/sim: $(LV_OBJ) $(APP_O) $(B)/dmd_menu.o $(B)/dmd_comp.o $(B)/sim.o
+$(B)/sim: $(LV_OBJ) $(APP_O) $(B)/dmd_menu.o $(B)/dmd_comp.o $(B)/dmd_panel.o $(B)/sim.o
 	$(CXX) $^ -o $@ -lm
 
 clean:

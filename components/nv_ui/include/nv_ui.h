@@ -35,6 +35,16 @@ void nv_ui_toast(const char *msg);
 // request its own close (return to launcher). LVGL-thread only.
 void nv_ui_set_back_handler(void (*fn)(void));
 void nv_ui_close_app(void);
+// Ask before the user leaves the open app: `fn` runs instead when they try (bottom-edge Home /
+// Recents, Back with no app handler, Alt+F4, Ctrl+W, Win, Ctrl+Esc, Win+D, Alt/Win+Tab) and returns
+// true when it took over (it shows its own question, then clears the guard and calls
+// nv_ui_close_app() if the user confirms), false to let the user leave. Automation (/api/ui/home,
+// nv_ui_go_home, another app opened by nv_open) is never asked. nullptr removes it; an app sets it in
+// build() and clears it on LV_EVENT_DELETE. LVGL-thread only.
+void nv_ui_set_leave_guard(bool (*fn)(void));
+// The user's own way out (a close button of the desktop shell): true when the open app's guard took over
+// (do not close), false to go ahead and close.
+bool nv_ui_leave_asked(void);
 
 // Suspended-task state (multitasking on a one-app-at-a-time system). When the user leaves an app
 // for another one, its task stays on the taskbar; to come back where it was, the app saves a small

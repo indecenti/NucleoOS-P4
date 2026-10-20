@@ -14,6 +14,8 @@ bool dmd_menu_tick(bool allowed);
 bool dmd_menu_back(void);
 // A table was launched or is running (from the bridge): the app shows the DMD as soon as frames come.
 bool dmd_menu_in_game(void);
+// esp_timer time the running game started (0: none)
+int64_t dmd_menu_game_start_us(void);
 const char *dmd_menu_game(void);   // its name ("" = none)
 // In game, a tap on the DMD: quick actions (back to the DMD, the tables, quit the game, settings).
 void dmd_menu_quick_open(void);
@@ -22,6 +24,18 @@ bool dmd_menu_covering(void);
 // Its backglass (sent by the bridge as the game starts), 1024 x h: 344 above the DMD (backbox), 600 the
 // whole screen. NULL when not there. LVGL thread.
 const lv_image_dsc_t *dmd_menu_game_art(int h);
+// The same art for the composition screen, in a buffer of its own (any table).
+const lv_image_dsc_t *dmd_menu_comp_art(int id, int h);
+// The same pictures of any table (the composition screen's), NULL when not here (yet); fetch asks for the
+// missing ones (the card, else the bridge) and keeps them while the screen is open.
+const lv_image_dsc_t *dmd_menu_table_art(int id, int h);
+const lv_image_dsc_t *dmd_menu_table_grill(int id, dmd_rect_t *win);
+const lv_image_dsc_t *dmd_menu_table_full(int id, dmd_rect_t *win);
+const lv_image_dsc_t *dmd_menu_table_b2s(int id, dmd_rect_t *box, int *grill, dmd_rect_t *housing);
+void dmd_menu_table_full_shape(int id, int *aw, int *ah);
+void dmd_menu_comp_fetch(int id);
+int dmd_menu_selected(void);               // the table on the menu's stage (0: none)
+const char *dmd_menu_selected_name(void);
 // Its backglass with the grill (1024 x 600, the whole picture fitted) and the DMD's housing found in the
 // grill. NULL when it has no grill or no housing was found. LVGL thread.
 const lv_image_dsc_t *dmd_menu_game_grill(dmd_rect_t *win);
@@ -38,14 +52,39 @@ void dmd_menu_game_full_shape(int *aw, int *ah);
 bool dmd_menu_s2(int *w, int *h);
 // A request to the bridge now: false when the cable is not the bridge's (a game runs).
 bool dmd_menu_send(const char *json);
+// A request that could not go: "after the game" while dmdext has the cable, else "busy, try again".
+void dmd_menu_send_fail_note(void);
+// The Popper bridge as its hello described it: false when no hello came since the app opened.
+bool dmd_menu_bridge_info(char *ver, size_t n, bool *popper_ok);
 // Quit the running table over Wi-Fi and start it again once it has ended (a new composition then).
 void dmd_menu_quit_and_relaunch(void);
 // dmd_comp.cpp: the composition of both screens for the running table (the PC's second screen and this
 // panel). Open (false when it cannot), close, open?; flush: send the compositions waiting for the cable;
 // on_result: the bridge's answer.
 bool dmd_comp_open(lv_obj_t *root);
+// The same screen for every table (the panel's "Layout"): only this panel's fits, set for all tables;
+// on_close runs when it closes (the panel shows the new choice).
+bool dmd_comp_open_all(lv_obj_t *root, void (*on_close)(void));
+// The same screen for any table, from the menu, without playing it (its pictures are asked for as it opens).
+bool dmd_comp_open_table(lv_obj_t *root, int id, const char *name);
+// A picture of the screen's table came: the previews again with it.
+void dmd_comp_refresh(int id);
+// What a table's backglass file (.directb2s) holds, as the bridge read it ('R' b2sinfo); the result of
+// choosing its dual-backglass version ('R' dual).
+struct DmdB2sInfo {
+    int id;
+    bool b2s, dual;            // a .directb2s; a dual one (Authentic and Fantasy versions)
+    int bw, bh, grill;         // its backglass picture and its grill's rows
+    int aw, ah;                // its FullDMD art (0: none): the second, smaller picture
+    int mode;                  // the dual version in use: 1 Authentic, 2 Fantasy
+    int s2;                    // the second screen's composition written for it (0: as it came)
+    bool s2dmd;                // with a DMD on the second screen too
+};
+void dmd_comp_on_info(const DmdB2sInfo *info);
+void dmd_comp_on_dual(int id, int mode, bool ok, const char *err);
 void dmd_comp_close(void);
 bool dmd_comp_is_open(void);
+void dmd_comp_tick(void);   // retries of what the screen waits for (from dmd_menu_tick)
 void dmd_comp_flush(void);
 void dmd_comp_on_result(int game_id, bool ok, const char *err);
 // "Fit" is FullDMD: ask the bridge for that art as games start (told now and at every hello). LVGL thread.
@@ -68,9 +107,16 @@ void dmd_app_set_table_dot(int game_id, int dot);
 // The DMD on screen now: its size (0 x 0: none), a copy of its latest frame (0x00RRGGBB, at most cap
 // pixels; false when there is none), where a fit puts it on the panel with those dots (for previews).
 int dmd_app_fit_all(void);   // the panel's "Fit" (every table)
+void dmd_app_set_fit_all(int fit);
+// The whole geometry a fit gives the DMD on screen with those dots (the composition's 1:1 lens), and the
+// dots' look: shape, glow, brightness (%), rotation.
+bool dmd_app_fit_geom(int fit, int dot, const dmd_rect_t *win, dmd_geom_t *g);
+void dmd_app_look(int *shape, bool *glow, int *bright, int *rot);
 void dmd_app_dmd_size(int *w, int *h);
 bool dmd_app_snapshot(uint32_t *dst, size_t cap, int *w, int *h);
-bool dmd_app_fit_rect(int fit, int dot, dmd_rect_t *out);
+// win: the picture's window / housing for the fits drawn in one (7 art with window, 8 backglass with
+// housing); NULL: the running game's.
+bool dmd_app_fit_rect(int fit, int dot, const dmd_rect_t *win, dmd_rect_t *out);
 // The fit to suggest for the running table: its FullDMD art with the DMD in its window when it has one
 // (has_art), else the rebuilt
 // full screen for a 128x16 DMD, else the classic DMD (with its ambient bands).
