@@ -357,7 +357,9 @@ GameView s_gv;
 // system title bar shows; a 1:1 canvas app is then shown scaled below it by the PPA.
 // ptr_*: a scaled canvas gets its touch raw from the panel (gv_poll); the LVGL pointer (a mouse, or
 // a remote /api/ui/tap) arrives through gv_input_cb and is used while no finger is down.
-NV_PSRAM_BSS struct { int fit_top; bool cv_scaled; int ptr_x, ptr_y; bool ptr_down, ptr_latch; } s_gvx;
+// fit_w/h/rot: the canvas shape fit_geom was made for (ABI v19 nv.gfx_set_rotation turns and resizes it).
+NV_PSRAM_BSS struct { int fit_top; bool cv_scaled; int ptr_x, ptr_y; bool ptr_down, ptr_latch;
+                      int fit_w, fit_h, fit_rot; } s_gvx;
 
 // Manifest canvas_scale -> blit mode (fit never crops a game canvas: HUD and touch at the edges).
 int gv_fit_mode_for(const nv_wasm_app_t *app) {
@@ -375,12 +377,12 @@ int gv_fit_mode_for(const nv_wasm_app_t *app) {
 // view must end it — gv_fit_stop — whenever LVGL UI covers the game or the view goes). False = a
 // swap held the buffer: this frame is skipped and the letterbox retried with the next one.
 void gv_fit_blit(uint16_t *fr) {
-    int w = 0, h = 0; nv_wasm_gfx_size(&w, &h);
+    const int w = s_gvx.fit_w, h = s_gvx.fit_h;   // the shape fit_geom (touch) was made for
     if (!fr || w <= 0 || h <= 0) return;
     esp_cache_msync(fr, (size_t)w * h * 2, ESP_CACHE_MSYNC_FLAG_DIR_C2M | ESP_CACHE_MSYNC_FLAG_UNALIGNED);
     s_gv.fit_last = fr;
     if (nv_hal_video_blit(fr, w, h, w, 0, s_gvx.fit_top, NV_LCD_H_RES, NV_LCD_V_RES - s_gvx.fit_top,
-                          s_gv.fit_mode, s_gv.fit_clear))
+                          s_gv.fit_mode | NV_HAL_BLIT_ROT(s_gvx.fit_rot), s_gv.fit_clear))
         s_gv.fit_clear = false;
 }
 // Stop owning the panel pixels (overlay opened, error screen, view closed).
@@ -389,15 +391,9 @@ void gv_fit_stop(void) {
     s_gvx.cv_scaled = false;
 }
 
-// Panel point -> canvas pixel through the blit geometry (inverse of the k/16 scale), clamped.
-void gv_fit_map(int px, int py, int *cx, int *cy) {
-    const nv_hal_blit_geom_t &g = s_gv.fit_geom;
-    int w = 0, h = 0; nv_wasm_gfx_size(&w, &h);
-    const int x = g.kx > 0 ? g.bx + (px - g.ox) * 16 / g.kx : 0;
-    const int y = g.ky > 0 ? g.by + (py - g.oy) * 16 / g.ky : 0;
-    *cx = x < 0 ? 0 : (x >= w ? w - 1 : x);
-    *cy = y < 0 ? 0 : (y >= h ? h - 1 : y);
-}
+// Panel point -> canvas pixel through the blit geometry (inverse of the k/16 scale and of the ABI v19
+// turn), clamped.
+void gv_fit_map(int px, int py, int *cx, int *cy) { nv_blit_unmap(&s_gv.fit_geom, px, py, cx, cy); }
 constexpr uint32_t kGameWedgeMs = 8000;   // generous: a legit frame never takes 8 s
 // Longest wait for the previous app's run to wind down: a guest inside nv.http_get only sees the
 // abort when that call returns (10 s timeout), everything else stops within a frame or two.
@@ -454,16 +450,19 @@ void gv_poll(lv_timer_t *) {
         // LVGL's pixels; the blit would paint the game on top of them. Re-show the last frame (and
         // its letterbox) once they close, even if the game is idle and sends no new one.
         const bool occ = nv_ui_shade_is_open() || nv_ui_is_locked() || nv_ui_chrome_over_app();
-        // System title bar popped down: fit the picture (and the touch mapping) below it.
+        // System title bar popped down: fit the picture (and the touch mapping) below it. The game
+        // turned its canvas (ABI v19 gfx_set_rotation): same, for the new shape.
         const int top = nv_ui_chrome_top();
-        if (top != s_gvx.fit_top) {
-            int cw = 0, ch = 0; nv_wasm_gfx_size(&cw, &ch);
+        int cw = 0, ch = 0, crot = 0; nv_wasm_gfx_shape(&cw, &ch, &crot);
+        if (top != s_gvx.fit_top || cw != s_gvx.fit_w || ch != s_gvx.fit_h || crot != s_gvx.fit_rot) {
             nv_hal_blit_geom_t g;
             if (cw > 0 && ch > 0 &&
-                nv_hal_video_geom(cw, ch, 0, top, NV_LCD_H_RES, NV_LCD_V_RES - top, s_gv.fit_mode, &g)) {
-                gv_fit_stop();                       // the old region goes back to LVGL (bar row)
+                nv_hal_video_geom(cw, ch, 0, top, NV_LCD_H_RES, NV_LCD_V_RES - top,
+                                  s_gv.fit_mode | NV_HAL_BLIT_ROT(crot), &g)) {
+                if (top != s_gvx.fit_top) gv_fit_stop();   // the old region goes back to LVGL (bar row)
                 s_gv.fit_geom = g;
                 s_gvx.fit_top = top;
+                s_gvx.fit_w = cw; s_gvx.fit_h = ch; s_gvx.fit_rot = crot;
                 s_gv.fit_clear = true;
                 if (!fr) fr = s_gv.fit_last;
             }
@@ -653,6 +652,7 @@ void gv_begin(void) {
         s_gv.fit_mode = -1;                      // degenerate size: classic canvas
     s_gv.fit_last = nullptr;
     s_gvx.fit_top = 0;
+    s_gvx.fit_w = cw; s_gvx.fit_h = ch; s_gvx.fit_rot = 0;   // every run starts upright (gfx_open)
     s_gvx.ptr_down = s_gvx.ptr_latch = false;
     s_gvx.cv_scaled = false;
     s_gv.fit_clear = true;

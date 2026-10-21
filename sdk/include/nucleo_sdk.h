@@ -172,6 +172,16 @@ NV_IMPORT("nv", "gfx_persist")    void nv_gfx_persist(int32_t on);
 NV_IMPORT("nv", "gfx_bg_save")    void nv_gfx_bg_save(void);                  // snapshot current buffer as background
 NV_IMPORT("nv", "gfx_bg_restore") void nv_gfx_bg_restore(int32_t x, int32_t y, int32_t w, int32_t h);
 
+// ---- ABI v19 turned canvas (manifest "abi": 19, permission "gfx", "canvas_scale" fit/stretch/zoom) ----
+// Portrait without turning pixels yourself (from WASM that costs ~95 ms a full frame: PSRAM-bound):
+// the PPA turns the canvas while it scales it to the panel. nv_gfx_set_rotation(1) on a 1024x600
+// canvas makes it 600x1024 (nv_gfx_width/height say so): draw upright, the device held with its left
+// edge up shows it upright, like the system's portrait mode. Upright pixel (x,y) of a W x H canvas
+// shows on the panel at q=1 (y, W-1-x), q=2 (W-1-x, H-1-y), q=3 (H-1-y, x). Touch, mouse and remote
+// taps arrive in upright canvas pixels. The canvas is cleared on a change: redraw all of it. Every run
+// starts at 0. Returns q, or -1 when refused (no "gfx", a 1:1 canvas, a WASM-4 cart, Vertice in use).
+NV_IMPORT("nv", "gfx_set_rotation") int32_t nv_gfx_set_rotation(int32_t quarter_turns);
+
 // ---- ABI v7 opening files (manifest "abi": 7, NO permission needed) -----------------------------
 // Declare the MIME types your app opens in the manifest ("opens": ["text/plain", "image/*"]); the OS
 // then offers it in Files > Open with (and as a default app). When the user opens a file with your

@@ -598,54 +598,7 @@ static int s_vregion[4] = { -1, -1, -1, -1 };      // direct region registered w
 // 1024x576 frame costs ~28 ms even unscaled. When the picture already has the panel's width, its
 // rows are contiguous in both buffers, so one AXI-GDMA copy (nv_2d_copy) moves it in long bursts.
 bool nv_hal_video_geom(int sw, int sh, int dx, int dy, int dw, int dh, int mode, nv_hal_blit_geom_t *g) {
-    if (!g || sw <= 0 || sh <= 0 || dw <= 0 || dh <= 0) return false;
-    // clamp the destination rect to the panel
-    if (dx < 0) dx = 0;
-    if (dy < 0) dy = 0;
-    if (dx + dw > NV_LCD_H_RES) dw = NV_LCD_H_RES - dx;
-    if (dy + dh > NV_LCD_V_RES) dh = NV_LCD_V_RES - dy;
-    if (dw < 2 || dh < 2) return false;
-
-    // The SRM hardware scales by k/16 (rounded down) and writes floor(block * k / 16) pixels, so pick
-    // k per mode and crop the source block to match — the output then covers exactly what we clear
-    // around. Source block = (bx, by, bw, bh) inside the sw x sh picture.
-    int bx = 0, by = 0, bw = sw, bh = sh, kx, ky;
-    if (mode == NV_HAL_BLIT_STRETCH) {
-        kx = dw * 16 / sw;  ky = dh * 16 / sh;
-    } else if (mode == NV_HAL_BLIT_ZOOM) {
-        // cover the rect: the smallest k that fills both axes, overflow cropped (centred)
-        int k = (dw * 16 + sw - 1) / sw;
-        { const int k2 = (dh * 16 + sh - 1) / sh; if (k2 > k) k = k2; }
-        kx = ky = k;
-    } else {
-        // fit inside the rect; one 1/16 step larger costs a thin edge crop — worth it while the crop
-        // stays under ~4% per axis (1200x672 camera clips: 975x546 -> 1022x588 on the 1024x600 panel).
-        // FIT_EXACT (game canvases: HUD at the edges, touch mapped back to canvas pixels) never crops.
-        int k = dw * 16 / sw;
-        { const int k2 = dh * 16 / sh; if (k2 < k) k = k2; }
-        const int kb = k + 1;
-        const int cw = (dw * 16 / kb < sw) ? dw * 16 / kb : sw;
-        const int ch = (dh * 16 / kb < sh) ? dh * 16 / kb : sh;
-        if (mode != NV_HAL_BLIT_FIT_EXACT && k >= 1 && cw * 100 >= sw * 96 && ch * 100 >= sh * 96) k = kb;
-        kx = ky = k;
-    }
-    if (kx < 1) kx = 1;
-    if (ky < 1) ky = 1;
-    if (kx > 255 * 16) kx = 255 * 16;   // SRM integer part < 256
-    if (ky > 255 * 16) ky = 255 * 16;
-    {   // largest block that fits
-        const int mw = dw * 16 / kx, mh = dh * 16 / ky;
-        if (bw > mw) bw = mw;
-        if (bh > mh) bh = mh;
-    }
-    if (bw < 1 || bh < 1) return false;
-    bx = (sw - bw) / 2;  by = (sh - bh) / 2;
-    const int tw = bw * kx / 16, th = bh * ky / 16;
-    if (tw < 1 || th < 1) return false;
-    g->kx = kx; g->ky = ky; g->bx = bx; g->by = by; g->bw = bw; g->bh = bh; g->tw = tw; g->th = th;
-    g->ox = dx + (dw - tw) / 2; g->oy = dy + (dh - th) / 2;
-    g->dx = dx; g->dy = dy; g->dw = dw; g->dh = dh;
-    return true;
+    return nv_blit_geom(NV_LCD_H_RES, NV_LCD_V_RES, sw, sh, dx, dy, dw, dh, mode, g);
 }
 
 // Scale/copy one RGB565 picture into `fb` (a full panel frame buffer) at rect (dx,dy,dw,dh), which is
@@ -657,8 +610,8 @@ static bool video_draw_into(void *fb, const void *src, int sw, int sh, int src_p
     nv_hal_blit_geom_t gm;
     if (!nv_hal_video_geom(sw, sh, dx, dy, dw, dh, mode, &gm)) return false;
     dx = gm.dx; dy = gm.dy; dw = gm.dw; dh = gm.dh;
-    const int kx = gm.kx, ky = gm.ky, bx = gm.bx, by = gm.by, bw = gm.bw, bh = gm.bh;
-    const int tw = gm.tw, th = gm.th, ox = gm.ox, oy = gm.oy;
+    const int kx = gm.kx, ky = gm.ky, bx = gm.sbx, by = gm.sby, bw = gm.sbw, bh = gm.sbh;
+    const int tw = gm.tw, th = gm.th, ox = gm.ox, oy = gm.oy, rot = gm.rot;
 
     if (clear_bars) {   // black ONLY the margins around the picture, never the picture area
         uint16_t *p = (uint16_t *)fb;
@@ -677,7 +630,7 @@ static bool video_draw_into(void *fb, const void *src, int sw, int sh, int src_p
     }
 
     // 1:1 and panel-wide (the rows line up): DMA copy, no scaler
-    if (kx == 16 && ky == 16 && bx == 0 && bw == sw && src_pitch == NV_LCD_H_RES && tw == NV_LCD_H_RES && ox == 0) {
+    if (rot == 0 && kx == 16 && ky == 16 && bx == 0 && bw == sw && src_pitch == NV_LCD_H_RES && tw == NV_LCD_H_RES && ox == 0) {
         uint16_t *p = (uint16_t *)fb;
         const uint8_t *s = (const uint8_t *)src + (size_t)by * src_pitch * 2;
         const esp_err_t e = nv_2d_copy(&p[(size_t)oy * NV_LCD_H_RES], s, (size_t)th * NV_LCD_H_RES * 2, 100);
@@ -706,7 +659,11 @@ static bool video_draw_into(void *fb, const void *src, int sw, int sh, int src_p
     op.out.buffer = fb; op.out.buffer_size = (uint32_t)NV_LCD_H_RES * NV_LCD_V_RES * 2;
     op.out.pic_w  = NV_LCD_H_RES; op.out.pic_h = NV_LCD_V_RES; op.out.srm_cm = PPA_SRM_COLOR_MODE_RGB565;
     op.out.block_offset_x = (uint32_t)ox; op.out.block_offset_y = (uint32_t)oy;
-    op.scale_x = (float)kx / 16.0f; op.scale_y = (float)ky / 16.0f;   // exact: what the HW applies
+    // exact: what the HW applies. The scale factors are the source's own axes: a quarter turn sends
+    // its rows down the panel, so the panel's vertical factor scales them.
+    op.scale_x = (float)((rot & 1) ? ky : kx) / 16.0f;
+    op.scale_y = (float)((rot & 1) ? kx : ky) / 16.0f;
+    op.rotation_angle = (ppa_srm_rotation_angle_t)rot;   // PPA_SRM_ROTATION_ANGLE_0/90/180/270 == 0..3
     op.mode = PPA_TRANS_MODE_BLOCKING;
     return nv_2d_srm(s_vblit_ppa, &op) == ESP_OK;
 }
@@ -717,9 +674,12 @@ bool nv_hal_video_draw(uint16_t *fb, int stride, const void *src, int sw, int sh
     return video_draw_into(fb, src, sw, sh, src_pitch, dx, dy, dw, dh, mode, clear_bars);
 }
 
+static uint32_t s_vblit_n, s_vblit_us_avg, s_vblit_us_last;   // nv_hal_video_blit_stats (LVGL task)
+
 bool nv_hal_video_blit(const void *src, int sw, int sh, int src_pitch, int dx, int dy, int dw, int dh,
                        int mode, bool clear_bars) {
     if (!s_panel) return false;
+    const int64_t t0 = esp_timer_get_time();
     // Immediate: the picture goes into the frame on screen, held for the blit only (a swap holding it
     // skips this frame). The rectangle is registered as a direct region, so every LVGL swap carries
     // the latest picture into the next frame.
@@ -727,11 +687,22 @@ bool nv_hal_video_blit(const void *src, int sw, int sh, int src_pitch, int dx, i
     if (!nv_disp_front_begin(&fs, 40)) return false;
     const bool ok = video_draw_into(fs.px, src, sw, sh, src_pitch, dx, dy, dw, dh, mode, clear_bars);
     nv_disp_front_end();
+    if (ok) {
+        s_vblit_us_last = (uint32_t)(esp_timer_get_time() - t0);
+        s_vblit_us_avg = s_vblit_us_avg ? (s_vblit_us_avg * 7 + s_vblit_us_last) / 8 : s_vblit_us_last;
+        s_vblit_n++;
+    }
     if (ok && (dx != s_vregion[0] || dy != s_vregion[1] || dw != s_vregion[2] || dh != s_vregion[3])) {
         nv_disp_set_direct_region(dx, dy, dw, dh);
         s_vregion[0] = dx; s_vregion[1] = dy; s_vregion[2] = dw; s_vregion[3] = dh;
     }
     return ok;
+}
+
+void nv_hal_video_blit_stats(uint32_t *count, uint32_t *us_avg, uint32_t *us_last) {
+    if (count) *count = s_vblit_n;
+    if (us_avg) *us_avg = s_vblit_us_avg;
+    if (us_last) *us_last = s_vblit_us_last;
 }
 
 void nv_hal_video_blit_end(void) {

@@ -171,6 +171,21 @@
 //   nv.dl_free() -> MiB                     ()i        room for a new download: free space less the OTA
 //                                                       reserve and what listed downloads still need
 //
+// ---- ABI v19: turned canvas (permission "gfx"; manifest "canvas_scale" fit/stretch/zoom) ---------
+// The PPA turns the canvas while it scales it to the panel, so a portrait app draws upright and pays
+// nothing for the turn (from WASM it costs ~95 ms a full frame: PSRAM-bound).
+//   nv.gfx_set_rotation(q) -> i32           (i)i       q quarter turns, 0..3; returns q, or -1 refused
+//                                                       (no gfx, 1:1 canvas, WASM-4 cart, Vertice bound).
+//                                                       Odd q swaps the canvas sides (gfx_width/height
+//                                                       report the new ones: 1024x600 -> 600x1024); the
+//                                                       canvas is cleared and wholly redrawn on the next
+//                                                       present. Upright pixel (x,y) shows on the panel at
+//                                                       q=1 (y, W-1-x), q=2 (W-1-x, H-1-y), q=3 (H-1-y, x)
+//                                                       (W x H = the upright canvas): q=1 reads upright
+//                                                       with the device's left edge up, like the system's
+//                                                       portrait mode. Touch, mouse and remote taps arrive
+//                                                       in upright canvas pixels. Every run starts at 0.
+//
 // ---- Console programs (Terminal) ---------------------------------------------------------------
 // A WASI command whose manifest says "console": true is a terminal program: the Terminal runs it
 // with a command line (argv), a live stdin (what the user types, line by line) and no opcode cap
@@ -197,7 +212,7 @@ extern "C" {
 
 // Version of the host-import ABI implemented by this OS build (manifest "abi" is checked
 // against it at run time).
-#define NV_WASM_ABI 18   // 18: the system downloader (dl_*); 17: full-screen terminal programs (tty); 16: Vertice 1.5
+#define NV_WASM_ABI 19   // 19: turned scaled canvas (gfx_set_rotation); 18: the system downloader (dl_*); 17: full-screen terminal programs (tty); 16: Vertice 1.5
 
 // Initialize the WAMR runtime once (idempotent). Returns false if it could not start.
 bool nv_wasm_init(void);
@@ -469,6 +484,9 @@ bool nv_wasm_exec_collect_run(nv_wrun_id_t id, bool *ok, uint32_t *elapsed_ms, c
 //   size() to build an lv_canvas over current(); each LVGL tick, take_frame_ex() returns the next
 //   ready buffer (or NULL) — set it on the canvas and invalidate. input() feeds the latest touch.
 void      nv_wasm_gfx_size(int *w, int *h);
+// ABI v19: size and the quarter turns the canvas is shown with (nv.gfx_set_rotation), read together.
+// w x h is the canvas as the app draws it (upright); the panel shows it turned `rot` quarter turns.
+void      nv_wasm_gfx_shape(int *w, int *h, int *rot);
 uint16_t *nv_wasm_gfx_current(void);        // a valid buffer to seed the canvas at build time
 // ABI v6: next ready frame buffer (or NULL if none pending), plus the dirty rect to re-blit (full
 // canvas for legacy games). The UI blits only this region — the dirty-rect fast path.

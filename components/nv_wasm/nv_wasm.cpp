@@ -167,6 +167,7 @@ NV_PSRAM_BSS ConsoleReq s_console;
 struct Gfx {
     bool      open      = false;
     int       w         = 0, h = 0;
+    int       rot       = 0;      // ABI v19: quarter turns the UI shows the canvas with (w x h = upright)
     uint16_t *buf[2]    = {nullptr, nullptr};
     int       cap_px    = 0;
     int       draw_idx  = 0;      // worker draws here (worker-only)
@@ -246,7 +247,7 @@ bool gfx_open(int w, int h) {
         memset(s_gfx.buf[0], 0, (size_t)px * 2);
         memset(s_gfx.buf[1], 0, (size_t)px * 2);
     }
-    s_gfx.w = w; s_gfx.h = h;
+    s_gfx.w = w; s_gfx.h = h; s_gfx.rot = 0;
     s_gfx.draw_idx = 0; s_gfx.ready_idx = 0;
     s_gfx.frame_ready = false; s_gfx.want_stop = false;
     s_gfx.pub_seq = s_gfx.taken_seq = s_gfx.done_seq = 0;
@@ -1218,6 +1219,33 @@ void nvi_gfx_bg_restore(wasm_exec_env_t env, int32_t x, int32_t y, int32_t w, in
     mark_dirty(x, y, x1 - x, y1 - y);
 }
 
+// ---- ABI v19: turned canvas (permission "gfx") ---------------------------------------------------
+// A scaled canvas (manifest "canvas_scale") shown turned q quarter turns by the PPA as it is scaled to
+// the panel, so an app can draw upright in portrait (q=1: a 1024x600 canvas becomes 600x1024, read with
+// the device's left edge up, like the system's portrait mode) without turning pixels itself (~95 ms a
+// frame from WASM, PSRAM-bound). An odd q swaps the canvas sides (same buffers: same pixel count);
+// the canvas is cleared and wholly dirty afterwards, touch arrives in the turned canvas's pixels.
+// Returns the turn now in effect, or -1: no gfx, not a scaled canvas (the 1:1 LVGL path can't turn),
+// a WASM-4 cart, or Vertice already bound to the canvas size.
+int32_t nvi_gfx_set_rotation(wasm_exec_env_t env, int32_t q) {
+    if (!gfx_perm(env) || q < 0 || q > 3) return -1;
+    if (s_exec.app.canvas_scale == NV_WASM_SCALE_NONE || s_exec.app.w4 || vx_is_open()) return -1;
+    if (q == s_gfx.rot) return q;
+    pthread_mutex_lock(&s_exec.lock);
+    if ((q ^ s_gfx.rot) & 1) { const int t = s_gfx.w; s_gfx.w = s_gfx.h; s_gfx.h = t; }
+    s_gfx.rot = q;
+    s_gfx.in_x = s_gfx.in_y = s_gfx.in_state = 0;
+    s_gfx.mt_cnt = 0;
+    s_gfx.dx0 = 0; s_gfx.dy0 = 0; s_gfx.dx1 = s_gfx.w; s_gfx.dy1 = s_gfx.h;   // next frame: full
+    pthread_mutex_unlock(&s_exec.lock);
+    // Old pixels in the new shape are noise: start black (the UI may be reading the shown buffer —
+    // the same size, so at worst one frame shows half-cleared).
+    const size_t n = (size_t)s_gfx.w * s_gfx.h * 2;
+    for (int i = 0; i < 2; i++) if (s_gfx.buf[i]) memset(s_gfx.buf[i], 0, n);
+    s_gfx.dirty = true;
+    return q;
+}
+
 // ---- ABI v5: UDP networking (permission "net") --------------------------------------------------
 // A tiny non-blocking UDP surface so a WASM app (e.g. cross-device Nucleo Tanks over LAN) can talk to
 // peers. One socket per run; IPs are opaque network-order tokens the app just echoes (from net_recv /
@@ -1785,6 +1813,7 @@ NativeSymbol s_nv_natives[] = {
     { "gfx_persist",    (void *)nvi_gfx_persist,    "(i)",     nullptr },
     { "gfx_bg_save",    (void *)nvi_gfx_bg_save,    "()",      nullptr },
     { "gfx_bg_restore", (void *)nvi_gfx_bg_restore, "(iiii)",  nullptr },
+    { "gfx_set_rotation", (void *)nvi_gfx_set_rotation, "(i)i", nullptr },   // ABI v19
     // ABI v5 UDP networking (permission "net")
     { "net_open",      (void *)nvi_net_open,      "(i)i",    nullptr },
     { "net_close",     (void *)nvi_net_close,     "()",      nullptr },
@@ -3523,6 +3552,14 @@ void nv_wasm_gfx_size(int *w, int *h) {
     pthread_mutex_lock(&s_exec.lock);
     if (w) *w = s_gfx.w;
     if (h) *h = s_gfx.h;
+    pthread_mutex_unlock(&s_exec.lock);
+}
+
+void nv_wasm_gfx_shape(int *w, int *h, int *rot) {
+    pthread_mutex_lock(&s_exec.lock);
+    if (w) *w = s_gfx.w;
+    if (h) *h = s_gfx.h;
+    if (rot) *rot = s_gfx.rot;
     pthread_mutex_unlock(&s_exec.lock);
 }
 

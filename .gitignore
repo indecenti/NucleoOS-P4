@@ -121,6 +121,8 @@ secrets.json
 settings.nvb
 # AOT images are generated for one wamrc/runtime version (sdk/build_app.ps1 -Aot): rebuild, do not commit.
 apps/*/app.aot
+# HIL test apps (tests/apps): built by sdk/build_app.ps1 before the check.
+tests/apps/*/app.wasm
 # publish.py output: copies of apps/<id> staged for the store server — regenerate, do not commit.
 server/appstore/store-apps/
 

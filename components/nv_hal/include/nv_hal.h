@@ -5,6 +5,7 @@
 #include <stdbool.h>
 #include "lvgl.h"
 #include "driver/i2c_master.h"
+#include "nv_blit_geom.h"   // NV_HAL_BLIT_* modes, nv_hal_blit_geom_t, nv_blit_unmap
 
 #ifdef __cplusplus
 extern "C" {
@@ -71,24 +72,26 @@ bool nv_hal_thumbnail_grab(uint8_t *dst, int dw, int dh);
 // until nv_hal_video_blit_end(). PPA-blocking, ~1-3 ms. Returns false on failure or when a swap held
 // the frame (skip that frame).
 // `mode`: NV_HAL_BLIT_FIT (letterbox, aspect kept), _STRETCH (fill, aspect ignored), _ZOOM (fill,
-// aspect kept, overflow cropped). The PPA scales in 1/16 steps rounded DOWN, so every mode picks an
-// exact k/16 factor (plus at most a few % of edge crop) — a non-k/16 float left a stripe of the rect
-// unwritten. The source must already be in memory (CPU-written frames: msync C2M before calling).
+// aspect kept, overflow cropped), _FIT_EXACT (like _FIT but never crops: game canvases, their edges
+// carry HUD and touch targets), optionally | NV_HAL_BLIT_ROT(q): the PPA turns the picture q quarter
+// turns while it scales (nv_blit_geom.h has the direction). The PPA scales in 1/16 steps rounded DOWN,
+// so every mode picks an exact k/16 factor (plus at most a few % of edge crop) — a non-k/16 float left
+// a stripe of the rect unwritten. The source must already be in memory (CPU-written frames: msync C2M
+// before calling).
 // `clear_bars`: black the part of the rect the picture doesn't cover (first frame / after a resize or
 // mode change; skip afterwards to save the fill).
-// _FIT_EXACT: like _FIT but never crops (game canvases: their edges carry HUD and touch targets).
-enum { NV_HAL_BLIT_FIT = 0, NV_HAL_BLIT_STRETCH = 1, NV_HAL_BLIT_ZOOM = 2, NV_HAL_BLIT_FIT_EXACT = 3 };
 bool nv_hal_video_blit(const void *src, int sw, int sh, int src_pitch, int dx, int dy, int dw, int dh,
                        int mode, bool clear_bars);
 // The video stopped or LVGL UI now covers its rect: stop carrying the rect across swaps (else a
 // drawer or the notification shade drawn over it would be overwritten with the old picture).
 void nv_hal_video_blit_end(void);
+// Immediate blits since boot and their cost in µs (moving average, and the last one), for
+// GET /api/display ("blits", "blit_us_avg", "blit_us_last"): a scaled game canvas is one per frame.
+void nv_hal_video_blit_stats(uint32_t *count, uint32_t *us_avg, uint32_t *us_last);
 
-// The geometry nv_hal_video_blit applies for the same arguments: the source block (bx,by,bw,bh) it
-// scales by kx/16 × ky/16 into (ox,oy,tw,th) on the panel, inside the clamped rect (dx,dy,dw,dh).
-// Lets a caller map panel coordinates back to source pixels: sx = bx + (px - ox) * 16 / kx.
-// False when nothing would be drawn.
-typedef struct { int kx, ky, bx, by, bw, bh, ox, oy, tw, th, dx, dy, dw, dh; } nv_hal_blit_geom_t;
+// The geometry nv_hal_video_blit applies for the same arguments (nv_blit_geom.h): the block it scales
+// by kx/16 × ky/16 into (ox,oy,tw,th) on the panel, inside the clamped rect (dx,dy,dw,dh). Lets a
+// caller map panel coordinates back to source pixels: nv_blit_unmap(). False when nothing would be drawn.
 bool nv_hal_video_geom(int sw, int sh, int dx, int dy, int dw, int dh, int mode, nv_hal_blit_geom_t *g);
 // Same scaling as nv_hal_video_blit, into the given frame buffer (`stride` must be the panel width):
 // for nv_disp layer draw callbacks, which receive the back buffer being composed.

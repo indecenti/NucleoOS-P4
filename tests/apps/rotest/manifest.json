@@ -1,0 +1,20 @@
+{
+  "id": "rotest",
+  "name": "Rotation test",
+  "version": "1.0.0",
+  "entry": "run",
+  "abi": 19,
+  "ram_budget": 131072,
+  "stack_kb": 16,
+  "timeout_ms": 120000,
+  "permissions": [
+    "gfx",
+    "log"
+  ],
+  "canvas_w": 1024,
+  "canvas_h": 600,
+  "canvas_scale": "fit",
+  "category": "utilities",
+  "author": "NucleoOS",
+  "description": "Board check for the turned canvas (ABI 19): orientation card, touch cross, rotation buttons, full-frame benchmark."
+}
