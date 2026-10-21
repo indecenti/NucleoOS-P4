@@ -156,6 +156,8 @@ static const char *const kStr[S_COUNT][L_COUNT] = {
                    "Doppelseiten"},
     [S_AUTO] = {"Auto", "Auto", "Auto", "Auto", "Auto"},
     [S_CAT_CATEGORY] = {"Categoria", "Category", "Categor\xC3\xAD" "a", "Cat\xC3\xA9gorie", "Kategorie"},
+    [S_ABOUT] = {"Informazioni su Libri", "About Books", "Acerca de Libros", "\xC3\x80 propos de Livres", "\xC3\x9C" "ber B\xC3\xBC" "cher"},
+    [S_NOTICES] = {"Licenze di terze parti", "Third-party licenses", "Licencias de terceros", "Licences tierces", "Lizenzen Dritter"},
     [S_CAT_PD] = {"Pubblico dominio", "Public domain", "Dominio p\xC3\xBA" "blico", "Domaine public", "Gemeinfrei"},
 };
 

@@ -18,7 +18,7 @@ engine=("$B"/book.c "$B"/conv.c "$B"/zip.c "$B"/xml.c "$B"/lay.c "$B"/hyph.c "$G
         "$W"/src/dsp/lossless_{avx2,mips_dsp_r2,msa,neon,sse2,sse41}.c
         "$W"/src/utils/{bit_reader_utils,color_cache_utils,filters_utils,huffman_utils,palette,quant_levels_dec_utils}.c
         "$W"/src/utils/{random_utils,rescaler_utils,thread_utils,utils}.c)
-app=("$B"/app.c "$B"/library.c "$B"/reader.c "$B"/catalog.c "$B"/lib.c "$B"/i18n.c "$B"/kbd.c "$T"/native_host.c)
+app=("$G"/notices.c "$B"/app.c "$B"/library.c "$B"/reader.c "$B"/catalog.c "$B"/lib.c "$B"/i18n.c "$B"/kbd.c "$T"/native_host.c)
 INC=(-I"$B" -I"$G" -I"$Z"/nvhtml -I"$S" -I"$S"/tjpgd/src -I"$S"/miniz-3.1.2 -I"$B/../miniz" -I"$B/../../sdk/include" -I"$W" -I"$W/src")
 DEF=(-DNV_SIM -DBK_NATIVE -DLODEPNG_NO_COMPILE_ENCODER -DLODEPNG_NO_COMPILE_DISK -DLODEPNG_NO_COMPILE_ANCILLARY_CHUNKS
      -DLODEPNG_NO_COMPILE_CPP)

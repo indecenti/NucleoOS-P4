@@ -129,6 +129,43 @@ static void lib_bar(void) {   // the title, the catalog, sorting and the orienta
     text_draw(F_BOLD, 16, cx + 48, 38, cl, (int)strlen(cl), g_col[C_ON_ACCENT]);
     button(cx - BTN - 8, 6, IC_SORT, A_SORT, 0, g_nlib > 1, g_col[C_BAR_TEXT]);
     button(cx - 2 * BTN - 12, 6, IC_ROTATE, A_ORIENT, 0, 1, g_col[C_BAR_TEXT]);
+    button(cx - 3 * BTN - 16, 6, IC_INFO, A_ABOUT, 0, 1, g_col[C_BAR_TEXT]);
+}
+
+extern const char bk_notices[];   // NOTICES.txt (gen_text.py)
+
+// About the app: its version and the third-party notices, scrolled with a finger or the arrows.
+void about_draw(void) {
+    scrim();
+    const int w = g_w - 32 < 760 ? g_w - 32 : 760, h = g_h - 48, x = (g_w - w) / 2, y = 24;
+    sheet_frame(x, y, w, h);
+    button(x + w - BTN - 8, y + 8, IC_CLOSE, A_CLOSE, 0, 1, g_col[C_DIM]);
+    char t[96];
+    snprintf(t, sizeof t, "%s  \xC2\xB7  %s", tr(S_ABOUT), BK_VERSION);
+    text_draw(F_BOLD, 20, x + 24, y + 40, t, (int)strlen(t), g_col[C_TEXT]);
+    text_draw(F_BOLD, 14, x + 24, y + 70, tr(S_NOTICES), (int)strlen(tr(S_NOTICES)), g_col[C_DIM]);
+    const int top = y + 84, bottom = y + h - 12, lh = 20, tw = w - 48;
+    gfx_clip(x, top, x + w, bottom);
+    int ly = top + 18 - A.list_scroll;
+    for (const char *p = bk_notices; *p;) {   // a paragraph per line of the file, wrapped
+        const char *e = strchr(p, '\n');
+        if (!e) e = p + strlen(p);
+        const char *s = p;
+        int n = (int)(e - p);
+        if (!n) ly += lh / 2;
+        while (n > 0) {
+            int k = text_fit(F_SANS, 14, s, n, tw);
+            if (k < n) { int b = k; while (b > 0 && s[b] != ' ') b--; if (b > 0) k = b; }
+            if (k <= 0) k = n;
+            if (ly > top - lh && ly < bottom + lh) text_draw(F_SANS, 14, x + 24, ly, s, k, g_col[C_TEXT]);
+            ly += lh;
+            s += k;
+            n -= k;
+            while (n > 0 && *s == ' ') { s++; n--; }
+        }
+        p = *e ? e + 1 : e;
+    }
+    gfx_noclip();
 }
 
 void lib_draw(void) {

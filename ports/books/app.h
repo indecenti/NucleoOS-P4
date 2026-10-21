@@ -10,10 +10,11 @@
 #define OSK_H 248
 #define BACK_MAX 16
 #define RES_MAX 200
+#define BK_VERSION "1.0.0"   // as in apps/libri/manifest.json
 
 enum { SCR_LIBRARY, SCR_READER, SCR_CATALOG };
 enum { SH_NONE, SH_CHROME, SH_TOC, SH_LOOK, SH_SEARCH, SH_NOTE, SH_VIEWER, SH_INFO, SH_SORT, SH_BOOK, SH_CAT_BOOK,
-       SH_CAT_LANGS, SH_CAT_DLS, SH_CAT_CATS };
+       SH_CAT_LANGS, SH_CAT_DLS, SH_CAT_CATS, SH_ABOUT };
 enum { R_ALL = 1, R_PAGE = 2 };
 
 // actions of the touch regions (and of Enter on a focused one)
@@ -22,7 +23,7 @@ enum {
     A_INFO, A_CLOSE, A_TOC_TAB, A_TOC_ITEM, A_MARK_ITEM, A_MARK_DEL, A_THEME, A_FONT, A_SIZE, A_SPACING, A_MARGIN,
     A_TOGGLE, A_ANIM, A_EINK_N, A_COLS, A_RESULT, A_OSK, A_FIELD, A_NOTE_GO, A_SLIDER, A_CHAP_PREV, A_CHAP_NEXT,
     A_BACK_JUMP, A_DELETE, A_LIB_SCROLL, A_CAT_CHIP, A_CAT_ROW, A_CAT_GET, A_CAT_READ, A_CAT_RETRY, A_CAT_LANGS,
-    A_CAT_LANG, A_CAT_DLS, A_CAT_CANCEL, A_CAT_SEARCH, A_PAGE_TAP, A_ORIENT, A_LIBRARY,
+    A_CAT_LANG, A_CAT_DLS, A_CAT_CANCEL, A_CAT_SEARCH, A_PAGE_TAP, A_ORIENT, A_LIBRARY, A_ABOUT,
 };
 enum { TG_JUSTIFY, TG_HYPHEN, TG_INDENT, TG_TAP, TG_STATUS };
 
@@ -121,7 +122,8 @@ int lib_height(void);
 void lib_order(void);
 void lib_idle(void);
 void book_sheet_draw(void);
-void library_rescan(void);      // ~/books read again (a download finished): covers dropped, order made again
+void library_rescan(void);
+void about_draw(void);      // ~/books read again (a download finished): covers dropped, order made again
 
 // reader.c
 int reader_open(int lib_idx);

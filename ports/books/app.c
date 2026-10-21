@@ -460,6 +460,7 @@ static void do_action(int act, int arg) {
     case A_SORT: A.sheet = A.sheet == SH_SORT ? SH_NONE : SH_SORT; return;
     case A_SORT_SET: g_set.sort = arg; settings_save(); lib_order(); A.sheet = SH_NONE; A.lib_scroll = 0; return;
     case A_CATALOG: cat_open(); return;
+    case A_ABOUT: A.sheet = SH_ABOUT; A.list_scroll = 0; return;
     case A_CLOSE: A.sheet = SH_NONE; return;
     case A_DELETE:
         if (!A.del_armed) { A.del_armed = 1; toast(tr(S_DELETE_SURE), NULL); return; }
@@ -527,7 +528,7 @@ static void on_key(const kev_t *k) {
 
 static int list_scrollable(void) {
     return A.sheet == SH_TOC || A.sheet == SH_SEARCH || A.sheet == SH_CAT_LANGS || A.sheet == SH_CAT_DLS || A.sheet == SH_INFO ||
-           A.sheet == SH_BOOK || A.sheet == SH_CAT_BOOK || A.sheet == SH_CAT_CATS;
+           A.sheet == SH_BOOK || A.sheet == SH_CAT_BOOK || A.sheet == SH_CAT_CATS || A.sheet == SH_ABOUT;
 }
 
 static void on_touch(int down, int x, int y) {
@@ -613,6 +614,7 @@ static void draw_all(void) {
     else {
         lib_draw();
         if (A.sheet == SH_BOOK || A.sheet == SH_SORT) book_sheet_draw();
+        else if (A.sheet == SH_ABOUT) about_draw();
     }
     if (A.osk_on && (A.sheet == SH_SEARCH || A.screen == SCR_CATALOG)) draw_osk();
     draw_toast();

@@ -33,6 +33,7 @@ mkdir -p "$out" "$G" "$here/_out"
 python "$here/gen_icons.py" "$G/icons.h" >/dev/null
 python "$here/gen_fontdata.py" "$G/fontdata.c" >/dev/null
 python "$here/gen_hyph.py" "$G/hyphdata.c" >/dev/null
+python "$here/gen_text.py" "$here/NOTICES.txt" "$G/notices.c" bk_notices
 
 log="$here/_out/build.log"
 # -O2; a reactor with a 256 KB C stack in linear memory (frame buffers, surfaces, the glyph cache,
@@ -45,7 +46,7 @@ log="$here/_out/build.log"
     -mexec-model=reactor -Wl,--export=run -Wl,-z,stack-size=262144 -Wl,--strip-all -o "$out/app.wasm" \
     "$here"/app.c "$here"/library.c "$here"/reader.c "$here"/catalog.c "$here"/lib.c "$here"/i18n.c "$here"/kbd.c \
     "$here"/book.c "$here"/conv.c "$here"/zip.c "$here"/xml.c "$here"/lay.c "$here"/hyph.c "$G"/hyphdata.c \
-    "$here"/json.c "$here"/font.c "$here"/gfx.c "$here"/img.c "$here"/inflate.c "$G/fontdata.c" "$Z/nvhtml/nvhtml.c" \
+    "$here"/json.c "$here"/font.c "$here"/gfx.c "$here"/img.c "$here"/inflate.c "$G/fontdata.c" "$G/notices.c" "$Z/nvhtml/nvhtml.c" \
     "$S/lodepng.c" "$S/tjpgd/src/tjpgd.c" "${WEBP[@]}" \
     -lc -lm -lwasi-emulated-process-clocks "$WASI/libclang_rt-34.0/wasm32-unknown-wasip1/libclang_rt.builtins.a" \
     >"$log" 2>&1 || { grep -v -e 'lodepng' -e 'stb_' -e 'libwebp' -e 'nanosvg' -e 'tjpgd' -e 'miniz' "$log" >&2; echo "libri: compile failed" >&2; exit 1; }

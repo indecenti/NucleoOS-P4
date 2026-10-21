@@ -538,7 +538,7 @@ char *txt_to_rich(const char *raw, size_t rn, size_t *out_len) {
     }
     nl = k;
     // hard-wrapped (Gutenberg's 70 columns): paragraphs are runs of lines between blank lines
-    size_t nonblank = 0, blank = 0, sum = 0, maxl = 0;
+    size_t nonblank = 0, blank = 0, sum = 0, narrow = 0;
     for (size_t i = 0; i < nl; i++) {
         const char *p = s + ls[2 * i];
         size_t l = ls[2 * i + 1];
@@ -546,10 +546,11 @@ char *txt_to_rich(const char *raw, size_t rn, size_t *out_len) {
         if (!l) { blank++; continue; }
         nonblank++;
         sum += l;
-        if (l > maxl) maxl = l;
+        narrow += l <= 80 * 2;   // bytes: accented letters take two
     }
     const size_t avg = nonblank ? sum / nonblank : 0;
-    const int wrapped = blank > 0 && avg > 20 && avg < 90 && maxl < 120 && nonblank > blank * 2;
+    // nearly every line fits a typewriter's width (a few long ones — a URL, a table — do not count)
+    const int wrapped = blank > 0 && avg > 20 && avg < 85 && narrow * 10 >= nonblank * 9 && nonblank > blank * 2;
     sb_t o = {0};
     size_t i = 0;
     while (i < nl) {
