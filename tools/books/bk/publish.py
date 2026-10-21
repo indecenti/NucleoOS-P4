@@ -28,10 +28,17 @@ NOTES_DEFAULT = ("Free books (public domain and free licences) for the NucleoOS 
                  "Catalog, licences and credits: https://indecenti.github.io/nucleoos-p4-store/books/")
 
 
-def gh(*args, check=True):
-    r = subprocess.run(["gh", *args], capture_output=True, text=True, encoding="utf-8")
+def gh(*args, check=True, log=print):
+    """Run gh; a rate-limit answer waits for the time GitHub names and retries (any call, not only uploads)."""
+    for _ in range(8):
+        r = subprocess.run(["gh", *args], capture_output=True, text=True, encoding="utf-8")
+        err = (r.stderr or r.stdout or "")
+        if r.returncode != 0 and _limited(err):
+            _wait_for_limit(err, log)
+            continue
+        break
     if check and r.returncode != 0:
-        raise RuntimeError("gh %s: %s" % (" ".join(args[:3]), (r.stderr or r.stdout).strip()[-400:]))
+        raise RuntimeError("gh %s: %s" % (" ".join(args[:3]), err.strip()[-400:]))
     return r
 
 
