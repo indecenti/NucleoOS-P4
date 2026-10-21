@@ -14,7 +14,7 @@
   "requires": {
     "wasi": "1.1"
   },
-  "ram_budget": 12582912,
+  "ram_budget": 11534336,
   "stack_kb": 128,
   "timeout_ms": 120000,
   "permissions": [
@@ -32,17 +32,17 @@
     {
       "ext": "epub",
       "mime": "application/epub+zip",
-      "kind": "document"
+      "kind": "text"
     },
     {
       "ext": "fb2",
       "mime": "application/x-fictionbook+xml",
-      "kind": "document"
+      "kind": "text"
     },
     {
       "ext": "cbz",
       "mime": "application/vnd.comicbook+zip",
-      "kind": "document"
+      "kind": "image"
     }
   ],
   "opens": [

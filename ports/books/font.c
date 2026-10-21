@@ -34,7 +34,7 @@ typedef struct {
 } glyph_t;
 
 #define GC_SLOTS 4096u                    // power of two
-#define GC_POOL (1024u * 1024u)
+#define GC_POOL (640u * 1024u)
 static glyph_t *s_gc;
 static uint8_t *s_pool;
 static size_t s_pool_n;

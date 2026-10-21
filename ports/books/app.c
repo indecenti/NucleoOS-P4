@@ -527,7 +527,7 @@ static void on_key(const kev_t *k) {
 
 static int list_scrollable(void) {
     return A.sheet == SH_TOC || A.sheet == SH_SEARCH || A.sheet == SH_CAT_LANGS || A.sheet == SH_CAT_DLS || A.sheet == SH_INFO ||
-           A.sheet == SH_BOOK || A.sheet == SH_CAT_BOOK;
+           A.sheet == SH_BOOK || A.sheet == SH_CAT_BOOK || A.sheet == SH_CAT_CATS;
 }
 
 static void on_touch(int down, int x, int y) {
@@ -541,7 +541,8 @@ static void on_touch(int down, int x, int y) {
         A.moved = A.long_fired = 0;
         A.vel = 0;
         A.nvel = 0;
-        A.drag_scroll0 = list_scrollable() ? A.list_scroll : A.screen == SCR_LIBRARY ? A.lib_scroll : A.list_scroll;
+        A.drag_scroll0 = list_scrollable() ? A.list_scroll : A.screen == SCR_LIBRARY ? A.lib_scroll
+                         : A.screen == SCR_CATALOG ? *cat_scroll() : A.list_scroll;
         A.pressed = reg_at(x, y);
         if (A.pressed >= 0 && A.regs[A.pressed].act == A_SLIDER) { A.slider_drag = 1; do_action(A_SLIDER, x); }
         A.focus = -1;
@@ -558,7 +559,9 @@ static void on_touch(int down, int x, int y) {
         }
         if (A.moved && A.pressed < 0) {
             const int32_t s = A.drag_scroll0 - (y - A.ty0);
-            if (list_scrollable() || A.screen != SCR_LIBRARY) A.list_scroll = s < 0 ? 0 : s;
+            if (list_scrollable()) A.list_scroll = s < 0 ? 0 : s;
+            else if (A.screen == SCR_CATALOG) *cat_scroll() = s < 0 ? 0 : s;
+            else if (A.screen != SCR_LIBRARY) A.list_scroll = s < 0 ? 0 : s;
             else {
                 const int32_t m = lib_height() - (g_h - BAR_H);
                 A.lib_scroll = s > m ? (m > 0 ? m : 0) : s < 0 ? 0 : s;
@@ -658,6 +661,25 @@ static void opened_with_file(void) {
     if (i >= 0) reader_open(i);
 }
 
+// Tests on the board: /appdata/shot.req (any content) asks for the screen as the app drew it,
+// written to /appdata/shot.565 (gfx_shot) and the request removed; tools: ports/books/tools/shot.py.
+// The system's own capture needs 2.4 MB of free PSRAM in one piece, which a reading app leaves no room for.
+static void shot_poll(void) {
+    static int next;
+    if (A.now - next < 0) return;
+    next = A.now + 1500;
+    char req[300], out[300];
+    snprintf(req, sizeof req, "%s/appdata/shot.req", bk_root());
+    FILE *f = fopen(req, "rb");
+    if (!f) return;
+    fclose(f);
+    snprintf(out, sizeof out, "%s/appdata/shot.565", bk_root());
+    const int t0 = nv_millis();
+    const int r = gfx_shot(out);
+    remove(req);
+    perf("shot: %s in %d ms", r ? "failed" : "written", nv_millis() - t0);
+}
+
 // The runtime grows the app's linear memory by reallocating it whole in PSRAM; later, with the
 // system's allocations around it, a grow can fail. Right after the start the block the app was
 // loaded into is still free: grow to nearly the whole budget once (malloc keeps what it got).
@@ -713,7 +735,8 @@ void run(void) {
         if (down || A.touch_down) on_touch(down, x, y);
         if (A.quit) break;
         if (A.vel != 0 && !A.touch_down) {   // fling of the lists
-            int32_t *s = A.screen == SCR_LIBRARY && !list_scrollable() ? &A.lib_scroll : &A.list_scroll;
+            int32_t *s = list_scrollable() ? &A.list_scroll : A.screen == SCR_LIBRARY ? &A.lib_scroll
+                       : A.screen == SCR_CATALOG ? cat_scroll() : &A.list_scroll;
             const int32_t before = *s;
             *s += (int32_t)(A.vel * (float)dt);
             if (*s < 0) *s = 0;
@@ -726,6 +749,7 @@ void run(void) {
             A.redraw |= R_ALL;
         }
         if (A.toast[0] && A.now > A.toast_until) { A.toast[0] = 0; A.redraw |= R_ALL; }
+        cat_bg_poll();
         if (A.screen == SCR_READER) reader_frame();
         else if (A.screen == SCR_CATALOG) cat_frame();
         else if (!A.touch_down && A.vel == 0) lib_idle();
@@ -733,6 +757,7 @@ void run(void) {
             draw_all();
             A.redraw = 0;
         }
+        shot_poll();
         gfx_flush();
         if (!nv_gfx_present()) break;
     }

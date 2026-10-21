@@ -11,17 +11,8 @@
 
 #include "bk.h"
 
-uint16_t g_col[C_COUNT];
 static book_t *s_book;
 static int s_chap;
-
-// the screen is never touched: the imports of gfx.c, satisfied here
-int32_t nv_gfx_width(void) { return 1024; }
-int32_t nv_gfx_height(void) { return 600; }
-void nv_gfx_persist(int32_t on) { (void)on; }
-void nv_gfx_blit_raw(const void *px, int32_t len, int32_t x, int32_t y, int32_t w, int32_t h) {
-    (void)px; (void)len; (void)x; (void)y; (void)w; (void)h;
-}
 
 int lay_image_size(const char *src, int n, int *w, int *h) {
     return book_image_size(s_book, s_chap, src, n, w, h) ? -1 : 0;
@@ -61,14 +52,17 @@ int main(int argc, char **argv) {
         for (int i = 0; i < b->nch; i++) {
             char *t = NULL;
             size_t n = 0;
+            const double r0 = now_ms();
             if (book_chapter(b, i, &t, &n)) { free(t); empty++; continue; }
+            const double rms = now_ms() - r0;   // reading the member and nvhtml
             text += n;
             s_chap = i;
             doc_t d;
             memset(&d, 0, sizeof d);
             const double c0 = now_ms();
             if (doc_layout(&d, t, n, &o) < 0) { printf("FAIL %s: layout of chapter %d\n", argv[a], i); fails++; }
-            const double ms = now_ms() - c0;
+            const double ms = now_ms() - c0 + rms;
+            if (!quiet && ms > 200) printf("  (chapter %d: text %.0f ms, layout %.0f ms)\n", i, rms, ms - rms);
             if (ms > worst) { worst = ms; worst_ch = i; }
             pages += d.npages;
             for (int k = 0; k < d.nimgs; k++) {
@@ -76,7 +70,7 @@ int main(int argc, char **argv) {
                 imgs++;
                 if (book_image_size(b, i, d.text + d.imgs[k].src_off, d.imgs[k].src_len, &w, &h)) bad_imgs++;
             }
-            if (!quiet && b->nch <= 60)
+            if (!quiet && (b->nch <= 60 || ms > 200 || getenv("BK_CHAPTERS")))   // long books: the slow chapters only
                 printf("  chapter %3d %-48.48s %7u B  %4d pages  %3d pictures  %6.1f ms\n", i, b->ch[i].path ? b->ch[i].path : "-",
                        (unsigned)n, d.npages, d.nimgs, ms);
             doc_free(&d);

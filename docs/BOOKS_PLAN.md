@@ -1,6 +1,16 @@
 # Libri: lettore di ebook e catalogo nello Store
 
-Stato al 2026-10-20: piano approvato dall'utente, F1 in corso (branch `feat/books`, worktree `D:\nv_books`).
+Stato al 2026-10-21 (branch `feat/books`, worktree `D:\nv_books`):
+
+- **F1 chiusa**: motore (EPUB 2/3 anche a layout fisso, CBZ, FB2, TXT, HTML, Markdown), pagine, temi, sfoglio,
+  indice; test sul PC (`bash ports/books/test.sh`, ASan/UBSan + tetto di memoria) e `test/book_check.c`, che la
+  pipeline del catalogo usa per scartare gli EPUB che il motore non apre.
+- **F2 quasi chiusa**: libreria, segnalibri, note, ricerca, verticale (l'app ruota da sé, come la rotazione 90 del
+  sistema), sillabazione in 11 lingue (`hyph/LICENSES.md`). Provata sulla scheda col firmware 1.2.148: pagina in
+  ~35-50 ms, capitolo in 20-80 ms, sfoglio ~55 ms a fotogramma. Manca la schermata delle licenze di terzi.
+- **F3 scritta**: catalogo (`catalog.c`) provato sul PC con un catalogo di prova, download compreso; da provare
+  sulla scheda col catalogo vero.
+- **F4/F5 in corso** nella sessione del catalogo: italiano pubblicato (216 libri, release `books-it-1`).
 
 Obiettivo: un'app **Libri** completa per leggere sul P4 (EPUB, FB2, TXT, HTML, Markdown) con temi da lettore
 vero (bianco, seppia, scuro, nero, simulazione e-ink, monocromatico), pagine sfogliate, capitoli e indice, e un

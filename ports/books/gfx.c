@@ -9,6 +9,7 @@
 #include <limits.h>
 #include <math.h>
 #include <stdlib.h>
+#include <stdio.h>
 #include <string.h>
 
 #include "nucleo_sdk.h"
@@ -292,6 +293,72 @@ void gfx_compose(const surf_t *left, int left_x, const surf_t *right, int right_
         }
     }
     dirty_screen(y0, y1);
+}
+
+// One frame of a page turn sent to the canvas straight from the two surfaces (the screen's own
+// buffer is not touched: the caller shows the final spread with gfx_copy when the turn ends).
+// Columns [0, split) show `left` from its column left_x, the rest `right` from right_x; a shadow
+// `sw` px wide darkens from column shadow_x towards shadow_dir (sw 0: none). Landscape: one blit
+// per run of each row (no 1.2 MB copy first). Portrait: one pass into the rotated buffer.
+void gfx_turn_frame(const surf_t *left, int left_x, const surf_t *right, int right_x, int split, int shadow_x, int sw,
+                    int shadow_dir) {
+    if (split < 0) split = 0;
+    if (split > g_w) split = g_w;
+    static uint16_t sh_row[64];
+    static uint8_t sh_a[64];
+    if (sw > 64) sw = 64;
+    int s0 = 0, s1 = 0;   // the shadow's columns
+    if (sw > 0) {
+        s0 = shadow_dir > 0 ? shadow_x : shadow_x - sw + 1;
+        s1 = s0 + sw;
+        if (s0 < 0) s0 = 0;
+        if (s1 > g_w) s1 = g_w;
+        for (int i = 0; i < sw; i++) sh_a[i] = (uint8_t)(110u * (unsigned)(sw - i) * (unsigned)(sw - i) / ((unsigned)sw * sw));
+    }
+#define PIX(x, y) ((x) < split ? left->rows[y][(x) + left_x] : right->rows[y][(x) - split + right_x])
+    if (!g_portrait) {
+        for (int y = 0; y < g_h; y++) {
+            if (split > 0) nv_gfx_blit_raw(left->rows[y] + left_x, split * 2, 0, y, split, 1);
+            if (split < g_w) nv_gfx_blit_raw(right->rows[y] + right_x, (g_w - split) * 2, split, y, g_w - split, 1);
+            if (s1 > s0) {
+                for (int x = s0; x < s1; x++) {
+                    const int i = shadow_dir > 0 ? x - shadow_x : shadow_x - x;
+                    sh_row[x - s0] = blend565(PIX(x, y), 0, i >= 0 && i < sw ? sh_a[i] : 0);
+                }
+                nv_gfx_blit_raw(sh_row, (s1 - s0) * 2, s0, y, s1 - s0, 1);
+            }
+        }
+        return;
+    }
+    // canvas (cx, cy) shows the screen's (x = g_w - 1 - cy, y = cx): a canvas row is a screen column
+    for (int cy = 0; cy < s_ph; cy++) {
+        const int x = g_w - 1 - cy;
+        uint16_t *d = s_rot + (size_t)cy * s_pw;
+        const surf_t *src = x < split ? left : right;
+        const int sx = x < split ? x + left_x : x - split + right_x;
+        unsigned a = 0;
+        if (x >= s0 && x < s1) {
+            const int i = shadow_dir > 0 ? x - shadow_x : shadow_x - x;
+            a = i >= 0 && i < sw ? sh_a[i] : 0;
+        }
+        if (sx < 0 || sx >= g_w) { memset(d, 0, (size_t)s_pw * 2); continue; }
+        for (int cx = 0; cx < s_pw; cx++) d[cx] = src->rows[cx][sx];
+        if (a) for (int cx = 0; cx < s_pw; cx++) d[cx] = blend565(d[cx], 0, a);
+    }
+    nv_gfx_blit_raw(s_rot, (int32_t)((size_t)s_pw * s_ph * 2), 0, 0, s_pw, s_ph);
+#undef PIX
+}
+
+// The screen as the app drew it (upright), for tests on the board: "BKS1", width, height (16-bit
+// little endian), then the RGB565 rows. 0 when written.
+int gfx_shot(const char *path) {
+    FILE *f = fopen(path, "wb");
+    if (!f) return -1;
+    const uint8_t hdr[8] = {'B', 'K', 'S', '1', (uint8_t)g_w, (uint8_t)(g_w >> 8), (uint8_t)g_h, (uint8_t)(g_h >> 8)};
+    int ok = fwrite(hdr, 1, 8, f) == 8;
+    for (int y = 0; y < g_h && ok; y++) ok = fwrite(s_screen[y], 2, (size_t)g_w, f) == (size_t)g_w;
+    fclose(f);
+    return ok ? 0 : -1;
 }
 
 void gfx_shadow(int x, int w, int dir, int y0, int y1, unsigned strength) {

@@ -72,7 +72,11 @@ void gfx_compose(const surf_t *left, int left_x, const surf_t *right, int right_
 // A soft vertical shadow, `w` px wide, darkest at x (dir +1: fading to the right).
 void gfx_shadow(int x, int w, int dir, int y0, int y1, unsigned strength);
 void gfx_copy(const surf_t *s, int y0, int y1);   // rows of a surface onto the screen as they are
+// A page turn's frame sent to the canvas straight from two surfaces (the screen buffer untouched).
+void gfx_turn_frame(const surf_t *left, int left_x, const surf_t *right, int right_x, int split, int shadow_x, int sw,
+                    int shadow_dir);
 void gfx_invert(int y0, int y1);                  // the e-ink refresh flash
+int gfx_shot(const char *path);                   // the screen to a file (tests on the board)
 
 // ------------------------------------------------------------------------------------------ fonts
 // The interface uses Sans; the reader Serif or Sans (setting). F_SERIF + style = the serif faces.
@@ -309,7 +313,7 @@ char *md_to_rich(const char *s, size_t n, size_t *out_len);
 char *to_utf8(const char *s, size_t n, size_t *out_len);        // detects UTF-16 / CP1252
 
 // ------------------------------------------------------------------------------------ pictures
-enum { IMG_CACHE_BYTES = 2u << 20 };
+enum { IMG_CACHE_BYTES = 3u << 19 };   // 1.5 MB
 uint8_t *img_decode_rgba(const uint8_t *data, size_t n, int w, int h);   // any supported file -> w x h RGBA
 int img_size(const uint8_t *data, size_t n, int *w, int *h);             // 0 ok: the file's own size
 int img_lookup(const char *key, int w, int h, int mask);   // 1 ready, -1 failed, 0 queued for img_work
@@ -414,7 +418,7 @@ enum {
     S_CATALOG, S_CAT_LOADING, S_CAT_OFFLINE, S_CAT_RETRY, S_CAT_ALL, S_CAT_LANGS, S_CAT_DOWNLOAD, S_CAT_QUEUED,
     S_CAT_HAVE, S_CAT_READ, S_CAT_PROGRESS, S_CAT_FAILED, S_CAT_NO_ROOM, S_CAT_SOURCE, S_CAT_LICENSE,
     S_CAT_SEARCH, S_CAT_DONE, S_CAT_DOWNLOADS, S_CAT_NONE, S_CAT_CANCEL, S_CAT_BOOKS, S_CAT_POPULAR,
-    S_BACK_TO, S_ZOOM_HINT, S_BOOK_END, S_DOWNLOADING, S_COLUMNS, S_AUTO,
+    S_BACK_TO, S_ZOOM_HINT, S_BOOK_END, S_DOWNLOADING, S_COLUMNS, S_AUTO, S_CAT_CATEGORY, S_CAT_PD,
     S_COUNT
 };
 void i18n_init(void);

@@ -155,6 +155,8 @@ static const char *const kStr[S_COUNT][L_COUNT] = {
     [S_COLUMNS] = {"Pagine affiancate", "Pages side by side", "P\xC3\xA1ginas lado a lado", "Pages c\xC3\xB4te \xC3\xA0 c\xC3\xB4te",
                    "Doppelseiten"},
     [S_AUTO] = {"Auto", "Auto", "Auto", "Auto", "Auto"},
+    [S_CAT_CATEGORY] = {"Categoria", "Category", "Categor\xC3\xAD" "a", "Cat\xC3\xA9gorie", "Kategorie"},
+    [S_CAT_PD] = {"Pubblico dominio", "Public domain", "Dominio p\xC3\xBA" "blico", "Domaine public", "Gemeinfrei"},
 };
 
 void i18n_init(void) {

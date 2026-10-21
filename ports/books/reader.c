@@ -522,17 +522,13 @@ static void compose_turn(int dir, float prog) {
     int d = (int)(prog * (float)g_w + 0.5f);
     if (d < 0) d = 0;
     if (d > g_w) d = g_w;
+    // straight from the two surfaces to the canvas (gfx_turn_frame): no full-screen copy per frame
     if (g_set.anim == 1) {   // cover: the new page slides over the old one, with a shadow at its edge
-        if (dir > 0) {
-            gfx_compose(&A.cur, 0, &A.nxt, 0, g_w - d, 0, g_h);
-            gfx_shadow(g_w - d - 1, 28, -1, 0, g_h, 110);
-        } else {
-            gfx_compose(&A.nxt, g_w - d, &A.cur, d, d, 0, g_h);
-            gfx_shadow(d, 28, 1, 0, g_h, 110);
-        }
+        if (dir > 0) gfx_turn_frame(&A.cur, 0, &A.nxt, 0, g_w - d, g_w - d - 1, d > 4 ? 28 : 0, -1);
+        else gfx_turn_frame(&A.nxt, g_w - d, &A.cur, d, d, d, d > 4 ? 28 : 0, 1);
     } else {   // slide: both pages move
-        if (dir > 0) gfx_compose(&A.cur, d, &A.nxt, 0, g_w - d, 0, g_h);
-        else gfx_compose(&A.nxt, g_w - d, &A.cur, 0, d, 0, g_h);
+        if (dir > 0) gfx_turn_frame(&A.cur, d, &A.nxt, 0, g_w - d, 0, 0, 0);
+        else gfx_turn_frame(&A.nxt, g_w - d, &A.cur, 0, d, 0, 0, 0);
     }
 }
 
@@ -597,7 +593,7 @@ static void draw_chrome(void) {
     // top: back to the library, the title, the tools
     gfx_fill(0, 0, g_w, BAR_H, g_col[C_BAR]);
     gfx_fill(0, BAR_H - 1, g_w, 1, g_col[C_RULE]);
-    button(6, 6, IC_BACK, A_BACK, 0, 1, g_col[C_BAR_TEXT]);
+    button(6, 6, IC_BACK, A_LIBRARY, 0, 1, g_col[C_BAR_TEXT]);   // the arrow goes back to the library
     const int right = g_w - 6 * (BTN + 4) - 8;
     text_draw_fit(F_BOLD, 18, 70, 28, A.book->title, (int)strlen(A.book->title), right - 80, g_col[C_BAR_TEXT]);
     const char *au = A.book->author[0] ? A.book->author : tr(S_UNKNOWN_AUTHOR);
@@ -1067,6 +1063,7 @@ static int is_note_text(const char *s, int n) {   // "12", "[3]", "*", "†": a 
 }
 
 static void follow(int link) {
+    if (link < 0 || link >= A.doc.nlinks) return;
     const link_t *l = &A.doc.links[link];
     const char *href = A.doc.text + l->off;
     char anchor[NVHTML_HREF_MAX];
@@ -1162,6 +1159,7 @@ int reader_action(int act, int arg) {
         }
         return 1;
     case A_TOC_TAB: A.list_tab = arg; A.list_scroll = 0; return 1;
+    case A_LIBRARY: reader_close(); return 1;
     case A_TOC_ITEM:
         A.sheet = SH_NONE;
         if (arg < 0) go_to(-1 - arg, 0, 1);

@@ -230,6 +230,7 @@ static int line_push(lay_t *L, int space) {   // a new run at the pen; returns i
     L->sx16[i] = L->lx;
     L->gap[i] = (uint8_t)(space > 0);
     memset(&L->line[i], 0, sizeof L->line[i]);
+    L->line[i].link = -1;
     return i;
 }
 
@@ -329,7 +330,9 @@ static int word_breaks(const lay_t *L, const frag_t *f, int *out, uint8_t *needs
 static int hyphenate(lay_t *L, int space) {
     if (L->nword != 1 || L->word[0].image >= 0 || L->wrap_any) return 0;
     frag_t *f = &L->word[0];
-    if (f->len < 5) return 0;
+    // a "word" longer than this (a URL, a line of code, a run of dashes) is broken anywhere instead:
+    // that is linear, while trying break points over a huge one would cost its length squared
+    if (f->len < 5 || f->len > 120) return 0;
     int br[64];
     uint8_t needs[64];
     const int nb = word_breaks(L, f, br, needs, 64);
@@ -343,7 +346,7 @@ static int hyphenate(lay_t *L, int space) {
         line_flush(L);
         f->off += br[i];
         f->len -= br[i];
-        f->w = text_width16(f->font, f->px, L->d->text + f->off, f->len);
+        f->w -= w;   // widths add up (no kerning): what is left is the rest
         L->word_w = f->w;
         return 1;
     }

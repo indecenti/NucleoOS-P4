@@ -13,7 +13,7 @@
 
 enum { SCR_LIBRARY, SCR_READER, SCR_CATALOG };
 enum { SH_NONE, SH_CHROME, SH_TOC, SH_LOOK, SH_SEARCH, SH_NOTE, SH_VIEWER, SH_INFO, SH_SORT, SH_BOOK, SH_CAT_BOOK,
-       SH_CAT_LANGS, SH_CAT_DLS };
+       SH_CAT_LANGS, SH_CAT_DLS, SH_CAT_CATS };
 enum { R_ALL = 1, R_PAGE = 2 };
 
 // actions of the touch regions (and of Enter on a focused one)
@@ -22,7 +22,7 @@ enum {
     A_INFO, A_CLOSE, A_TOC_TAB, A_TOC_ITEM, A_MARK_ITEM, A_MARK_DEL, A_THEME, A_FONT, A_SIZE, A_SPACING, A_MARGIN,
     A_TOGGLE, A_ANIM, A_EINK_N, A_COLS, A_RESULT, A_OSK, A_FIELD, A_NOTE_GO, A_SLIDER, A_CHAP_PREV, A_CHAP_NEXT,
     A_BACK_JUMP, A_DELETE, A_LIB_SCROLL, A_CAT_CHIP, A_CAT_ROW, A_CAT_GET, A_CAT_READ, A_CAT_RETRY, A_CAT_LANGS,
-    A_CAT_LANG, A_CAT_DLS, A_CAT_CANCEL, A_CAT_SEARCH, A_PAGE_TAP, A_ORIENT,
+    A_CAT_LANG, A_CAT_DLS, A_CAT_CANCEL, A_CAT_SEARCH, A_PAGE_TAP, A_ORIENT, A_LIBRARY,
 };
 enum { TG_JUSTIFY, TG_HYPHEN, TG_INDENT, TG_TAP, TG_STATUS };
 
@@ -121,6 +121,7 @@ int lib_height(void);
 void lib_order(void);
 void lib_idle(void);
 void book_sheet_draw(void);
+void library_rescan(void);      // ~/books read again (a download finished): covers dropped, order made again
 
 // reader.c
 int reader_open(int lib_idx);
@@ -141,3 +142,6 @@ void cat_open(void);
 int cat_action(int act, int arg);
 void cat_frame(void);
 void cat_key(const kev_t *k);
+void cat_bg_poll(void);         // every frame: finished downloads join the library
+int32_t *cat_scroll(void);
+int cat_height(void);

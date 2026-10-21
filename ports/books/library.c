@@ -111,13 +111,31 @@ static void draw_hero(int y) {
     text_draw(F_BOLD, 18, bx + 28, by + 30, rd, (int)strlen(rd), g_col[C_ON_ACCENT]);
 }
 
+static void lib_bar(void) {   // the title, the catalog, sorting and the orientation: always there
+    bar_bg();
+    const char *t = tr(S_LIBRARY);
+    text_draw(F_BOLD, 26, MARGIN, 42, t, (int)strlen(t), g_col[C_BAR_TEXT]);
+    if (g_nlib) {
+        char n[32];
+        snprintf(n, sizeof n, "%d", g_nlib);
+        text_draw(F_SANS, 16, MARGIN + text_width(F_BOLD, 26, t, (int)strlen(t)) + 12, 41, n, (int)strlen(n), g_col[C_DIM]);
+    }
+    const char *cl = tr(S_CATALOG);
+    const int cw = text_width(F_BOLD, 16, cl, (int)strlen(cl)) + 64, cx = g_w - MARGIN - cw;
+    const int r = reg_add(cx, 12, cw, 40, A_CATALOG, 0);
+    gfx_rrect(cx, 12, cw, 40, 20, reg_state(r) == 2 ? g_col[C_PRESS] : g_col[C_ACCENT]);
+    if (reg_state(r) == 1) gfx_ring(cx - 3, 9, cw + 6, 46, 23, 2, g_col[C_FOCUS]);
+    icon_draw(IC_STORE, cx + 16, 20, g_col[C_ON_ACCENT]);
+    text_draw(F_BOLD, 16, cx + 48, 38, cl, (int)strlen(cl), g_col[C_ON_ACCENT]);
+    button(cx - BTN - 8, 6, IC_SORT, A_SORT, 0, g_nlib > 1, g_col[C_BAR_TEXT]);
+    button(cx - 2 * BTN - 12, 6, IC_ROTATE, A_ORIENT, 0, 1, g_col[C_BAR_TEXT]);
+}
+
 void lib_draw(void) {
     gfx_fill(0, 0, g_w, g_h, g_col[C_BG]);
     if (!g_nlib) {
-        bar_bg();
-        const char *t = tr(S_LIBRARY);
-        text_draw(F_BOLD, 26, MARGIN, 42, t, (int)strlen(t), g_col[C_BAR_TEXT]);
         draw_empty();
+        lib_bar();
         return;
     }
     const int top = BAR_H;
@@ -146,22 +164,7 @@ void lib_draw(void) {
         if (e->permille >= 0) progress_bar(x, cy + CELL_H + 70, CELL_W, e->permille);
     }
     gfx_noclip();
-    // the bar on top
-    bar_bg();
-    const char *t = tr(S_LIBRARY);
-    text_draw(F_BOLD, 26, MARGIN, 42, t, (int)strlen(t), g_col[C_BAR_TEXT]);
-    char n[32];
-    snprintf(n, sizeof n, "%d", g_nlib);
-    text_draw(F_SANS, 16, MARGIN + text_width(F_BOLD, 26, t, (int)strlen(t)) + 12, 41, n, (int)strlen(n), g_col[C_DIM]);
-    const char *cl = tr(S_CATALOG);
-    const int cw = text_width(F_BOLD, 16, cl, (int)strlen(cl)) + 64, cx = g_w - MARGIN - cw;
-    const int r = reg_add(cx, 12, cw, 40, A_CATALOG, 0);
-    gfx_rrect(cx, 12, cw, 40, 20, reg_state(r) == 2 ? g_col[C_PRESS] : g_col[C_ACCENT]);
-    if (reg_state(r) == 1) gfx_ring(cx - 3, 9, cw + 6, 46, 23, 2, g_col[C_FOCUS]);
-    icon_draw(IC_STORE, cx + 16, 20, g_col[C_ON_ACCENT]);
-    text_draw(F_BOLD, 16, cx + 48, 38, cl, (int)strlen(cl), g_col[C_ON_ACCENT]);
-    button(cx - BTN - 8, 6, IC_SORT, A_SORT, 0, 1, g_col[C_BAR_TEXT]);
-    button(cx - 2 * BTN - 12, 6, IC_ROTATE, A_ORIENT, 0, 1, g_col[C_BAR_TEXT]);
+    lib_bar();
     // the scroll position, thin, on the right
     const int h = lib_height(), view = g_h - BAR_H;
     if (h > view) {
@@ -226,6 +229,12 @@ void book_sheet_draw(void) {
     if (reg_state(r) == 1) gfx_ring(x + 25, y + h - 75, dw + 6, 54, 27, 2, g_col[C_FOCUS]);
     icon_draw(IC_TRASH, x + 44, y + h - 60, A.del_armed ? g_col[C_ON_ACCENT] : g_col[C_TEXT]);
     text_draw(F_SANS, 17, x + 78, y + h - 42, dl, (int)strlen(dl), A.del_armed ? g_col[C_ON_ACCENT] : g_col[C_TEXT]);
+}
+
+void library_rescan(void) {
+    for (int i = 0; i < LIB_MAX; i++) { free(A.covers[i]); A.covers[i] = NULL; A.cover_tried[i] = 0; }
+    lib_scan(NULL, NULL);
+    lib_order();
 }
 
 // ------------------------------------------------------------------------------- idle work

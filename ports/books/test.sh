@@ -14,6 +14,7 @@ G="$here/_out/gen"
 mkdir -p "$G" "$here/_out/shots"
 python "$(cygpath -m "$here/gen_icons.py")" "$(cygpath -m "$G/icons.h")" >/dev/null
 python "$(cygpath -m "$here/gen_fontdata.py")" "$(cygpath -m "$G/fontdata.c")" >/dev/null
+python "$(cygpath -m "$here/gen_hyph.py")" "$(cygpath -m "$G/hyphdata.c")" >/dev/null
 wsl_path() { local p; p="$(cygpath -m "$1")"; echo "/mnt/$(echo "${p:0:1}" | tr 'A-Z' 'a-z')${p:2}"; }
 scripts=()
 for s in "$@"; do scripts+=("$s"); done

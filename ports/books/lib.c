@@ -177,7 +177,7 @@ int lib_scan(int (*progress)(void *ctx, int done, int total), void *ctx) {
     mkdir(books_dir(), 0777);
     if (progress) progress(ctx, 0, 1);
     scan_dir(books_dir(), "", 0);
-    qsort(g_lib, (size_t)g_nlib, sizeof(entry_t), cmp_name);
+    if (g_nlib > 1) qsort(g_lib, (size_t)g_nlib, sizeof(entry_t), cmp_name);
     cache_load();
     positions_into_lib();
     return g_nlib;
@@ -236,12 +236,28 @@ uint16_t *lib_cover(int i, book_t *b) {
     if (!b) return NULL;
     uint8_t *data;
     size_t n;
-    if (book_cover(b, &data, &n)) return NULL;
-    const int keep = g_rmode;
-    g_rmode = RM_COLOR;   // the cache holds colour: the library converts when it draws
-    uint16_t *px = img_render565(data, n, COVER_W, COVER_H, rgb565(0x30, 0x34, 0x3A), 1);
-    g_rmode = keep;
-    free(data);
+    uint16_t *px = NULL;
+    if (!book_cover(b, &data, &n)) {
+        const int keep = g_rmode;
+        g_rmode = RM_COLOR;   // the cache holds colour: the library converts when it draws
+        px = img_render565(data, n, COVER_W, COVER_H, rgb565(0x30, 0x34, 0x3A), 1);
+        g_rmode = keep;
+        free(data);
+    }
+    if (!px) {   // not decodable here (a progressive JPEG too big to decode whole): the catalog's thumbnail
+        char stem[200], cp[300];
+        const char *base = strrchr(g_lib[i].file, '/');
+        snprintf(stem, sizeof stem, "%s", base ? base + 1 : g_lib[i].file);
+        char *dot = strrchr(stem, '.');
+        if (dot) *dot = 0;
+        snprintf(cp, sizeof cp, "%s/appdata/ccov/%s.565", bk_root(), stem);
+        FILE *cf = fopen(cp, "rb");
+        if (cf) {
+            px = (uint16_t *)malloc(bytes);
+            if (px && fread(px, 1, bytes, cf) != bytes) { free(px); px = NULL; }
+            fclose(cf);
+        }
+    }
     if (!px) return NULL;
     char d[300];
     path_of(d, sizeof d, "/appdata/covers");
