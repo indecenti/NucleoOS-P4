@@ -57,13 +57,14 @@ def cmd_pg_fetch(a):
 
 
 def load_candidates():
+    """Every .cache/candidates-*.json (one per source, Wikisource one per language)."""
     recs, excl = [], {}
-    for src, p in CAND.items():
+    for p in sorted(CACHE.glob("candidates-*.json")):
         js = load_json(p)
-        if not js:
+        if not js or "test" in p.name:
             continue
         for r in js["records"]:
-            if src == "pg":
+            if r["src"] == "pg":
                 r["_file"] = str(src_pg.epub_path(r["_pg"], r["_edition"]))
             recs.append(r)
         for lang, c in js.get("excluded", {}).items():

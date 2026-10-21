@@ -11,9 +11,10 @@ from . import describe, rights, src_mw
 from .common import CACHE, Http, load_json, save_json
 from .wikidata import Entities
 
-MIN_WIKITEXT = 30_000      # root + subpages; smaller works are single poems / letters / articles
+MIN_WIKITEXT = 30_000      # a root page this long is a work by itself
+MIN_SUBPAGES = 3
+MIN_TRANSCLUDED = 10
 SCAN = lambda lang: src_mw.MW_DIR / ("ws-%s-scan.json" % lang)
-CAND = CACHE / "candidates-ws.json"
 
 
 def scan(lang, log=print):
@@ -42,11 +43,42 @@ def scan(lang, log=print):
             save_json(SCAN(lang), state, compact=True)
             log("  sizes %d/%d" % (i, len(todo)))
     save_json(SCAN(lang), state, compact=True)
-    big = [t for t in roots if info.get(t, {}).get("length", 0) + (sizes.get(t) or [0, 0])[1] >= MIN_WIKITEXT]
-    log("ws %s: %d works >= %d bytes" % (lang, len(big), MIN_WIKITEXT))
+    # Wikitext size says little: proofread texts are <pages index=.../> calls of a few bytes. A work is a
+    # candidate when it has chapters (>= MIN_SUBPAGES subpages), a long page of its own, or transcludes
+    # >= MIN_TRANSCLUDED proofread pages. The real text length is checked after the EPUB is built.
+    if "transcluded" not in state:
+        state["transcluded"] = transcluded_pages(mw, site, [t for t in roots if (sizes.get(t) or [0, 0])[0] < MIN_SUBPAGES
+                                                             and info.get(t, {}).get("length", 0) < MIN_WIKITEXT], log)
+        save_json(SCAN(lang), state, compact=True)
+    tr = state["transcluded"]
+    big = [t for t in roots if (sizes.get(t) or [0, 0])[0] >= MIN_SUBPAGES or info.get(t, {}).get("length", 0) >= MIN_WIKITEXT
+           or tr.get(t, 0) >= MIN_TRANSCLUDED]
+    log("ws %s: %d candidate works" % (lang, len(big)))
     state["big"] = big
     save_json(SCAN(lang), state, compact=True)
     return state
+
+
+def transcluded_pages(mw, site, titles, log=print):
+    """{title: number of ProofreadPage pages it transcludes} (prop=templates in the Page namespace)."""
+    js = mw.api(site, action="query", meta="proofreadinfo", piprop="namespaces")
+    ns = js.get("query", {}).get("proofreadnamespaces", {}).get("page", {}).get("id")
+    out = {}
+    if ns is None:
+        return out
+    for i in range(0, len(titles), 50):
+        cont = {}
+        while True:
+            js = mw.api(site, action="query", prop="templates", tlnamespace=ns, tllimit="max",
+                        titles="|".join(titles[i:i + 50]), **cont)
+            for p in js.get("query", {}).get("pages", []):
+                out[p["title"]] = out.get(p["title"], 0) + len(p.get("templates", []))
+            if "continue" not in js:
+                break
+            cont = js["continue"]
+        if i % 1000 == 0:
+            log("  transcluded %d/%d" % (i, len(titles)))
+    return out
 
 
 def _author_from_categories(mw, site, conf, cats):
@@ -141,10 +173,10 @@ def hashlib_id(site, title):
 def build(langs, log=print):
     mw = src_mw.MW()
     http = Http(delay=0.2)
-    all_recs, all_excl = [], defaultdict(Counter)
-    prev = load_json(CAND, {}) or {}
+    total = 0
     for lang in langs:
         recs, excl = metadata(lang, log)
+        all_recs, all_excl = [], defaultdict(Counter)
         for k, v in excl.items():
             all_excl[k].update(v)
         for i, r in enumerate(recs):
@@ -163,10 +195,8 @@ def build(langs, log=print):
             all_recs.append(r)
             if i % 100 == 0:
                 log("  ws %s build %d/%d" % (lang, i, len(recs)))
-    # keep other languages' rows from earlier runs
-    keep = [r for r in prev.get("records", []) if r["lang"] not in langs]
-    for k, v in prev.get("excluded", {}).items():
-        if k not in langs:
-            all_excl[k].update(v)
-    save_json(CAND, {"records": keep + all_recs, "excluded": all_excl})
-    log("ws candidates: %d" % len(all_recs))
+        # one candidates file per language: several languages can build at the same time
+        save_json(CACHE / ("candidates-ws-%s.json" % lang), {"records": all_recs, "excluded": all_excl})
+        log("ws %s candidates: %d" % (lang, len(all_recs)))
+        total += len(all_recs)
+    log("ws candidates: %d" % total)
