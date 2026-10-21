@@ -42,7 +42,31 @@ def moov_of(mp4):
     raise SystemExit("no moov box")
 
 
+def jpeg():
+    """JPEG seeds for the ABI v19 decoder probe (unit/test_jpeg.cpp, fuzz_jpeg): a synthetic 96x64 picture
+    in every flavour the probe tells apart. Needs Pillow."""
+    import io
+    from PIL import Image, ImageDraw
+    im = Image.new("RGB", (96, 64))
+    d = ImageDraw.Draw(im)
+    for x in range(96):
+        d.line([(x, 0), (x, 63)], fill=(x * 2, 255 - x * 2, (x * 7) & 255))
+    d.ellipse([20, 10, 60, 50], fill=(250, 250, 250), outline=(0, 0, 0))
+    flavours = {
+        "base420": (im, dict(quality=80, subsampling=2)),
+        "base444": (im, dict(quality=80, subsampling=0)),
+        "gray": (im.convert("L"), dict(quality=80)),
+        "prog": (im, dict(quality=80, progressive=True)),
+        "cmyk": (im.convert("CMYK"), dict(quality=80)),
+    }
+    for name, (img, kw) in flavours.items():
+        b = io.BytesIO()
+        img.save(b, "JPEG", **kw)
+        write(f"jpeg/{name}.jpg", b.getvalue())
+
+
 def main():
+    jpeg()
     if not shutil.which("ffmpeg"):
         raise SystemExit("ffmpeg not found")
     tmp = tempfile.mkdtemp()

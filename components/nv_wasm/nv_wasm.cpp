@@ -2503,6 +2503,7 @@ bool nv_wasm_init(void) {
         NV_LOGW(TAG, "register_natives(nv) failed");
     nv_wasm_net_register();   // ABI v12: http_req / ws_* / mqtt_* / ha_* (nv_wasm_net.cpp)
     nv_wasm_dl_register();    // ABI v18: dl_* (nv_wasm_dl.cpp, the system downloader nv_dl)
+    nv_wasm_jpeg_register();  // ABI v19: jpeg_info / jpeg_decode (nv_wasm_jpeg.cpp, the hardware decoder)
 
 
     nv_mem_reclaimer_add("wasm-caches", wasm_reclaim, nullptr);

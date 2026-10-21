@@ -1,0 +1,20 @@
+{
+  "id": "jpgtest",
+  "name": "JPEG test",
+  "version": "1.0.0",
+  "abi": 19,
+  "ram_budget": 4194304,
+  "stack_kb": 32,
+  "timeout_ms": 120000,
+  "permissions": [
+    "gfx",
+    "log",
+    "fs"
+  ],
+  "canvas_w": 1024,
+  "canvas_h": 600,
+  "canvas_scale": "fit",
+  "category": "utilities",
+  "author": "NucleoOS",
+  "description": "Board check for the hardware JPEG decoder (ABI 19): decodes every .jpg in its data folder, times it, shows it."
+}

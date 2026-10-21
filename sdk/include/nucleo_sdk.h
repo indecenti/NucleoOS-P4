@@ -182,6 +182,28 @@ NV_IMPORT("nv", "gfx_bg_restore") void nv_gfx_bg_restore(int32_t x, int32_t y, i
 // starts at 0. Returns q, or -1 when refused (no "gfx", a 1:1 canvas, a WASM-4 cart, Vertice in use).
 NV_IMPORT("nv", "gfx_set_rotation") int32_t nv_gfx_set_rotation(int32_t quarter_turns);
 
+// ---- ABI v19 hardware JPEG decoder (manifest "abi": 19, permission "gfx") -------------------------
+// The P4 decodes baseline JPEG (8-bit, grey or YCbCr 4:4:4/4:2:2/4:2:0, up to 4096 a side) in hardware;
+// the OS then area-averages it to exactly w x h (any size 1..4096, aspect up to you) into `out`: RGB565
+// in the canvas byte order (ready for nv_gfx_blit), rows of w pixels, out 2-byte aligned and at least
+// w*h*2 bytes. Synchronous. Progressive, 12-bit, CMYK and other sampling are refused (-3): keep a
+// software decoder for those. nv_jpeg_info says (without decoding) whether the hardware takes it.
+enum {
+    NV_JPEG_E_PERM = -1, NV_JPEG_E_ARG = -2, NV_JPEG_E_UNSUP = -3, NV_JPEG_E_NOMEM = -4,
+    NV_JPEG_E_DECODE = -5,
+};
+NV_IMPORT("nv", "jpeg_info")   int32_t nv_jpeg_info_raw(const void *jpg, uint32_t len);   // (w<<16)|h or <0
+NV_IMPORT("nv", "jpeg_decode") int32_t nv_jpeg_decode(const void *jpg, uint32_t len, void *out, uint32_t out_cap,
+                                                      int32_t w, int32_t h);
+// Size of a JPEG the hardware decodes: 0 and *w, *h; else NV_JPEG_E_*.
+static inline int32_t nv_jpeg_info(const void *jpg, uint32_t len, int32_t *w, int32_t *h) {
+    const int32_t v = nv_jpeg_info_raw(jpg, len);
+    if (v < 0) return v;
+    if (w) *w = v >> 16;
+    if (h) *h = v & 0xFFFF;
+    return 0;
+}
+
 // ---- ABI v7 opening files (manifest "abi": 7, NO permission needed) -----------------------------
 // Declare the MIME types your app opens in the manifest ("opens": ["text/plain", "image/*"]); the OS
 // then offers it in Files > Open with (and as a default app). When the user opens a file with your

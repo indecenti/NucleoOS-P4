@@ -186,6 +186,17 @@
 //                                                       portrait mode. Touch, mouse and remote taps arrive
 //                                                       in upright canvas pixels. Every run starts at 0.
 //
+// ---- ABI v19: hardware JPEG decoder (permission "gfx") -------------------------------------------
+// The P4's decoder takes baseline JPEG (8-bit, grey or YCbCr 4:4:4 / 4:2:2 / 4:2:0, up to 4096 a side);
+// the result is area-averaged by the CPU to the exact size asked (nv_wasm_jpeg.cpp). Anything else is
+// refused with a code, so an app keeps its software decoder as the fallback. Errors (NV_JPEG_E_*):
+// -1 no "gfx", -2 bad argument, -3 not decodable by the hardware, -4 no memory, -5 damaged stream.
+//   nv.jpeg_info(jpg,len) -> i32             (*~)i      (w << 16) | h when the hardware decodes it, else <0
+//   nv.jpeg_decode(jpg,len,out,cap,w,h) -> i32 (*~*~ii)i  0: out holds the picture scaled to exactly w x h
+//                                                       (1..4096), RGB565 in the canvas byte order, rows of
+//                                                       w pixels; cap >= w*h*2, out 2-byte aligned.
+//                                                       Synchronous; all its buffers are freed on return.
+//
 // ---- Console programs (Terminal) ---------------------------------------------------------------
 // A WASI command whose manifest says "console": true is a terminal program: the Terminal runs it
 // with a command line (argv), a live stdin (what the user types, line by line) and no opcode cap
