@@ -30,7 +30,7 @@ NOTES_DEFAULT = ("Free books (public domain and free licences) for the NucleoOS 
 
 def gh(*args, check=True, log=print):
     """Run gh; a rate-limit answer waits for the time GitHub names and retries (any call, not only uploads)."""
-    for _ in range(8):
+    for _ in range(30):         # secondary-limit penalties can last an hour or more
         r = subprocess.run(["gh", *args], capture_output=True, text=True, encoding="utf-8")
         err = (r.stderr or r.stdout or "")
         if r.returncode != 0 and _limited(err):
@@ -57,9 +57,13 @@ def _wait_for_limit(text, log):
     _limit_hits[:] = [t for t in _limit_hits if now - t < 3 * 3600] + [now]
     wait = min(30, 10 * len(_limit_hits)) * 60
     if "API rate limit exceeded" in text:
-        r = subprocess.run(["gh", "api", "rate_limit", "--jq", ".resources.core.reset"], capture_output=True, text=True)
+        # the primary limit only if it is really used up; otherwise it is the secondary one (keep backing off)
+        r = subprocess.run(["gh", "api", "rate_limit", "--jq", ".resources.core | [.remaining, .reset] | @tsv"],
+                           capture_output=True, text=True)
         try:
-            wait = max(60, int(r.stdout.strip()) - now + 60)
+            remaining, reset = (int(x) for x in r.stdout.split())
+            if remaining < 50:
+                wait = max(60, reset - now + 60)
         except ValueError:
             pass
     log("  GitHub rate limit (%s): pausing %d min" % (datetime.datetime.now().strftime("%H:%M"), wait // 60))
