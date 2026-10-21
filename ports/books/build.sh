@@ -38,7 +38,15 @@ python "$here/gen_text.py" "$here/NOTICES.txt" "$G/notices.c" bk_notices
 log="$here/_out/build.log"
 # -O2; a reactor with a 256 KB C stack in linear memory (frame buffers, surfaces, the glyph cache,
 # the chapters and their layout come from malloc, capped by the manifest ram_budget).
-"$CLANG" --target=wasm32-wasip1 "--sysroot=$WASI/wasi-sysroot-34.0" -O2 -nodefaultlibs -Wall -Wno-unused-function \
+# BK_HW_ROTATE=1: portrait turned by the system (ABI 19, firmware 1.2.151+); the manifest for it is
+# _out/manifest.abi19.json (apps/libri keeps ABI 18 until that firmware is public)
+HW=()
+if [ "${BK_HW_ROTATE:-0}" = 1 ]; then
+    HW=(-DBK_HW_ROTATE)
+    python -c "import json,sys; m=json.load(open(sys.argv[1],encoding='utf-8')); m['abi']=19; json.dump(m,open(sys.argv[2],'w',encoding='utf-8'),ensure_ascii=False,indent=2)" \
+        "$out/manifest.json" "$here/_out/manifest.abi19.json"
+fi
+"$CLANG" --target=wasm32-wasip1 "--sysroot=$WASI/wasi-sysroot-34.0" -O2 -nodefaultlibs -Wall -Wno-unused-function "${HW[@]}" \
     -D_WASI_EMULATED_PROCESS_CLOCKS -DLODEPNG_NO_COMPILE_ENCODER -DLODEPNG_NO_COMPILE_DISK \
     -DLODEPNG_NO_COMPILE_ANCILLARY_CHUNKS -DLODEPNG_NO_COMPILE_CPP \
     -I"$here" -I"$G" -I"$Z/nvhtml" -I"$S" -I"$S/tjpgd/src" -I"$S/miniz-3.1.2" -I"$ports/miniz" -I"$root/sdk/include" \

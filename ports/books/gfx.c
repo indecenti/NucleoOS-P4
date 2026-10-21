@@ -24,6 +24,14 @@ static int s_pw, s_ph;        // the canvas as the system shows it (1024 x 600, 
 static uint16_t *s_rot;       // portrait: a band of rotated columns on its way to the canvas
 #define ROT_BAND 128           // screen rows per band (s_rot: 128 x 600 pixels, not a whole screen)
 static int s_dy0 = INT_MAX, s_dy1 = -1;   // dirty rows of the screen
+#ifdef BK_HW_ROTATE
+// ABI 19 (firmware 1.2.151 and later): the system turns the canvas itself with the PPA, touches come
+// upright; s_rot and the turning in software are not needed. Every run starts unturned.
+__attribute__((import_module("nv"), import_name("gfx_set_rotation"))) int32_t nv_gfx_set_rotation(int32_t quarter_turns);
+static int s_hw;   // portrait turned by the system
+#else
+#define s_hw 0
+#endif
 static int s_cx0, s_cy0, s_cx1, s_cy1;    // clip
 
 static int alloc_screen(void) {
@@ -35,8 +43,8 @@ static int alloc_screen(void) {
     g_h = g_portrait ? s_pw : s_ph;
     s_fb = (uint16_t *)calloc((size_t)g_w * g_h, 2);
     s_screen = (uint16_t **)malloc(sizeof *s_screen * g_h);
-    if (g_portrait) s_rot = (uint16_t *)malloc((size_t)ROT_BAND * s_ph * 2);
-    if (!s_fb || !s_screen || (g_portrait && !s_rot)) return -1;
+    if (g_portrait && !s_hw) s_rot = (uint16_t *)malloc((size_t)ROT_BAND * s_ph * 2);
+    if (!s_fb || !s_screen || (g_portrait && !s_hw && !s_rot)) return -1;
     for (int y = 0; y < g_h; y++) s_screen[y] = s_fb + (size_t)y * g_w;
     g_rows = s_screen;
     gfx_noclip();
@@ -60,12 +68,16 @@ int gfx_init(void) {
 int gfx_set_portrait(int on) {
     if (on == g_portrait) return 0;
     g_portrait = on;
+#ifdef BK_HW_ROTATE
+    s_hw = on && nv_gfx_set_rotation(1) == 1;   // refused (an older system): turned here instead
+    if (!on) nv_gfx_set_rotation(0);
+#endif
     return alloc_screen();
 }
 
 // A touch on the canvas -> the app's screen.
 void gfx_touch_map(int *x, int *y) {
-    if (!g_portrait) return;
+    if (!g_portrait || s_hw) return;
     const int px = *x, py = *y;
     *x = s_ph - 1 - py;
     *y = px;
@@ -117,7 +129,7 @@ int g_flush_ms, g_flush_rot_ms;   // the last flush, and its turning (for the ap
 void gfx_flush(void) {
     if (s_dy1 <= s_dy0) return;
     const int t0 = nv_millis();
-    if (!g_portrait) {   // runs of rows that follow each other in memory (gfx_scroll turns them)
+    if (!g_portrait || s_hw) {   // runs of rows that follow each other in memory (gfx_scroll turns them)
         for (int y = s_dy0; y < s_dy1;) {
             int e = y + 1;
             while (e < s_dy1 && s_screen[e] == s_screen[e - 1] + g_w) e++;
@@ -374,7 +386,7 @@ void gfx_turn_frame(const surf_t *left, int left_x, const surf_t *right, int rig
         for (int i = 0; i < sw; i++) sh_a[i] = (uint8_t)(110u * (unsigned)(sw - i) * (unsigned)(sw - i) / ((unsigned)sw * sw));
     }
 #define PIX(x, y) ((x) < split ? left->rows[y][(x) + left_x] : right->rows[y][(x) - split + right_x])
-    if (!g_portrait) {
+    if (!g_portrait || s_hw) {
         for (int y = 0; y < g_h; y++) {
             if (split > 0) nv_gfx_blit_raw(left->rows[y] + left_x, split * 2, 0, y, split, 1);
             if (split < g_w) nv_gfx_blit_raw(right->rows[y] + right_x, (g_w - split) * 2, split, y, g_w - split, 1);
