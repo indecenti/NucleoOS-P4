@@ -78,7 +78,7 @@ def embed(mw, site, chapters):
         ii = info.get(ft)
         ok_lic = None
         if ii:
-            md = ii.get("extmetadata", {})
+            md = ii.get("extmetadata") if isinstance(ii.get("extmetadata"), dict) else {}
             nonfree = (md.get("NonFree", {}).get("value") or "").lower() in ("true", "1")
             lic = md.get("LicenseShortName", {}).get("value") or md.get("License", {}).get("value") or ""
             ok_lic = None if nonfree else rights.normalise_license(lic)
@@ -112,7 +112,7 @@ def embed(mw, site, chapters):
         if path not in images:
             images[path] = data
             total += len(data)
-            md = ii.get("extmetadata", {})
+            md = ii.get("extmetadata") if isinstance(ii.get("extmetadata"), dict) else {}
             credits.append((ft, _strip(md.get("Artist", {}).get("value", "")),
                             md.get("LicenseShortName", {}).get("value", ok_lic), ii.get("descriptionurl", "")))
         for im in imgs:

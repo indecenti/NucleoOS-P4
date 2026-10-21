@@ -110,7 +110,11 @@ def build(log=print):
 
                 def remap(href):
                     return href if href.startswith("#") else None
-                chapters, images, credits = mwimages.embed(mw, site, chapters)
+                try:
+                    chapters, images, credits = mwimages.embed(mw, site, chapters)
+                except Exception as e:       # one odd file page must not stop the run: book without images
+                    log("wb images skipped %s %s: %s" % (lang, title, e))
+                    images, credits = {}, []
                 clean = [(ct, epubbuild.sanitize(b, remap, keep_images=True)) for ct, b in chapters]
                 total = sum(src_mw._text_len("<div>%s</div>" % b) for _, b in clean if b)
                 if total < 15000:
