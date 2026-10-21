@@ -205,6 +205,14 @@ def go_live(store, lang, rows, cache, log):
 
 
 def publish(store, langs, log=print):
+    # first make live what is already on GitHub in every language, then upload the rest in order
+    for lang in langs:
+        if (OUT / "books" / lang).exists():
+            rows = lang_rows(lang)
+            tags = sorted({_tag(r) for r in rows})
+            cache = {t: release_assets(t) or {} for t in tags}
+            if any(cache.values()):
+                go_live(store, lang, rows, cache, log)
     for lang in langs:
         if not (OUT / "books" / lang).exists():
             log("%s: not in the build, skipped" % lang)
