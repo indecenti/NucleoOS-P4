@@ -22,7 +22,7 @@
 #define LANG_MAX 64
 #define CATS_MAX 48
 #define HTTP_CAP (1u << 20)        // a shard is ~300 KB
-#define INDEX_STALE_S (24 * 3600)
+#define INDEX_STALE_S 3600   // small, and the catalog grows: shards follow the index fetched
 #define SHARD_STALE_S (3 * 24 * 3600)
 #define CCOV_KEPT 24
 #define TOOL_H 60
@@ -209,10 +209,48 @@ static const cdl_t *dl_of(const char *id) {
 
 // -------------------------------------------------------------------------------- parsing
 
+// A new index against the one known: a language whose count or shards changed was republished (the
+// catalog grows, its shards are rewritten), so its rows and cached shards go and come again; the
+// others keep theirs, renumbered.
+static void index_changed(const clang_t *old, int nold) {
+    int map[LANG_MAX];
+    for (int o = 0; o < nold; o++) {
+        map[o] = -1;
+        for (int i = 0; i < C.nlang; i++)
+            if (!strcmp(old[o].code, C.lang[i].code)) {
+                if (old[o].count == C.lang[i].count && old[o].shards == C.lang[i].shards) {
+                    map[o] = i;
+                    C.lang[i].loaded = old[o].loaded;
+                    C.lang[i].asked = old[o].asked;
+                }
+                break;
+            }
+        if (map[o] < 0)
+            for (int k = 1; k <= old[o].shards; k++) {
+                char name[40], p[400];
+                snprintf(name, sizeof name, "%s-%d.json", old[o].code, k);
+                cache_path(p, sizeof p, name);
+                remove(p);
+            }
+    }
+    int w = 0;
+    for (int r = 0; r < C.nrows; r++) {
+        const int o = C.rows[r].lang;
+        if (o >= nold || map[o] < 0) continue;
+        C.rows[w] = C.rows[r];
+        C.rows[w++].lang = (uint8_t)map[o];
+    }
+    C.nrows = w;
+    C.vis_dirty = 1;
+}
+
 static void parse_index(const char *s, size_t n) {
     js_t j;
     js_init(&j, s, n);
     if (!js_enter(&j, '{')) return;
+    clang_t old[LANG_MAX];
+    const int nold = C.nlang;
+    memcpy(old, C.lang, sizeof(clang_t) * (size_t)nold);
     C.nlang = C.ncat = 0;
     char key[32];
     while (js_next(&j, '}')) {
@@ -257,6 +295,7 @@ static void parse_index(const char *s, size_t n) {
             }
         } else js_skip(&j);
     }
+    index_changed(old, nold);
     C.ready = C.nlang > 0;
 }
 
