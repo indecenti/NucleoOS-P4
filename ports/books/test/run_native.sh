@@ -25,7 +25,7 @@ DEF=(-DNV_SIM -DBK_NATIVE -DLODEPNG_NO_COMPILE_ENCODER -DLODEPNG_NO_COMPILE_DISK
 newest=0
 for f in "${engine[@]}" "${app[@]}" "$B"/*.h "$T"/*.c; do t=$(stat -c %Y "$f"); [ "$t" -gt "$newest" ] && newest=$t; done
 san=(-fsanitize=address,undefined -fno-omit-frame-pointer)
-warn=(-Wall -Wextra -Wno-unused-parameter -Wno-sign-compare -Wno-missing-field-initializers)
+warn=(-Wall -Wextra -Werror=implicit-function-declaration -Wno-unused-parameter -Wno-sign-compare -Wno-missing-field-initializers)
 if [ ! -x "$CHECK" ] || [ "$(stat -c %Y "$CHECK")" -lt "$newest" ]; then
     echo "== build book_check"
     gcc -std=gnu11 -O1 -g "${san[@]}" "${warn[@]}" "${DEF[@]}" "${INC[@]}" -o "$CHECK" "$T"/book_check.c "$T"/book_check_stubs.c "${engine[@]}" -lm 2>&1 \

@@ -250,7 +250,7 @@ uint16_t *lib_cover(int i, book_t *b) {
         snprintf(stem, sizeof stem, "%s", base ? base + 1 : g_lib[i].file);
         char *dot = strrchr(stem, '.');
         if (dot) *dot = 0;
-        snprintf(cp, sizeof cp, "%s/appdata/ccov/%s.565", bk_root(), stem);
+        ccov_path(cp, sizeof cp, stem, 0);
         FILE *cf = fopen(cp, "rb");
         if (cf) {
             px = (uint16_t *)malloc(bytes);

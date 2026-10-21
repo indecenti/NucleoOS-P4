@@ -59,6 +59,8 @@ void gfx_target(surf_t *s);            // draw into s from now on; NULL = the sc
 void gfx_dirty(int y0, int y1);
 void gfx_flush(void);
 void gfx_clip(int x0, int y0, int x1, int y1);   // drawing limited to this rectangle (x1, y1 exclusive)
+void gfx_get_clip(int *x0, int *y0, int *x1, int *y1);
+void gfx_scroll(int y0, int y1, int dy);   // screen rows moved by turning their pointers; the new ones are to draw
 void gfx_noclip(void);
 void gfx_fill(int x, int y, int w, int h, uint16_t c);
 void gfx_blend_rect(int x, int y, int w, int h, uint16_t c, unsigned a);   // translucent fill
@@ -367,6 +369,7 @@ void lib_update(int i, const book_t *b);   // metadata after a successful open
 void lib_save(void);
 // Covers: COVER_W x COVER_H RGB565 in /appdata/covers; NULL when there is none (yet).
 #define COVER_W 132
+void ccov_path(char *out, size_t cap, const char *id, int mk);   // the catalog's cover of <id> on the card
 #define COVER_H 192
 uint16_t *lib_cover(int i, book_t *b);  // b may be NULL: only the cache
 int lib_remove(int i);                  // deletes the file and what the app kept about it

@@ -111,27 +111,46 @@ static void dirty_screen(int y0, int y1) {
     g_rows = keep;
 }
 
+int g_flush_ms, g_flush_rot_ms;   // the last flush, and its turning (for the apps' timings)
+
 void gfx_flush(void) {
     if (s_dy1 <= s_dy0) return;
-    if (!g_portrait) {
-        nv_gfx_blit_raw(s_screen[s_dy0], (int32_t)((size_t)(s_dy1 - s_dy0) * g_w * 2), 0, s_dy0, g_w, s_dy1 - s_dy0);
+    const int t0 = nv_millis();
+    if (!g_portrait) {   // runs of rows that follow each other in memory (gfx_scroll turns them)
+        for (int y = s_dy0; y < s_dy1;) {
+            int e = y + 1;
+            while (e < s_dy1 && s_screen[e] == s_screen[e - 1] + g_w) e++;
+            nv_gfx_blit_raw(s_screen[y], (int32_t)((size_t)(e - y) * g_w * 2), 0, y, g_w, e - y);
+            y = e;
+        }
     } else {
         // rows [y0, y1) of the app's screen are columns [y0, y1) of the canvas: canvas (cx, cy) shows
-        // the screen's (x = g_w - 1 - cy, y = cx). Written row by row of the canvas, in 32-row bands
-        // of the screen so the source stays in the cache.
-        const int y0 = s_dy0, n = s_dy1 - s_dy0;
+        // the screen's (x = g_w - 1 - cy, y = cx). Two rows by two columns at a time (32-bit loads and
+        // stores: the memory, not the arithmetic, is what costs), in 32-row bands of the screen so the
+        // source stays in the cache. The rows go in pairs: an even first one, an even count.
+        const int up = (s_dy1 + 1) & ~1, y0 = s_dy0 & ~1, y1 = up > g_h ? g_h : up, n = y1 - y0;
         for (int b0 = 0; b0 < n; b0 += 32) {
             const int b1 = b0 + 32 < n ? b0 + 32 : n;
-            for (int cy = 0; cy < s_ph; cy++) {
-                uint16_t *d = s_rot + (size_t)cy * n;
-                const int sx = g_w - 1 - cy;
-                for (int c = b0; c < b1; c++) d[c] = s_screen[y0 + c][sx];
+            for (int cy = 0; cy + 1 < s_ph; cy += 2) {
+                const int sx = g_w - 2 - cy;   // pixel sx + 1 goes to canvas row cy, pixel sx to row cy + 1
+                uint16_t *d0 = s_rot + (size_t)cy * n, *d1 = d0 + n;
+                for (int c = b0; c < b1; c += 2) {
+                    uint32_t a, b, o0, o1;
+                    memcpy(&a, s_screen[y0 + c] + sx, 4);
+                    memcpy(&b, s_screen[y0 + c + 1] + sx, 4);
+                    o0 = (a >> 16) | (b & 0xFFFF0000u);
+                    o1 = (a & 0xFFFFu) | (b << 16);
+                    memcpy(d0 + c, &o0, 4);
+                    memcpy(d1 + c, &o1, 4);
+                }
             }
         }
+        g_flush_rot_ms = nv_millis() - t0;
         nv_gfx_blit_raw(s_rot, (int32_t)((size_t)n * s_ph * 2), y0, 0, n, s_ph);
     }
     s_dy0 = INT_MAX;
     s_dy1 = -1;
+    g_flush_ms = nv_millis() - t0;
 }
 
 void gfx_clip(int x0, int y0, int x1, int y1) {
@@ -142,6 +161,37 @@ void gfx_clip(int x0, int y0, int x1, int y1) {
 }
 
 void gfx_noclip(void) { gfx_clip(0, 0, g_w, g_h); }
+
+void gfx_get_clip(int *x0, int *y0, int *x1, int *y1) {
+    *x0 = s_cx0;
+    *y0 = s_cy0;
+    *x1 = s_cx1;
+    *y1 = s_cy1;
+}
+
+// Rows [y0, y1) of the screen moved up by dy (down when negative) without copying a pixel: their
+// pointers turn. The rows that come in at the edge hold old pixels for the caller to draw; the band
+// is shown again in full.
+void gfx_scroll(int y0, int y1, int dy) {
+    if (g_rows != s_screen) return;
+    if (y0 < 0) y0 = 0;
+    if (y1 > g_h) y1 = g_h;
+    const int n = y1 - y0, d = dy < 0 ? -dy : dy;
+    if (!dy || n <= 0 || d >= n) return;
+    uint16_t **keep = (uint16_t **)malloc(sizeof(uint16_t *) * (size_t)d);
+    if (!keep) return;
+    if (dy > 0) {
+        memcpy(keep, s_screen + y0, sizeof(uint16_t *) * (size_t)d);
+        memmove(s_screen + y0, s_screen + y0 + d, sizeof(uint16_t *) * (size_t)(n - d));
+        memcpy(s_screen + y1 - d, keep, sizeof(uint16_t *) * (size_t)d);
+    } else {
+        memcpy(keep, s_screen + y1 - d, sizeof(uint16_t *) * (size_t)d);
+        memmove(s_screen + y0 + d, s_screen + y0, sizeof(uint16_t *) * (size_t)(n - d));
+        memcpy(s_screen + y0, keep, sizeof(uint16_t *) * (size_t)d);
+    }
+    free(keep);
+    gfx_dirty(y0, y1);
+}
 
 static int clip_rect(int *x, int *y, int *w, int *h) {
     int x0 = *x, y0 = *y, x1 = *x + *w, y1 = *y + *h;
@@ -330,10 +380,15 @@ void gfx_turn_frame(const surf_t *left, int left_x, const surf_t *right, int rig
         }
         return;
     }
-    // canvas (cx, cy) shows the screen's (x = g_w - 1 - cy, y = cx): a canvas row is a screen column
-    for (int cy = 0; cy < s_ph; cy++) {
+    // canvas (cx, cy) shows the screen's (x = g_w - 1 - cy, y = cx): a canvas row is a screen column.
+    // Each column's source worked out once, then the copy in bands of 64 screen rows so what is read
+    // stays in the cache (a whole column at a time misses it on every pixel).
+    static uint16_t *const *col_rows[1024];
+    static int16_t col_x[1024];
+    static uint8_t col_a[1024];
+    const int ncol = s_ph < 1024 ? s_ph : 1024;
+    for (int cy = 0; cy < ncol; cy++) {
         const int x = g_w - 1 - cy;
-        uint16_t *d = s_rot + (size_t)cy * s_pw;
         const surf_t *src = x < split ? left : right;
         const int sx = x < split ? x + left_x : x - split + right_x;
         unsigned a = 0;
@@ -341,9 +396,20 @@ void gfx_turn_frame(const surf_t *left, int left_x, const surf_t *right, int rig
             const int i = shadow_dir > 0 ? x - shadow_x : shadow_x - x;
             a = i >= 0 && i < sw ? sh_a[i] : 0;
         }
-        if (sx < 0 || sx >= g_w) { memset(d, 0, (size_t)s_pw * 2); continue; }
-        for (int cx = 0; cx < s_pw; cx++) d[cx] = src->rows[cx][sx];
-        if (a) for (int cx = 0; cx < s_pw; cx++) d[cx] = blend565(d[cx], 0, a);
+        col_rows[cy] = sx < 0 || sx >= g_w ? NULL : src->rows;
+        col_x[cy] = (int16_t)sx;
+        col_a[cy] = (uint8_t)a;
+    }
+    for (int b0 = 0; b0 < s_pw; b0 += 64) {
+        const int b1 = b0 + 64 < s_pw ? b0 + 64 : s_pw;
+        for (int cy = 0; cy < ncol; cy++) {
+            uint16_t *d = s_rot + (size_t)cy * s_pw;
+            uint16_t *const *rows = col_rows[cy];
+            if (!rows) { memset(d + b0, 0, (size_t)(b1 - b0) * 2); continue; }
+            const int sx = col_x[cy];
+            for (int cx = b0; cx < b1; cx++) d[cx] = rows[cx][sx];
+            if (col_a[cy]) for (int cx = b0; cx < b1; cx++) d[cx] = blend565(d[cx], 0, col_a[cy]);
+        }
     }
     nv_gfx_blit_raw(s_rot, (int32_t)((size_t)s_pw * s_ph * 2), 0, 0, s_pw, s_ph);
 #undef PIX

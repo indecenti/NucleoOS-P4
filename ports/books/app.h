@@ -15,7 +15,7 @@
 enum { SCR_LIBRARY, SCR_READER, SCR_CATALOG };
 enum { SH_NONE, SH_CHROME, SH_TOC, SH_LOOK, SH_SEARCH, SH_NOTE, SH_VIEWER, SH_INFO, SH_SORT, SH_BOOK, SH_CAT_BOOK,
        SH_CAT_LANGS, SH_CAT_DLS, SH_CAT_CATS, SH_ABOUT };
-enum { R_ALL = 1, R_PAGE = 2 };
+enum { R_ALL = 1, R_PAGE = 2, R_SCROLL = 4 };   // R_SCROLL: only the catalog moved (it draws the band that came in)
 
 // actions of the touch regions (and of Enter on a focused one)
 enum {
@@ -81,6 +81,7 @@ typedef struct {
     uint8_t *cover_tried;
     // input
     int touch_down, tx0, ty0, tx, ty, t0, moved, long_fired, drag_turn, drag_dir;
+    int frame_ms;            // the last frame took (ms): gestures allow for a slow screen
     int32_t drag_scroll0;
     int vx_t[6], vx_x[6], vy_y[6], nvel;
     float vel;

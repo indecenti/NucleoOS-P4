@@ -14,6 +14,7 @@
 #include <string.h>
 #include <strings.h>
 #include <sys/stat.h>
+#include <time.h>
 
 #include "json.h"
 #include "nucleo_sdk.h"
@@ -22,9 +23,10 @@
 #define LANG_MAX 64
 #define CATS_MAX 48
 #define HTTP_CAP (1u << 20)        // a shard is ~300 KB
+#define COVER_CAP (256u << 10)     // a cover is ~10 KB
 #define INDEX_STALE_S 3600   // small, and the catalog grows: shards follow the index fetched
 #define SHARD_STALE_S (3 * 24 * 3600)
-#define CCOV_KEPT 24
+#define CCOV_KEPT 40   // covers in memory (50 KB each when ready; the ones to fetch cost nothing)
 #define TOOL_H 60
 #define MARGIN 28
 #define CELL_W 132
@@ -48,7 +50,9 @@ typedef struct {             // a book in full (its sheet, a download)
 
 typedef struct { char code[8]; int count, shards; double rev; uint64_t loaded, asked; } clang_t;   // rev: of its shards
 typedef struct { char id[24], name[48]; int count; } ccat_t;
-typedef struct { char id[48]; uint16_t *px; uint32_t used; int state; } ccov_t;   // state: 1 ready, -1 none
+// A card's picture in memory: the cover (state 1), or while there is none (0 to fetch, -1 none) the
+// title cover drawn once (typo: its background and render mode, to draw it again when they change).
+typedef struct { char id[48]; uint16_t *px; uint32_t used; int state; uint8_t typo, mode; uint16_t bg; } ccov_t;
 
 enum { NET_IDLE, NET_INDEX, NET_SHARD, NET_COVER };
 typedef struct { int kind, h, lang, shard; char id[48]; char *buf; size_t n; int t0; } net_t;
@@ -59,6 +63,8 @@ enum { DL_QUEUED, DL_PAUSED, DL_DONE, DL_FAILED, DL_RUNNING };
 static struct {
     int ready;               // the index is known
     int failed;              // the last fetch of the index failed (offline)
+    int shard_fails;         // shards that failed in a row
+    int retry_at;            // no shard asked before this (ms)
     clang_t lang[LANG_MAX];
     int nlang;
     ccat_t cat[CATS_MAX];
@@ -85,6 +91,9 @@ static struct {
 } C;
 
 // ---------------------------------------------------------------------------------- helpers
+
+static int32_t s_drawn_scroll;
+static int s_drawn_ok;   // the screen holds the grid as at s_drawn_scroll (cat_draw draws only what came in)
 
 static const char *base_url(void) {
     static char u[200];
@@ -348,6 +357,7 @@ static void parse_book(js_t *j, crow_t *r, cbook_t *b) {
 }
 
 static void parse_shard(const char *s, size_t n, int li, int shard) {
+    const int t0 = nv_millis(), before = C.nrows;
     js_t j;
     js_init(&j, s, n);
     if (!js_enter(&j, '{')) return;
@@ -374,6 +384,8 @@ static void parse_shard(const char *s, size_t n, int li, int shard) {
     }
     C.lang[li].loaded |= 1ull << (shard - 1);
     C.vis_dirty = 1;
+    perf("catalog: %s/%d: %d books read in %d ms (%u KB)", C.lang[li].code, shard, C.nrows - before, nv_millis() - t0,
+         (unsigned)(n / 1024));
 }
 
 // The whole record of a book, from its cached shard.
@@ -408,9 +420,12 @@ static int book_detail(const crow_t *r, cbook_t *b) {
 
 // --------------------------------------------------------------------------------- network
 
+static size_t net_cap(int kind) { return kind == NET_COVER ? COVER_CAP : HTTP_CAP; }
+
 static void net_start(int kind, const char *url, int li, int shard, const char *id) {
-    char spec[600];
-    snprintf(spec, sizeof spec, "{\"url\":\"%s\",\"method\":\"GET\",\"timeout_ms\":20000}", url);
+    char spec[600];   // the firmware answers up to "max" bytes (64 KB when it is not said)
+    snprintf(spec, sizeof spec, "{\"url\":\"%s\",\"method\":\"GET\",\"timeout\":20000,\"max\":%u}", url,
+             (unsigned)net_cap(kind));
     const int h = nv_http_req(spec, NULL, 0);
     if (h < 0) { if (kind == NET_INDEX) C.failed = 1; return; }
     memset(&C.net, 0, sizeof C.net);
@@ -423,6 +438,7 @@ static void net_start(int kind, const char *url, int li, int shard, const char *
 }
 
 static void cover_store(const char *id, uint16_t *px, int state);
+static void have_add(const char *id);
 
 static void net_done(int ok) {
     net_t *n = &C.net;
@@ -435,6 +451,12 @@ static void net_done(int ok) {
         if (ok) {
             cache_write(name, n->buf, n->n);
             if (!(C.lang[n->lang].loaded & (1ull << (n->shard - 1)))) parse_shard(n->buf, n->n, n->lang, n->shard);
+            C.shard_fails = 0;
+        } else if (!(C.lang[n->lang].loaded & (1ull << (n->shard - 1)))) {   // asked again, 2 s, 4 s ... 30 s later
+            C.lang[n->lang].asked &= ~(1ull << (n->shard - 1));
+            const int wait = C.shard_fails < 4 ? 2000 << C.shard_fails : 30000;
+            C.shard_fails++;
+            C.retry_at = nv_millis() + wait;
         }
     } else if (n->kind == NET_COVER) {
         uint16_t *px = NULL;
@@ -444,12 +466,14 @@ static void net_done(int ok) {
             px = img_render565((const uint8_t *)n->buf, n->n, COVER_W, COVER_H, rgb565(0x30, 0x34, 0x3A), 1);
             g_rmode = keep;
             if (px) {   // kept on the card: a cover is fetched once
-                char p[300], d[300];
-                snprintf(d, sizeof d, "%s/appdata/ccov", bk_root());
-                mkdir(d, 0777);
-                snprintf(p, sizeof p, "%s/%s.565", d, n->id);
+                char p[300];
+                ccov_path(p, sizeof p, n->id, 1);
                 FILE *f = fopen(p, "wb");
-                if (f) { fwrite(px, 2, (size_t)COVER_W * COVER_H, f); fclose(f); }
+                if (f) {
+                    const int ok2 = fwrite(px, 2, (size_t)COVER_W * COVER_H, f) == (size_t)COVER_W * COVER_H;
+                    fclose(f);
+                    if (ok2) have_add(n->id);
+                }
             }
         }
         cover_store(n->id, px, px ? 1 : -1);
@@ -467,20 +491,80 @@ static void net_poll(void) {
     const int st = nv_http_state(n->h);
     if (st == 0) return;
     if (st < 0 || nv_http_status(n->h) != 200) { nv_http_close(n->h); net_done(0); return; }
-    if (!n->buf) n->buf = (char *)malloc(HTTP_CAP + 1);
+    const size_t cap = net_cap(n->kind);
+    if (!n->buf) n->buf = (char *)malloc(cap + 1);
     if (!n->buf) { nv_http_close(n->h); net_done(0); return; }
     for (;;) {
-        const int r = nv_http_read(n->h, n->buf + n->n, (uint32_t)(HTTP_CAP - n->n));
+        const int r = nv_http_read(n->h, n->buf + n->n, (uint32_t)(cap + 1 - n->n));
         if (r <= 0) break;
         n->n += (size_t)r;
-        if (n->n >= HTTP_CAP) break;
+        if (n->n > cap) break;
     }
-    n->buf[n->n] = 0;
+    n->buf[n->n < cap ? n->n : cap] = 0;
     nv_http_close(n->h);
-    net_done(n->n > 0 && n->n < HTTP_CAP);
+    net_done(n->n > 0 && n->n <= cap);
 }
 
 // ---------------------------------------------------------------------------------- covers
+
+static uint32_t id_hash(const char *id) {
+    uint32_t h = 2166136261u;
+    for (const char *p = id; *p; p++) h = (h ^ (uint8_t)*p) * 16777619u;
+    return h;
+}
+
+static struct { uint32_t *h; int n, cap, loaded; } s_have;
+
+static int have_at(uint32_t h) {   // where h is, or goes
+    int lo = 0, hi = s_have.n;
+    while (lo < hi) {
+        const int m = (lo + hi) / 2;
+        if (s_have.h[m] < h) lo = m + 1;
+        else hi = m;
+    }
+    return lo;
+}
+
+static int have_has(uint32_t h) { const int i = have_at(h); return i < s_have.n && s_have.h[i] == h; }
+
+static void have_put(uint32_t h) {
+    const int i = have_at(h);
+    if (i < s_have.n && s_have.h[i] == h) return;
+    if (s_have.n == s_have.cap) {
+        const int cap = s_have.cap ? s_have.cap * 2 : 1024;
+        uint32_t *nh = (uint32_t *)realloc(s_have.h, sizeof(uint32_t) * (size_t)cap);
+        if (!nh) return;
+        s_have.h = nh;
+        s_have.cap = cap;
+    }
+    memmove(s_have.h + i + 1, s_have.h + i, sizeof(uint32_t) * (size_t)(s_have.n - i));
+    s_have.h[i] = h;
+    s_have.n++;
+}
+
+static void have_load(void) {
+    if (s_have.loaded) return;
+    s_have.loaded = 1;
+    char p[300];
+    snprintf(p, sizeof p, "%s/appdata/ccov/have.u32", bk_root());
+    FILE *f = fopen(p, "rb");
+    if (!f) return;
+    uint32_t b[256];
+    size_t k;
+    while ((k = fread(b, 4, 256, f)) > 0)
+        for (size_t i = 0; i < k; i++) have_put(b[i]);
+    fclose(f);
+}
+
+static void have_add(const char *id) {   // a cover now on the card
+    const uint32_t h = id_hash(id);
+    if (have_has(h)) return;
+    have_put(h);
+    char p[300];
+    snprintf(p, sizeof p, "%s/appdata/ccov/have.u32", bk_root());
+    FILE *f = fopen(p, "ab");
+    if (f) { fwrite(&h, 4, 1, f); fclose(f); }
+}
 
 static ccov_t *cover_find(const char *id) {
     for (int i = 0; i < CCOV_KEPT; i++) if (C.cov[i].id[0] && !strcmp(C.cov[i].id, id)) { C.cov[i].used = ++C.clock; return &C.cov[i]; }
@@ -500,29 +584,56 @@ static void cover_store(const char *id, uint16_t *px, int state) {
         memset(e, 0, sizeof *e);
         snprintf(e->id, sizeof e->id, "%s", id);
     }
-    if (e->px && e->px != px) free(e->px);
-    e->px = px;
+    if (px || state == 1) {
+        if (e->px && e->px != px) free(e->px);
+        e->px = px;
+        e->typo = 0;
+    }
     e->state = state;
     e->used = ++C.clock;
 }
 
-// The cover of a book with "cv": the card's copy, else fetched (one at a time). NULL until then.
+void ccov_path(char *out, size_t cap, const char *id, int mk) {
+    const uint32_t h = id_hash(id);
+    char d[300];
+    snprintf(d, sizeof d, "%s/appdata/ccov/%02x", bk_root(), (unsigned)(h & 31));
+    if (mk) {
+        char top[300];
+        snprintf(top, sizeof top, "%s/appdata/ccov", bk_root());
+        mkdir(top, 0777);
+        mkdir(d, 0777);
+    }
+    snprintf(out, cap, "%s/%s.565", d, id);
+}
+
+static uint16_t *cover_load(const char *id) {   // the card's copy, or NULL
+    if (!have_has(id_hash(id))) return NULL;
+    char p[300];
+    ccov_path(p, sizeof p, id, 0);
+    FILE *f = fopen(p, "rb");
+    if (!f) return NULL;
+    uint16_t *px = (uint16_t *)malloc((size_t)COVER_W * COVER_H * 2);
+    const int ok = px && fread(px, 2, (size_t)COVER_W * COVER_H, f) == (size_t)COVER_W * COVER_H;
+    fclose(f);
+    if (ok) return px;
+    free(px);
+    return NULL;
+}
+
+// The cover of a book with "cv": the card's copy (looked for once), else fetched, one at a time. NULL
+// until then.
 static const uint16_t *cover_of(const crow_t *r) {
     const char *id = P(r->id);
     ccov_t *e = cover_find(id);
-    if (e) return e->state == 1 ? e->px : NULL;
-    if (!r->cv) return NULL;
-    char p[300];
-    snprintf(p, sizeof p, "%s/appdata/ccov/%s.565", bk_root(), id);
-    FILE *f = fopen(p, "rb");
-    if (f) {
-        uint16_t *px = (uint16_t *)malloc((size_t)COVER_W * COVER_H * 2);
-        const int ok = px && fread(px, 2, (size_t)COVER_W * COVER_H, f) == (size_t)COVER_W * COVER_H;
-        fclose(f);
-        if (ok) { cover_store(id, px, 1); return px; }
-        free(px);
+    if (!e) {
+        if (!r->cv) return NULL;
+        uint16_t *px = cover_load(id);
+        cover_store(id, px, px ? 1 : 0);
+        if (px) return px;
+        e = cover_find(id);
     }
-    if (C.net.kind == NET_IDLE && A.now - A.idle_since > 150) {
+    if (e->state == 1) return e->px;
+    if (e->state == 0 && C.net.kind == NET_IDLE && A.now - A.idle_since > 150) {
         char url[300];
         snprintf(url, sizeof url, "%scovers/%s.jpg", base_url(), id);
         net_start(NET_COVER, url, 0, 0, id);
@@ -530,7 +641,73 @@ static const uint16_t *cover_of(const crow_t *r) {
     return NULL;
 }
 
+static int grid_top(void);
+
+static void draw_tile565(const uint16_t *px, int x, int y) {
+    int cx0, cy0, cx1, cy1;
+    gfx_get_clip(&cx0, &cy0, &cx1, &cy1);
+    const int x0 = x < cx0 ? cx0 : x, x1 = x + COVER_W > cx1 ? cx1 : x + COVER_W;
+    if (x1 <= x0) return;
+    for (int j = 0; j < COVER_H; j++) {
+        const int sy = y + j;
+        if (sy < cy0 || sy >= cy1) continue;
+        memcpy(g_rows[sy] + x0, px + (size_t)j * COVER_W + (x0 - x), (size_t)(x1 - x0) * 2);
+    }
+    gfx_dirty(y, y + COVER_H);
+}
+
+static uint16_t *typo_tile(const crow_t *r) {   // the title cover, drawn off the screen
+    uint16_t *px = (uint16_t *)malloc((size_t)COVER_W * COVER_H * 2);
+    uint16_t **rows = (uint16_t **)malloc(sizeof(uint16_t *) * COVER_H);
+    if (!px || !rows) { free(px); free(rows); return NULL; }
+    for (int j = 0; j < COVER_H; j++) rows[j] = px + (size_t)j * COVER_W;
+    for (int i = 0; i < COVER_W * COVER_H; i++) px[i] = g_col[C_BG];
+    surf_t s = {px, rows};
+    gfx_target(&s);
+    gfx_clip(0, 0, COVER_W, COVER_H);
+    draw_typo_cover(P(r->t), P(r->a), (uint32_t)(r->id * 2654435761u), 0, 0, COVER_W, COVER_H);
+    gfx_target(NULL);
+    free(rows);
+    return px;
+}
+
+// What a card shows: its cover, else the title cover (kept). NULL: draw the title cover directly.
+static const uint16_t *card_art(const crow_t *r, int *raw) {
+    *raw = 0;
+    const uint16_t *c = cover_of(r);
+    if (c) return c;
+    const char *id = P(r->id);
+    ccov_t *e = cover_find(id);
+    if (!e) {
+        cover_store(id, NULL, -1);
+        if (!(e = cover_find(id))) return NULL;
+    }
+    if (e->px && e->typo && (e->bg != g_col[C_BG] || e->mode != g_rmode)) { free(e->px); e->px = NULL; }
+    if (!e->px) {
+        e->px = typo_tile(r);
+        e->typo = 1;
+        e->bg = g_col[C_BG];
+        e->mode = (uint8_t)g_rmode;
+    }
+    *raw = 1;   // drawn already in the render mode
+    return e->px;
+}
+
 static void draw_cover565(const uint16_t *px, int x, int y, int w, int h) {
+    if (w == COVER_W && h == COVER_H && g_rmode == RM_COLOR) {   // the usual case: rows copied, inside the clip
+        int cx0, cy0, cx1, cy1;
+        gfx_get_clip(&cx0, &cy0, &cx1, &cy1);
+        const int x0 = x < cx0 ? cx0 : x, x1 = x + w > cx1 ? cx1 : x + w;
+        if (x1 > x0)
+            for (int j = 0; j < h; j++) {
+                const int sy = y + j;
+                if (sy < cy0 || sy >= cy1) continue;
+                memcpy(g_rows[sy] + x0, px + (size_t)j * COVER_W + (x0 - x), (size_t)(x1 - x0) * 2);
+            }
+        gfx_dirty(y, y + h);
+        gfx_ring(x, y, w, h, 2, 1, g_col[C_RULE]);
+        return;
+    }
     for (int j = 0; j < h; j++) {
         const int sy = y + j;
         if (sy < 0 || sy >= g_h) continue;
@@ -614,7 +791,7 @@ static int grid_height(void) { return (C.nvis + cols() - 1) / cols() * ROW_H + 6
 
 // Shards are read when the end of the list comes near, or all of them for a search or a category.
 static void want_more(void) {
-    if (C.net.kind != NET_IDLE || !C.ready) return;
+    if (C.net.kind != NET_IDLE || !C.ready || nv_millis() - C.retry_at < 0) return;
     const int need = A.q[0] || C.filter_cat >= 0 || C.scroll + (g_h - grid_top()) * 2 > grid_height() || C.nvis < 24;
     if (!need) return;
     int li, k;
@@ -767,6 +944,8 @@ void cat_open(void) {
     A.osk_on = 0;
     C.scroll = 0;
     C.filter_cat = -1;
+    have_load();
+    s_drawn_ok = 0;
     if (!C.ready) {   // the card's index first, the network's when it is old or missing
         size_t n = 0;
         const int64_t age = cache_age("index-v1.json");
@@ -802,15 +981,32 @@ static void draw_badge(int x, int y, const char *s, uint16_t bg, uint16_t fg) {
     text_draw(F_BOLD, 12, x + 7, y + 16, s, (int)strlen(s), fg);
 }
 
+static uint64_t us_now(void) {
+    struct timespec ts;
+    clock_gettime(CLOCK_MONOTONIC, &ts);
+    return (uint64_t)ts.tv_sec * 1000000u + (uint64_t)ts.tv_nsec / 1000u;
+}
+
+static int s_t_art, s_t_text;   // the last frame's time on pictures and on words (us)
+
+static int card_reg(int i, int x, int y) { return reg_add(x - 8, y - 8, CELL_W + 16, ROW_H - 8, A_CAT_ROW, i); }
+
 static void draw_card(int i, int x, int y) {
     const crow_t *r = &C.rows[i];
-    const int reg = reg_add(x - 8, y - 8, CELL_W + 16, ROW_H - 8, A_CAT_ROW, i);
+    int cx0, cy0, cx1, cy1;
+    gfx_get_clip(&cx0, &cy0, &cx1, &cy1);
+    const int reg = card_reg(i, x, y);
     const int st = reg_state(reg);
     if (st == 2) gfx_rrect(x - 8, y - 8, CELL_W + 16, ROW_H - 12, 14, g_col[C_PRESS]);
     if (st == 1) gfx_ring(x - 8, y - 8, CELL_W + 16, ROW_H - 12, 14, 2, g_col[C_FOCUS]);
-    const uint16_t *px = cover_of(r);
-    if (px) draw_cover565(px, x, y, CELL_W, CELL_H);
+    int raw;
+    const uint64_t ta = us_now();
+    const uint16_t *px = card_art(r, &raw);
+    if (px && raw) draw_tile565(px, x, y);
+    else if (px) draw_cover565(px, x, y, CELL_W, CELL_H);
     else draw_typo_cover(P(r->t), P(r->a), (uint32_t)(r->id * 2654435761u), x, y, CELL_W, CELL_H);
+    gfx_clip(cx0, cy0, cx1, cy1);   // drawing off the screen left the clip
+    s_t_art += (int)(us_now() - ta);
     const char *id = P(r->id);
     const cdl_t *d = dl_of(id);
     if (have_book(id) >= 0) draw_badge(x + 6, y + CELL_H - 30, tr(S_CAT_HAVE), g_col[C_ACCENT], g_col[C_ON_ACCENT]);
@@ -819,8 +1015,10 @@ static void draw_card(int i, int x, int y) {
         gfx_rrect(x + 6, y + CELL_H - 14, CELL_W - 12, 6, 3, g_col[C_BG]);
         gfx_rrect(x + 6, y + CELL_H - 14, (CELL_W - 12) * pm / 1000, 6, 3, d->state == DL_FAILED ? g_col[C_MARK] : g_col[C_ACCENT]);
     }
+    const uint64_t tt = us_now();
     wrap_text(F_BOLD, 15, x, y + CELL_H + 22, CELL_W, 19, P(r->t), 2, g_col[C_TEXT]);
     text_draw_fit(F_SANS, 13, x, y + CELL_H + 60, P(r->a), (int)strlen(P(r->a)), CELL_W, g_col[C_DIM]);
+    s_t_text += (int)(us_now() - tt);
 }
 
 static int pill_w(const char *s) { return text_width(F_SANS, 17, s, (int)strlen(s)) + 32; }
@@ -829,33 +1027,63 @@ static void draw_book_sheet(void);
 static void draw_list_sheet(void);
 
 void cat_draw(void) {
+    static int s_log_at;
+    const int t0 = nv_millis();
+    const int top = grid_top(), gy0 = top - 8;
+    const int dy = (int)(C.scroll - s_drawn_scroll), ady = dy < 0 ? -dy : dy;
+    const int band = A.redraw == R_SCROLL && s_drawn_ok && !C.vis_dirty && A.sheet == SH_NONE && !A.osk_on &&
+                     !A.toast[0] && C.nvis && dy && ady < (g_h - gy0) * 2 / 3;
     if (C.vis_dirty) rebuild_vis();
-    gfx_fill(0, 0, g_w, g_h, g_col[C_BG]);
-    // the grid
-    const int top = grid_top();
-    gfx_clip(0, top - 8, g_w, g_h);
+    s_t_art = s_t_text = 0;
+    int sy0 = gy0, sy1 = g_h;   // the rows to draw
+    if (band) {
+        gfx_scroll(gy0, g_h, dy);
+        if (dy > 0) sy0 = g_h - dy;
+        else sy1 = gy0 + ady;
+        gfx_fill(0, sy0, g_w, sy1 - sy0, g_col[C_BG]);
+    } else {
+        gfx_fill(0, 0, g_w, g_h, g_col[C_BG]);
+    }
+    const int t_fill = nv_millis() - t0;
+    // the grid (every card keeps its place to be tapped; the ones in the band are drawn)
+    gfx_clip(0, sy0, g_w, sy1);
     const int c = cols(), p = pitch();
     for (int k = 0; k < C.nvis; k++) {
         const int row = k / c, col = k % c;
         const int y = top + row * ROW_H - C.scroll;
         if (y + ROW_H < top) { k += c - col - 1; continue; }
         if (y > g_h) break;
-        draw_card(C.vis[k], MARGIN + col * p, y);
+        if (y - 8 < sy1 && y + ROW_H > sy0) draw_card(C.vis[k], MARGIN + col * p, y);
+        else card_reg(C.vis[k], MARGIN + col * p, y);
     }
     gfx_noclip();
+    s_drawn_scroll = C.scroll;
+    s_drawn_ok = 1;
     const char *msg = NULL;
-    if (!C.ready) msg = C.failed ? tr(S_CAT_OFFLINE) : tr(S_CAT_LOADING);
+    const int offline = (!C.ready && C.failed) || (!C.nvis && C.shard_fails >= 2);
+    if (offline) msg = tr(S_CAT_OFFLINE);
+    else if (!C.ready) msg = tr(S_CAT_LOADING);
     else if (!C.nvis && C.net.kind == NET_IDLE && all_loaded()) msg = tr(S_CAT_NONE);
     else if (!C.nvis) msg = tr(S_CAT_LOADING);
     if (msg) {
+        s_drawn_ok = 0;   // not the grid alone
         const int w = text_width(F_SANS, 18, msg, (int)strlen(msg));
         text_draw(F_SANS, 18, (g_w - w) / 2, top + 120, msg, (int)strlen(msg), g_col[C_DIM]);
-        if (!C.ready && C.failed) {
+        if (offline) {
             const char *rl = tr(S_CAT_RETRY);
             pill((g_w - pill_w(rl)) / 2, top + 150, rl, A_CAT_RETRY, 0, 1);
         }
     }
-    // the bars on top
+    // the bars on top: as they were when only the grid moved (their places to tap kept)
+    static reg_t s_bar_regs[16];
+    static int s_nbar;
+    if (band) {
+        for (int i = 0; i < s_nbar; i++) {
+            const reg_t *r = &s_bar_regs[i];
+            reg_add(r->x, r->y, r->w, r->h, r->act, r->arg);
+        }
+    } else {
+    const int nb0 = A.nregs;
     bar_bg();
     button(6, 6, IC_BACK, A_BACK, 0, 1, g_col[C_BAR_TEXT]);
     const char *t = tr(S_CATALOG);
@@ -899,8 +1127,20 @@ void cat_draw(void) {
     draw_field(fx, BAR_H + 8, fw, tr(S_CAT_SEARCH));
     pill(g_w - 16 - lw - cw - 10, BAR_H + 10, cl, A_CAT_CHIP, 0, C.filter_cat >= 0);
     pill(g_w - 16 - lw, BAR_H + 10, langs, A_CAT_LANGS, 0, 0);
+    s_nbar = A.nregs - nb0 < 16 ? A.nregs - nb0 : 16;
+    memcpy(s_bar_regs, A.regs + nb0, sizeof(reg_t) * (size_t)s_nbar);
+    }
     if (A.sheet == SH_CAT_BOOK) draw_book_sheet();
     else if (A.sheet == SH_CAT_LANGS || A.sheet == SH_CAT_DLS || A.sheet == SH_CAT_CATS) draw_list_sheet();
+    if (A.sheet != SH_NONE || A.osk_on) s_drawn_ok = 0;
+    const int ms = nv_millis() - t0;
+    if (ms > 30 && nv_millis() - s_log_at > 2000) {   // slow frames, now and then
+        s_log_at = nv_millis();
+        extern int g_flush_ms, g_flush_rot_ms;
+        perf("catalog: %s drawn in %d ms (background %d, pictures %d, words %d; last flush %d, turning %d; %d of %d)",
+             band ? "band" : "frame", ms, t_fill, s_t_art / 1000, s_t_text / 1000, g_flush_ms, g_flush_rot_ms, C.nvis,
+             C.nrows);
+    }
 }
 
 // ------------------------------------------------------------------------------- sheets
@@ -1059,9 +1299,13 @@ int cat_action(int act, int arg) {
         return 1;
     case A_CAT_RETRY: {
         C.failed = 0;
-        char url[300];
-        snprintf(url, sizeof url, "%sindex-v1.json", base_url());
-        net_start(NET_INDEX, url, 0, 0, NULL);
+        C.shard_fails = 0;
+        C.retry_at = nv_millis();
+        if (!C.ready && C.net.kind == NET_IDLE) {
+            char url[300];
+            snprintf(url, sizeof url, "%sindex-v1.json", base_url());
+            net_start(NET_INDEX, url, 0, 0, NULL);
+        }
         return 1;
     }
     case A_CAT_ROW:

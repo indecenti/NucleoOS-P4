@@ -89,6 +89,7 @@ static const char *outdir = ".";
 typedef struct {
     int down, x, y, x2, y2, fingers, back, kbd_usage, kbd_mods, stats, net;
     char shot[64];
+    char same[140];   // "A B Y0": shots A and B must match from canvas row Y0 down
 } frame_t;
 static frame_t *fr;
 static int nfr, cap, cur;
@@ -174,6 +175,7 @@ static int load_script(const char *path) {
             }
         } else if (!strcmp(p, "back")) { push()->back = 1; push(); push(); }
         else if (sscanf(p, "shot %63s", s) == 1) { snprintf(push()->shot, sizeof fr[0].shot, "%s", s); }
+        else if (!strncmp(p, "same ", 5)) { snprintf(push()->same, sizeof fr[0].same, "%s", p + 5); }
         else if (sscanf(p, "kbd %d", &n) == 1) kbd_on = n;
         else if (sscanf(p, "open %399s", s) == 1) snprintf(open_file, sizeof open_file, "%s", s);
         else if (!strcmp(p, "stats")) push()->stats = 1;
@@ -184,7 +186,43 @@ static int load_script(const char *path) {
     return 0;
 }
 
+// The shots taken, kept for "same" (what a band redraw shows must be what a full one shows).
+static struct { char name[64]; uint16_t *px; } s_kept[8];
+static int s_nkept, s_same_fail;
+
+static void keep_shot(const char *name) {
+    int i = 0;
+    while (i < s_nkept && strcmp(s_kept[i].name, name)) i++;
+    if (i == s_nkept) {
+        if (s_nkept == 8) return;
+        s_nkept++;
+        snprintf(s_kept[i].name, sizeof s_kept[i].name, "%s", name);
+        s_kept[i].px = (uint16_t *)HOST_MALLOC((size_t)CW * CH * 2);
+    }
+    memcpy(s_kept[i].px, canvas, (size_t)CW * CH * 2);
+}
+
+static void check_same(const char *spec) {
+    char a[64], b[64];
+    int y0 = 0;
+    if (sscanf(spec, "%63s %63s %d", a, b, &y0) < 2) return;
+    const uint16_t *pa = NULL, *pb = NULL;
+    for (int i = 0; i < s_nkept; i++) {
+        if (!strcmp(s_kept[i].name, a)) pa = s_kept[i].px;
+        if (!strcmp(s_kept[i].name, b)) pb = s_kept[i].px;
+    }
+    if (!pa || !pb) { printf("FAIL same %s %s: a shot is missing\n", a, b); s_same_fail = 1; return; }
+    long diff = 0;
+    int fx = -1, fy = -1;
+    for (int y = y0; y < CH; y++)
+        for (int x = 0; x < CW; x++)
+            if (pa[y * CW + x] != pb[y * CW + x]) { if (!diff) { fx = x; fy = y; } diff++; }
+    if (diff) { printf("FAIL same %s %s: %ld pixels differ (first at %d,%d)\n", a, b, diff, fx, fy); s_same_fail = 1; }
+    else printf("same %s %s: ok\n", a, b);
+}
+
 static void write_ppm(const char *name) {
+    keep_shot(name);
     char path[512];
     snprintf(path, sizeof path, "%s/%s.ppm", outdir, name);
     FILE *f = fopen(path, "wb");
@@ -312,6 +350,17 @@ int32_t nv_http_req(const char *spec, const void *body, uint32_t len) {
         snprintf(p, sizeof p, "%s/http%s", dir, path);
         if ((s_http[h].body = slurp(p, &s_http[h].n))) s_http[h].status = 200;
     }
+    // like the firmware (nv_wasm_net.cpp): at most "max" bytes, 64 KB when not said, 1 MB at most
+    const char *mx = strstr(spec, "\"max\":");
+    size_t max = mx ? (size_t)strtoul(mx + 6, NULL, 10) : 64 * 1024;
+    if (!max) max = 64 * 1024;
+    if (max > 1024 * 1024) max = 1024 * 1024;
+    if (s_http[h].status == 200 && s_http[h].n > max) {
+        HOST_FREE(s_http[h].body);
+        s_http[h].body = NULL;
+        s_http[h].n = 0;
+        s_http[h].status = -6;
+    }
     fprintf(stderr, "http: %s -> %d\n", url, s_http[h].status);
     return h;
 }
@@ -436,6 +485,7 @@ int32_t nv_gfx_present(void) {
     if (f->back) pend_back = 1;
     if (f->net) s_offline = f->net == 1;
     if (f->shot[0]) write_ppm(f->shot);
+    if (f->same[0]) check_same(f->same);
     if (f->stats) printf("frame %d: %ld blits, %ld rows\n", cur, blits, blit_rows);
     return 1;
 }
@@ -453,6 +503,7 @@ int main(int argc, char **argv) {
     run();
     printf("native: %d/%d frames, %ld blits (%ld rows), %.2f s CPU\n", cur, nfr, blits, blit_rows,
            (double)(clock() - t0) / CLOCKS_PER_SEC);
+    if (s_same_fail) return 1;
 #ifdef BK_MEMCAP
     printf("memory: peak %.2f MiB of %.2f MiB, %ld refused\n", mem_peak / 1048576.0, mem_cap / 1048576.0, mem_fail);
 #endif

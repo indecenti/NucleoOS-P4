@@ -5,6 +5,7 @@
 #include "app.h"
 
 #include <stdarg.h>
+#include <math.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -274,7 +275,13 @@ void draw_typo_cover(const char *title, const char *author, uint32_t hue, int x,
     if (g_rmode != RM_COLOR) { bg = g_col[C_TEXT]; fg = g_col[C_BG]; }
     gfx_rrect(x, y, w, h, 6, bg);
     gfx_ring(x + 7, y + 7, w - 14, h - 14, 3, 1, fg);
-    const int px = w >= 120 ? 17 : 13;
+    int px = w >= 120 ? 17 : 13;
+    for (const char *p = title; *p && px > 11;) {   // a word wider than the box: a smaller size, not a cut word
+        while (*p == ' ') p++;
+        const int n = (int)strcspn(p, " ");
+        while (px > 11 && text_width(F_SERIF_BOLD, px, p, n) > w - 28) px--;
+        p += n;
+    }
     wrap_text(F_SERIF_BOLD, px, x + 14, y + 22 + px, w - 28, px * 125 / 100, title, 5, fg);
     if (author && *author) wrap_text(F_SERIF_ITALIC, px - 3, x + 14, y + h - 30, w - 28, px, author, 1, fg);
 }
@@ -594,7 +601,7 @@ static void on_touch(int down, int x, int y) {
             A.vx_t[A.nvel] = A.now;
             A.vy_y[A.nvel] = y;
             A.nvel++;
-            A.redraw |= R_ALL;
+            A.redraw |= A.screen == SCR_CATALOG && !list_scrollable() ? R_SCROLL : R_ALL;
         }
         if (!A.moved && !A.long_fired && A.now - A.t0 > 600 && A.pressed >= 0 && A.screen == SCR_LIBRARY &&
             A.regs[A.pressed].act == A_OPEN) {   // a long press on a book: its information
@@ -616,7 +623,8 @@ static void on_touch(int down, int x, int y) {
     if (A.moved) {
         if (A.nvel >= 2) {
             const int dt = A.vx_t[A.nvel - 1] - A.vx_t[0];
-            if (dt > 0 && A.now - A.vx_t[A.nvel - 1] < 80) A.vel = -(float)(A.vy_y[A.nvel - 1] - A.vy_y[0]) / (float)dt;
+            // a fling when the finger was still moving as it left (within a frame or two on a slow screen)
+            if (dt > 0 && A.now - A.vx_t[A.nvel - 1] < 80 + 2 * A.frame_ms) A.vel = -(float)(A.vy_y[A.nvel - 1] - A.vy_y[0]) / (float)dt;
         }
         if (was >= 0 && A.regs[was].act == A_OSK) do_action(A_OSK, A.regs[was].arg);
         A.redraw |= R_ALL;
@@ -750,6 +758,7 @@ void run(void) {
         A.now = nv_millis();
         const int dt = A.now - last;
         last = A.now;
+        A.frame_ms = dt < 1000 ? dt : 1000;
         if (nv_gfx_back()) go_back();
         kev_t keys[8];
         const int nk = kbd_poll(keys, 8, A.now, i18n_italian_keys());
@@ -777,9 +786,9 @@ void run(void) {
                 const int32_t m = lib_height() - (g_h - BAR_H);
                 if (*s > m) *s = m > 0 ? m : 0;
             }
-            A.vel *= 0.94f;
+            A.vel *= powf(0.94f, (float)dt / 16.7f);   // the same slowing whatever the frame rate
             if ((A.vel > -0.03f && A.vel < 0.03f) || *s == before) A.vel = 0;
-            A.redraw |= R_ALL;
+            A.redraw |= s == cat_scroll() ? R_SCROLL : R_ALL;
         }
         if (A.toast[0] && A.now > A.toast_until) { A.toast[0] = 0; A.redraw |= R_ALL; }
         cat_bg_poll();
