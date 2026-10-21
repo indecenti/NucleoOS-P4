@@ -339,11 +339,20 @@ int reader_open(int li) {
         return -1;
     }
     if (!A.cur.px && (surf_init(&A.cur) < 0 || surf_init(&A.nxt) < 0)) {
+        // the two pages ahead (1.2 MB each): the pictures in memory make room, then once more
         surf_free(&A.cur);
         surf_free(&A.nxt);
-        book_close(b);
-        toast(tr(S_OPEN_FAILED), NULL);
-        return -1;
+        img_clear();
+        cat_release();
+        lib_covers_drop();
+        if (surf_init(&A.cur) < 0 || surf_init(&A.nxt) < 0) {
+            perf("book '%s': no memory for its pages", g_lib[li].file);
+            surf_free(&A.cur);
+            surf_free(&A.nxt);
+            book_close(b);
+            toast(tr(S_OPEN_FAILED), NULL);
+            return -1;
+        }
     }
     A.book = b;
     A.lib_idx = li;

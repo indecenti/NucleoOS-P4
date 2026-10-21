@@ -21,7 +21,8 @@ int g_w, g_h;                 // the screen as the app draws it (portrait: 600 x
 int g_rmode;
 int g_portrait;
 static int s_pw, s_ph;        // the canvas as the system shows it (1024 x 600, the panel's own way)
-static uint16_t *s_rot;       // portrait: the rotated columns on their way to the canvas
+static uint16_t *s_rot;       // portrait: a band of rotated columns on its way to the canvas
+#define ROT_BAND 128           // screen rows per band (s_rot: 128 x 600 pixels, not a whole screen)
 static int s_dy0 = INT_MAX, s_dy1 = -1;   // dirty rows of the screen
 static int s_cx0, s_cy0, s_cx1, s_cy1;    // clip
 
@@ -34,7 +35,7 @@ static int alloc_screen(void) {
     g_h = g_portrait ? s_pw : s_ph;
     s_fb = (uint16_t *)calloc((size_t)g_w * g_h, 2);
     s_screen = (uint16_t **)malloc(sizeof *s_screen * g_h);
-    if (g_portrait) s_rot = (uint16_t *)malloc((size_t)s_pw * s_ph * 2);
+    if (g_portrait) s_rot = (uint16_t *)malloc((size_t)ROT_BAND * s_ph * 2);
     if (!s_fb || !s_screen || (g_portrait && !s_rot)) return -1;
     for (int y = 0; y < g_h; y++) s_screen[y] = s_fb + (size_t)y * g_w;
     g_rows = s_screen;
@@ -127,26 +128,33 @@ void gfx_flush(void) {
         // rows [y0, y1) of the app's screen are columns [y0, y1) of the canvas: canvas (cx, cy) shows
         // the screen's (x = g_w - 1 - cy, y = cx). Two rows by two columns at a time (32-bit loads and
         // stores: the memory, not the arithmetic, is what costs), in 32-row bands of the screen so the
-        // source stays in the cache. The rows go in pairs: an even first one, an even count.
+        // source stays in the cache; each band goes out on its own (s_rot holds one band). The rows go
+        // in pairs: an even first one, an even count.
         const int up = (s_dy1 + 1) & ~1, y0 = s_dy0 & ~1, y1 = up > g_h ? g_h : up, n = y1 - y0;
-        for (int b0 = 0; b0 < n; b0 += 32) {
-            const int b1 = b0 + 32 < n ? b0 + 32 : n;
-            for (int cy = 0; cy + 1 < s_ph; cy += 2) {
-                const int sx = g_w - 2 - cy;   // pixel sx + 1 goes to canvas row cy, pixel sx to row cy + 1
-                uint16_t *d0 = s_rot + (size_t)cy * n, *d1 = d0 + n;
-                for (int c = b0; c < b1; c += 2) {
-                    uint32_t a, b, o0, o1;
-                    memcpy(&a, s_screen[y0 + c] + sx, 4);
-                    memcpy(&b, s_screen[y0 + c + 1] + sx, 4);
-                    o0 = (a >> 16) | (b & 0xFFFF0000u);
-                    o1 = (a & 0xFFFFu) | (b << 16);
-                    memcpy(d0 + c, &o0, 4);
-                    memcpy(d1 + c, &o1, 4);
+        int rot = 0;
+        for (int b0 = 0; b0 < n; b0 += ROT_BAND) {
+            const int b1 = b0 + ROT_BAND < n ? b0 + ROT_BAND : n, bw = b1 - b0;
+            const int tr = nv_millis();
+            for (int s0 = b0; s0 < b1; s0 += 32) {
+                const int s1 = s0 + 32 < b1 ? s0 + 32 : b1;
+                for (int cy = 0; cy + 1 < s_ph; cy += 2) {
+                    const int sx = g_w - 2 - cy;   // pixel sx + 1 goes to canvas row cy, pixel sx to row cy + 1
+                    uint16_t *d0 = s_rot + (size_t)cy * bw - b0, *d1 = d0 + bw;
+                    for (int c = s0; c < s1; c += 2) {
+                        uint32_t a, b, o0, o1;
+                        memcpy(&a, s_screen[y0 + c] + sx, 4);
+                        memcpy(&b, s_screen[y0 + c + 1] + sx, 4);
+                        o0 = (a >> 16) | (b & 0xFFFF0000u);
+                        o1 = (a & 0xFFFFu) | (b << 16);
+                        memcpy(d0 + c, &o0, 4);
+                        memcpy(d1 + c, &o1, 4);
+                    }
                 }
             }
+            rot += nv_millis() - tr;
+            nv_gfx_blit_raw(s_rot, (int32_t)((size_t)bw * s_ph * 2), y0 + b0, 0, bw, s_ph);
         }
-        g_flush_rot_ms = nv_millis() - t0;
-        nv_gfx_blit_raw(s_rot, (int32_t)((size_t)n * s_ph * 2), y0, 0, n, s_ph);
+        g_flush_rot_ms = rot;
     }
     s_dy0 = INT_MAX;
     s_dy1 = -1;
@@ -400,30 +408,41 @@ void gfx_turn_frame(const surf_t *left, int left_x, const surf_t *right, int rig
         col_x[cy] = (int16_t)sx;
         col_a[cy] = (uint8_t)a;
     }
-    for (int b0 = 0; b0 < s_pw; b0 += 64) {
-        const int b1 = b0 + 64 < s_pw ? b0 + 64 : s_pw;
+    for (int b0 = 0; b0 < s_pw; b0 += ROT_BAND) {   // a band of canvas columns at a time, out on its own
+        const int b1 = b0 + ROT_BAND < s_pw ? b0 + ROT_BAND : s_pw, bw = b1 - b0;
         for (int cy = 0; cy < ncol; cy++) {
-            uint16_t *d = s_rot + (size_t)cy * s_pw;
+            uint16_t *d = s_rot + (size_t)cy * bw - b0;
             uint16_t *const *rows = col_rows[cy];
-            if (!rows) { memset(d + b0, 0, (size_t)(b1 - b0) * 2); continue; }
+            if (!rows) { memset(d + b0, 0, (size_t)bw * 2); continue; }
             const int sx = col_x[cy];
             for (int cx = b0; cx < b1; cx++) d[cx] = rows[cx][sx];
             if (col_a[cy]) for (int cx = b0; cx < b1; cx++) d[cx] = blend565(d[cx], 0, col_a[cy]);
         }
+        nv_gfx_blit_raw(s_rot, (int32_t)((size_t)bw * s_ph * 2), b0, 0, bw, s_ph);
     }
-    nv_gfx_blit_raw(s_rot, (int32_t)((size_t)s_pw * s_ph * 2), 0, 0, s_pw, s_ph);
 #undef PIX
 }
 
 // The screen as the app drew it (upright), for tests on the board: "BKS1", width, height (16-bit
 // little endian), then the RGB565 rows. 0 when written.
-int gfx_shot(const char *path) {
+int gfx_shot(const char *path, int (*tick)(void)) {
+    // the rows copied first (the screen goes on moving), then written in bands of 128, the app's loop
+    // turning between them: 1.2 MB on the card takes seconds, and the system ends an app that stops
+    // showing frames for 8 s
+    uint16_t *copy = (uint16_t *)malloc((size_t)g_w * g_h * 2);
+    if (!copy) return -1;
+    for (int y = 0; y < g_h; y++) memcpy(copy + (size_t)y * g_w, s_screen[y], (size_t)g_w * 2);
     FILE *f = fopen(path, "wb");
-    if (!f) return -1;
+    if (!f) { free(copy); return -1; }
     const uint8_t hdr[8] = {'B', 'K', 'S', '1', (uint8_t)g_w, (uint8_t)(g_w >> 8), (uint8_t)g_h, (uint8_t)(g_h >> 8)};
     int ok = fwrite(hdr, 1, 8, f) == 8;
-    for (int y = 0; y < g_h && ok; y++) ok = fwrite(s_screen[y], 2, (size_t)g_w, f) == (size_t)g_w;
+    for (int y = 0; y < g_h && ok; y += 128) {
+        const int n = y + 128 < g_h ? 128 : g_h - y;
+        ok = fwrite(copy + (size_t)y * g_w, 2, (size_t)n * g_w, f) == (size_t)n * g_w;
+        if (ok && tick && !tick()) ok = 0;
+    }
     fclose(f);
+    free(copy);
     return ok ? 0 : -1;
 }
 

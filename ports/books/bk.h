@@ -78,7 +78,7 @@ void gfx_copy(const surf_t *s, int y0, int y1);   // rows of a surface onto the 
 void gfx_turn_frame(const surf_t *left, int left_x, const surf_t *right, int right_x, int split, int shadow_x, int sw,
                     int shadow_dir);
 void gfx_invert(int y0, int y1);                  // the e-ink refresh flash
-int gfx_shot(const char *path);                   // the screen to a file (tests on the board)
+int gfx_shot(const char *path, int (*tick)(void));   // the screen to a file (tests on the board); tick between bands
 
 // ------------------------------------------------------------------------------------------ fonts
 // The interface uses Sans; the reader Serif or Sans (setting). F_SERIF + style = the serif faces.

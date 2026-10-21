@@ -24,6 +24,7 @@
 #define CATS_MAX 48
 #define HTTP_CAP (1u << 20)        // a shard is ~300 KB
 #define COVER_CAP (256u << 10)     // a cover is ~10 KB
+#define PACK_CAP (512u << 10)      // 30 covers
 #define INDEX_STALE_S 3600   // small, and the catalog grows: shards follow the index fetched
 #define SHARD_STALE_S (3 * 24 * 3600)
 #define CCOV_KEPT 40   // covers in memory (50 KB each when ready; the ones to fetch cost nothing)
@@ -39,6 +40,7 @@ typedef struct {
     int16_t y;               // year (0 unknown)
     uint8_t c[3];            // categories, index + 1 (0 none)
     uint8_t cv, lang, shard;
+    uint16_t pos;            // its place in the shard (the cover pack's page: pos / pack)
 } crow_t;
 
 typedef struct {             // a book in full (its sheet, a download)
@@ -48,14 +50,21 @@ typedef struct {             // a book in full (its sheet, a download)
     char c[3][24];
 } cbook_t;
 
-typedef struct { char code[8]; int count, shards; double rev; uint64_t loaded, asked; } clang_t;   // rev: of its shards
+typedef struct {   // a language of the index; rev: of its shards (and cover packs)
+    char code[8];
+    int count, shards;
+    double rev;
+    uint64_t loaded, asked;
+    uint32_t packs[64];   // per shard: the cover packs asked (bit p: page p)
+    uint32_t pmiss[64];   // per shard: the packs not on the card (looked for)
+} clang_t;
 typedef struct { char id[24], name[48]; int count; } ccat_t;
 // A card's picture in memory: the cover (state 1), or while there is none (0 to fetch, -1 none) the
 // title cover drawn once (typo: its background and render mode, to draw it again when they change).
 typedef struct { char id[48]; uint16_t *px; uint32_t used; int state; uint8_t typo, mode; uint16_t bg; } ccov_t;
 
-enum { NET_IDLE, NET_INDEX, NET_SHARD, NET_COVER };
-typedef struct { int kind, h, lang, shard; char id[48]; char *buf; size_t n; int t0; } net_t;
+enum { NET_IDLE, NET_INDEX, NET_SHARD, NET_COVER, NET_PACK };
+typedef struct { int kind, h, lang, shard, page; char id[48]; char *buf; size_t n; int t0; } net_t;
 
 typedef struct { int id, state; char title[96], dest[160]; int64_t size, done; int bps; } cdl_t;
 enum { DL_QUEUED, DL_PAUSED, DL_DONE, DL_FAILED, DL_RUNNING };
@@ -64,6 +73,8 @@ static struct {
     int ready;               // the index is known
     int failed;              // the last fetch of the index failed (offline)
     int shard_fails;         // shards that failed in a row
+    int pack;                // covers per pack (index "pack"; 0: one by one)
+    int cov_more;            // covers left to decode for the next frame
     int retry_at;            // no shard asked before this (ms)
     clang_t lang[LANG_MAX];
     int nlang;
@@ -221,7 +232,11 @@ static const cdl_t *dl_of(const char *id) {
 // A new index against the one known: a language whose count, shards or rev changed was republished (the
 // catalog grows, its shards are rewritten), so its rows and cached shards go and come again; the
 // others keep theirs, renumbered.
+static void pack_path(char *out, size_t cap, const char *code, int shard, int page, int mk);
+static void packs_forget(void);
+
 static void index_changed(const clang_t *old, int nold) {
+    if (nold) packs_forget();
     int map[LANG_MAX];
     for (int o = 0; o < nold; o++) {
         map[o] = -1;
@@ -231,6 +246,8 @@ static void index_changed(const clang_t *old, int nold) {
                     map[o] = i;
                     C.lang[i].loaded = old[o].loaded;
                     C.lang[i].asked = old[o].asked;
+                    memcpy(C.lang[i].packs, old[o].packs, sizeof C.lang[i].packs);
+                    memcpy(C.lang[i].pmiss, old[o].pmiss, sizeof C.lang[i].pmiss);
                 }
                 break;
             }
@@ -240,6 +257,11 @@ static void index_changed(const clang_t *old, int nold) {
                 snprintf(name, sizeof name, "%s-%d.json", old[o].code, k);
                 cache_path(p, sizeof p, name);
                 remove(p);
+                const int pages = old[o].count / (old[o].shards > 0 ? old[o].shards : 1) / 30 + 2;
+                for (int pg = 0; pg < pages && pg < 32; pg++) {
+                    pack_path(p, sizeof p, old[o].code, k, pg, 0);
+                    remove(p);
+                }
             }
     }
     int w = 0;
@@ -261,9 +283,11 @@ static void parse_index(const char *s, size_t n) {
     const int nold = C.nlang;
     memcpy(old, C.lang, sizeof(clang_t) * (size_t)nold);
     C.nlang = C.ncat = 0;
+    C.pack = 0;
     char key[32];
     while (js_next(&j, '}')) {
         if (!js_key(&j, key, sizeof key)) break;
+        if (!strcmp(key, "pack")) { C.pack = (int)js_number(&j); continue; }
         if (!strcmp(key, "langs") && js_enter(&j, '[')) {
             while (js_next(&j, ']')) {
                 if (!js_enter(&j, '{')) { js_skip(&j); continue; }
@@ -365,8 +389,10 @@ static void parse_shard(const char *s, size_t n, int li, int shard) {
     while (js_next(&j, '}')) {
         if (!js_key(&j, key, sizeof key)) break;
         if (strcmp(key, "books") || !js_enter(&j, '[')) { js_skip(&j); continue; }
+        int pos = 0;
         while (js_next(&j, ']')) {
             if (!js_enter(&j, '{')) { js_skip(&j); continue; }
+            const int at = pos++;
             if (C.nrows == C.rcap) {
                 const int cap = C.rcap ? C.rcap * 2 : 512;
                 crow_t *nr = (crow_t *)realloc(C.rows, sizeof(crow_t) * (size_t)cap);
@@ -379,6 +405,7 @@ static void parse_shard(const char *s, size_t n, int li, int shard) {
             if (!r->id || !r->t) continue;
             r->lang = (uint8_t)li;
             r->shard = (uint8_t)shard;
+            r->pos = (uint16_t)(at < 65535 ? at : 65535);
             C.nrows++;
         }
     }
@@ -420,7 +447,7 @@ static int book_detail(const crow_t *r, cbook_t *b) {
 
 // --------------------------------------------------------------------------------- network
 
-static size_t net_cap(int kind) { return kind == NET_COVER ? COVER_CAP : HTTP_CAP; }
+static size_t net_cap(int kind) { return kind == NET_COVER ? COVER_CAP : kind == NET_PACK ? PACK_CAP : HTTP_CAP; }
 
 static void net_start(int kind, const char *url, int li, int shard, const char *id) {
     char spec[600];   // the firmware answers up to "max" bytes (64 KB when it is not said)
@@ -439,6 +466,123 @@ static void net_start(int kind, const char *url, int li, int shard, const char *
 
 static void cover_store(const char *id, uint16_t *px, int state);
 static void have_add(const char *id);
+static uint32_t id_hash(const char *id);
+static int have_has(uint32_t h);
+
+// A fetched cover in the card's own form (RGB565 at the cell's size).
+static uint16_t *cover_render(const uint8_t *jpg, size_t n) {
+    const int keep = g_rmode;
+    g_rmode = RM_COLOR;   // the cache holds colour; drawing tones it
+    uint16_t *px = img_render565(jpg, n, COVER_W, COVER_H, rgb565(0x30, 0x34, 0x3A), 1);
+    g_rmode = keep;
+    return px;
+}
+
+// A cover fetched on its own, kept on the card: fetched once.
+static uint16_t *cover_decode(const uint8_t *jpg, size_t n, const char *id) {
+    uint16_t *px = cover_render(jpg, n);
+    if (!px) return NULL;
+    char p[300];
+    ccov_path(p, sizeof p, id, 1);
+    FILE *f = fopen(p, "wb");
+    if (f) {
+        const int ok = fwrite(px, 2, (size_t)COVER_W * COVER_H, f) == (size_t)COVER_W * COVER_H;
+        fclose(f);
+        if (ok) have_add(id);
+    }
+    return px;
+}
+
+static ccov_t *cover_find(const char *id);
+
+// Cover packs: "NVCP" | 1 | 0 | u16 n | n x {u8 idlen, id, u32 off, u32 len} | the JPEGs, the covers of 30
+// rows of a shard. Kept on the card as they came (one write for 30 covers) and the last two in memory;
+// a cover is decoded from its pack when it comes on screen.
+static struct { int li, shard, page; char *buf; size_t n; uint32_t used; } s_pkc[2];
+
+static void pack_path(char *out, size_t cap, const char *code, int shard, int page, int mk) {
+    char d[300];
+    snprintf(d, sizeof d, "%s/appdata/ccov/p", bk_root());
+    if (mk) {
+        char top[300];
+        snprintf(top, sizeof top, "%s/appdata/ccov", bk_root());
+        mkdir(top, 0777);
+        mkdir(d, 0777);
+    }
+    snprintf(out, cap, "%s/%s-%d-%d.bin", d, code, shard, page);
+}
+
+static void packs_forget(void) {   // the language numbers change with a new index
+    for (int i = 0; i < 2; i++) { free(s_pkc[i].buf); memset(&s_pkc[i], 0, sizeof s_pkc[i]); }
+}
+
+static void pack_keep(int li, int shard, int page, char *buf, size_t n) {
+    int k = s_pkc[0].used <= s_pkc[1].used ? 0 : 1;
+    for (int i = 0; i < 2; i++) if (!s_pkc[i].buf) { k = i; break; }
+    free(s_pkc[k].buf);
+    s_pkc[k].li = li;
+    s_pkc[k].shard = shard;
+    s_pkc[k].page = page;
+    s_pkc[k].buf = buf;
+    s_pkc[k].n = n;
+    s_pkc[k].used = ++C.clock;
+}
+
+static int pack_ok(const char *b, size_t n) { return n >= 8 && !memcmp(b, "NVCP", 4) && b[4] == 1; }
+
+// The pack in memory, else from the card (looked for once), else NULL.
+static const char *pack_get(int li, int shard, int page, size_t *n) {
+    for (int i = 0; i < 2; i++)
+        if (s_pkc[i].buf && s_pkc[i].li == li && s_pkc[i].shard == shard && s_pkc[i].page == page) {
+            s_pkc[i].used = ++C.clock;
+            *n = s_pkc[i].n;
+            return s_pkc[i].buf;
+        }
+    clang_t *l = &C.lang[li];
+    const uint32_t bit = 1u << page;
+    if (l->pmiss[shard - 1] & bit) return NULL;
+    char p[300];
+    pack_path(p, sizeof p, l->code, shard, page, 0);
+    FILE *f = fopen(p, "rb");
+    char *buf = NULL;
+    long sz = 0;
+    if (f) {
+        fseek(f, 0, SEEK_END);
+        sz = ftell(f);
+        fseek(f, 0, SEEK_SET);
+        if (sz > 8 && sz <= (long)PACK_CAP && (buf = (char *)malloc((size_t)sz)) && fread(buf, 1, (size_t)sz, f) != (size_t)sz) {
+            free(buf);
+            buf = NULL;
+        }
+        fclose(f);
+    }
+    if (!buf || !pack_ok(buf, (size_t)sz)) { free(buf); l->pmiss[shard - 1] |= bit; return NULL; }
+    pack_keep(li, shard, page, buf, (size_t)sz);
+    *n = (size_t)sz;
+    return buf;
+}
+
+static int pack_find(const char *buf, size_t n, const char *id, uint32_t *off, uint32_t *len) {
+    const uint8_t *b = (const uint8_t *)buf;
+    const int cnt = b[6] | b[7] << 8;
+    const size_t il = strlen(id);
+    size_t at = 8;
+    for (int i = 0; i < cnt; i++) {
+        if (at + 1 > n) return 0;
+        const size_t l = b[at];
+        if (at + 1 + l + 8 > n) return 0;
+        const uint8_t *q = b + at + 1 + l;
+        if (l == il && !memcmp(b + at + 1, id, il)) {
+            *off = q[0] | q[1] << 8 | q[2] << 16 | (uint32_t)q[3] << 24;
+            *len = q[4] | q[5] << 8 | q[6] << 16 | (uint32_t)q[7] << 24;
+            return *off <= n && *len <= n - *off;
+        }
+        at += 1 + l + 8;
+    }
+    return 0;
+}
+
+static int s_frame_t0, s_decoded;   // this frame's start, and the covers it decoded
 
 static void net_done(int ok) {
     net_t *n = &C.net;
@@ -459,27 +603,25 @@ static void net_done(int ok) {
             C.retry_at = nv_millis() + wait;
         }
     } else if (n->kind == NET_COVER) {
-        uint16_t *px = NULL;
-        if (ok) {
-            const int keep = g_rmode;
-            g_rmode = RM_COLOR;   // the cache holds colour; drawing tones it
-            px = img_render565((const uint8_t *)n->buf, n->n, COVER_W, COVER_H, rgb565(0x30, 0x34, 0x3A), 1);
-            g_rmode = keep;
-            if (px) {   // kept on the card: a cover is fetched once
-                char p[300];
-                ccov_path(p, sizeof p, n->id, 1);
-                FILE *f = fopen(p, "wb");
-                if (f) {
-                    const int ok2 = fwrite(px, 2, (size_t)COVER_W * COVER_H, f) == (size_t)COVER_W * COVER_H;
-                    fclose(f);
-                    if (ok2) have_add(n->id);
-                }
-            }
-        }
+        uint16_t *px = ok ? cover_decode((const uint8_t *)n->buf, n->n, n->id) : NULL;
         cover_store(n->id, px, px ? 1 : -1);
+    } else if (n->kind == NET_PACK && ok && pack_ok(n->buf, n->n) && n->lang < C.nlang) {
+        clang_t *l = &C.lang[n->lang];
+        const int page = n->page;
+        char p[300];
+        pack_path(p, sizeof p, l->code, n->shard, page, 1);
+        FILE *f = fopen(p, "wb");
+        if (f) {
+            if (fwrite(n->buf, 1, n->n, f) != n->n) { fclose(f); remove(p); f = NULL; }
+            else fclose(f);
+        }
+        l->pmiss[n->shard - 1] &= ~(1u << page);
+        pack_keep(n->lang, n->shard, page, n->buf, n->n);
+        n->buf = NULL;
     }
-    perf("catalog: %s %s in %d ms (%u KB)", n->kind == NET_INDEX ? "index" : n->kind == NET_SHARD ? "shard" : "cover",
-         ok ? "ok" : "failed", nv_millis() - n->t0, (unsigned)(n->n / 1024));
+    static const char *const kKind[] = {"", "index", "shard", "cover", "pack"};
+    perf("catalog: %s %s %s in %d ms (%u KB)", kKind[n->kind], n->kind == NET_PACK ? n->id : "", ok ? "ok" : "failed",
+         nv_millis() - n->t0, (unsigned)(n->n / 1024));
     free(n->buf);
     memset(n, 0, sizeof *n);
     A.redraw |= R_ALL;
@@ -633,11 +775,35 @@ static const uint16_t *cover_of(const crow_t *r) {
         e = cover_find(id);
     }
     if (e->state == 1) return e->px;
-    if (e->state == 0 && C.net.kind == NET_IDLE && A.now - A.idle_since > 150) {
-        char url[300];
-        snprintf(url, sizeof url, "%scovers/%s.jpg", base_url(), id);
-        net_start(NET_COVER, url, 0, 0, id);
+    if (e->state != 0) return NULL;   // none
+    clang_t *l = r->lang < C.nlang ? &C.lang[r->lang] : NULL;
+    const int page = C.pack > 0 ? r->pos / C.pack : 99;
+    const int packed = l && page < 32 && r->shard >= 1 && r->shard <= 64;
+    if (packed) {
+        size_t n;
+        const char *pk = pack_get(r->lang, r->shard, page, &n);
+        uint32_t off, len;
+        if (pk && pack_find(pk, n, id, &off, &len)) {
+            if (s_decoded && nv_millis() - s_frame_t0 > 30) { C.cov_more = 1; return NULL; }   // the next frame
+            s_decoded++;
+            uint16_t *px = cover_render((const uint8_t *)pk + off, len);
+            cover_store(id, px, px ? 1 : -1);
+            return px;
+        }
     }
+    if (C.net.kind != NET_IDLE || A.now - A.idle_since <= 150) return NULL;
+    char url[300];
+    if (packed && !(l->packs[r->shard - 1] & (1u << page))) {   // its pack: 30 covers in one answer
+        l->packs[r->shard - 1] |= 1u << page;
+        char name[40];
+        snprintf(name, sizeof name, "%s/%d-%d", l->code, r->shard, page);
+        snprintf(url, sizeof url, "%scovers/%s.bin", base_url(), name);
+        net_start(NET_PACK, url, r->lang, r->shard, name);
+        C.net.page = page;
+        return NULL;
+    }
+    snprintf(url, sizeof url, "%scovers/%s.jpg", base_url(), id);   // no pack, or it lacked this one
+    net_start(NET_COVER, url, 0, 0, id);
     return NULL;
 }
 
@@ -967,6 +1133,7 @@ void cat_open(void) {
 void cat_frame(void) {
     const int was_ready = C.ready;
     net_poll();
+    if (C.cov_more) { C.cov_more = 0; A.redraw |= R_ALL; }   // covers still to decode
     if (!was_ready && C.ready) { sel_from_settings(); C.vis_dirty = 1; }
     want_more();
     if (C.vis_dirty) { rebuild_vis(); A.redraw |= R_ALL; }
@@ -1029,6 +1196,8 @@ static void draw_list_sheet(void);
 void cat_draw(void) {
     static int s_log_at;
     const int t0 = nv_millis();
+    s_frame_t0 = t0;
+    s_decoded = 0;
     const int top = grid_top(), gy0 = top - 8;
     const int dy = (int)(C.scroll - s_drawn_scroll), ady = dy < 0 ? -dy : dy;
     const int band = A.redraw == R_SCROLL && s_drawn_ok && !C.vis_dirty && A.sheet == SH_NONE && !A.osk_on &&
@@ -1314,7 +1483,7 @@ int cat_action(int act, int arg) {
         if (C.book_ok) { A.sheet = SH_CAT_BOOK; cover_of(&C.rows[arg]); }
         return 1;
     case A_CAT_GET: if (C.book_ok) download(&C.book); return 1;
-    case A_CAT_READ: A.sheet = SH_NONE; reader_open(arg); return 1;
+    case A_CAT_READ: A.sheet = SH_NONE; cat_release(); reader_open(arg); return 1;
     case A_CAT_CANCEL:
         if (C.dl_armed != arg) { C.dl_armed = arg; toast(tr(S_DELETE_SURE), NULL); return 1; }
         C.dl_armed = 0;
@@ -1357,4 +1526,15 @@ void cat_key(const kev_t *k) {
 }
 
 int32_t *cat_scroll(void) { return &C.scroll; }
+
+// The catalog's pictures in memory (covers, title covers, packs: up to ~2.5 MB) go when it closes or
+// a book opens; the list of books stays, and the covers come back from the card.
+void cat_release(void) {
+    for (int i = 0; i < CCOV_KEPT; i++) {
+        free(C.cov[i].px);
+        memset(&C.cov[i], 0, sizeof C.cov[i]);
+    }
+    packs_forget();
+    s_drawn_ok = 0;
+}
 int cat_height(void) { return grid_height() + grid_top(); }

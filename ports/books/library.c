@@ -268,6 +268,11 @@ void book_sheet_draw(void) {
     text_draw(F_SANS, 17, x + 78, y + h - 42, dl, (int)strlen(dl), A.del_armed ? g_col[C_ON_ACCENT] : g_col[C_TEXT]);
 }
 
+void lib_covers_drop(void) {   // memory for a book: the covers come back from the card
+    if (!A.covers) return;
+    for (int i = 0; i < LIB_MAX; i++) { free(A.covers[i]); A.covers[i] = NULL; A.cover_tried[i] = 0; }
+}
+
 void library_rescan(void) {
     for (int i = 0; i < LIB_MAX; i++) { free(A.covers[i]); A.covers[i] = NULL; A.cover_tried[i] = 0; }
     lib_scan(NULL, NULL);

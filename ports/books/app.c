@@ -459,7 +459,7 @@ static void go_back(void) {
         return;
     }
     if (A.screen == SCR_READER) { reader_close(); return; }
-    if (A.screen == SCR_CATALOG) { A.screen = SCR_LIBRARY; lib_order(); A.redraw |= R_ALL; return; }
+    if (A.screen == SCR_CATALOG) { cat_release(); A.screen = SCR_LIBRARY; lib_order(); A.redraw |= R_ALL; return; }
     A.quit = 1;
 }
 
@@ -708,7 +708,7 @@ static void shot_poll(void) {
     fclose(f);
     snprintf(out, sizeof out, "%s/appdata/shot.565", bk_root());
     const int t0 = nv_millis();
-    const int r = gfx_shot(out);
+    const int r = gfx_shot(out, pump);
     remove(req);
     perf("shot: %s in %d ms", r ? "failed" : "written", nv_millis() - t0);
 }

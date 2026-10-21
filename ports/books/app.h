@@ -99,6 +99,8 @@ void perf(const char *fmt, ...);
 void toast(const char *fmt, const char *arg);
 int pump(void);
 int input_during_turn(void);
+void cat_release(void);
+void lib_covers_drop(void);
 int reg_add(int x, int y, int w, int h, int act, int arg);
 int reg_state(int idx);
 void button(int x, int y, int ic, int act, int arg, int enabled, uint16_t fg);
