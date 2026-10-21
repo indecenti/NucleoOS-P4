@@ -37,6 +37,13 @@
 #include "tjpgd.h"
 #include "nucleo_sdk.h"
 
+#ifdef BK_HW_JPEG
+// ABI 19: the chip's JPEG decoder (and the PPA to scale) in the system: RGB565 at w x h, 0 when done;
+// < 0 when it cannot (progressive, CMYK, no memory, an older system): TJpgDec then.
+__attribute__((import_module("nv"), import_name("jpeg_decode"))) int32_t nv_jpeg_decode(const void *jpg, uint32_t len, void *out,
+                                                                                    uint32_t out_cap, int32_t w, int32_t h);
+#endif
+
 #define IMG_SRC_MAX (1300u * 1000u)   // largest picture decoded whole: 5 MB as RGBA, inside 12 MiB
 #define JPEG_SRC_MAX (8192u * 8192u)  // baseline JPEG: decoded at 1/2..1/8 by TJpgDec, any size within reason
 #define IMG_MAX 96
@@ -490,6 +497,28 @@ int img_draw(const char *key, int w, int h, int x, int y, uint16_t tint) {
     return 0;
 }
 
+#ifdef BK_HW_JPEG
+// A picture decoded straight to RGB565 (in colour, opaque): into the cache as it is.
+static void store565(const job_t *j, uint16_t *px) {
+    const size_t bytes = (size_t)j->w * j->h * 2;
+    if (bytes > IMG_CACHE_BYTES * 3 / 4) { free(px); return; }
+    evict(bytes);
+    if (s_nimg == IMG_MAX) evict(IMG_CACHE_BYTES);
+    img_t *e = &s_img[s_nimg];
+    memset(e, 0, sizeof *e);
+    snprintf(e->key, sizeof e->key, "%s", j->key);
+    e->w = j->w;
+    e->h = j->h;
+    e->mode = g_rmode;
+    e->used = ++s_clock;
+    e->px = px;
+    e->state = 1;
+    e->bytes = bytes;
+    s_bytes += bytes;
+    s_nimg++;
+}
+#endif
+
 int img_work(int (*read)(void *ctx, const char *key, uint8_t **data, size_t *n), void *ctx) {
     if (!s_nqueue) return 0;
     const job_t j = s_queue[0];
@@ -503,6 +532,19 @@ int img_work(int (*read)(void *ctx, const char *key, uint8_t **data, size_t *n),
         kind = n >= 12 && !memcmp(data + 8, "WEBP", 4) ? "webp" : n >= 4 && !memcmp(data + 1, "PNG", 3) ? "png" :
                n >= 2 && data[0] == 0xFF && data[1] == 0xD8 ? "jpeg" : n >= 3 && !memcmp(data, "GIF", 3) ? "gif" :
                is_svg(data, n) ? "svg" : "other";
+#ifdef BK_HW_JPEG
+        if (!strcmp(kind, "jpeg") && !j.mask && g_rmode == RM_COLOR) {
+            uint16_t *px = (uint16_t *)malloc((size_t)j.w * j.h * 2);
+            const int r = px ? nv_jpeg_decode(data, (uint32_t)n, px, (uint32_t)((size_t)j.w * j.h * 2), j.w, j.h) : -1;
+            if (r == 0) {
+                free(data);
+                snprintf(s_last, sizeof s_last, "jpeg %u KB -> %dx%d (chip)", (unsigned)(n / 1024), j.w, j.h);
+                store565(&j, px);
+                return 1;
+            }
+            free(px);
+        }
+#endif
         rgba = img_decode_rgba(data, n, j.w, j.h);
         free(data);
     }

@@ -38,11 +38,12 @@ python "$here/gen_text.py" "$here/NOTICES.txt" "$G/notices.c" bk_notices
 log="$here/_out/build.log"
 # -O2; a reactor with a 256 KB C stack in linear memory (frame buffers, surfaces, the glyph cache,
 # the chapters and their layout come from malloc, capped by the manifest ram_budget).
-# BK_HW_ROTATE=1: portrait turned by the system (ABI 19, firmware 1.2.151+); the manifest for it is
-# _out/manifest.abi19.json (apps/libri keeps ABI 18 until that firmware is public)
+# BK_HW_ROTATE=1: the ABI 19 build (firmware 1.2.151+): portrait turned by the system and JPEG
+# decoded by the chip; the manifest for it is _out/manifest.abi19.json (apps/libri keeps ABI 18 until
+# that firmware is public)
 HW=()
 if [ "${BK_HW_ROTATE:-0}" = 1 ]; then
-    HW=(-DBK_HW_ROTATE)
+    HW=(-DBK_HW_ROTATE -DBK_HW_JPEG)
     python -c "import json,sys; m=json.load(open(sys.argv[1],encoding='utf-8')); m['abi']=19; json.dump(m,open(sys.argv[2],'w',encoding='utf-8'),ensure_ascii=False,indent=2)" \
         "$out/manifest.json" "$here/_out/manifest.abi19.json"
 fi
