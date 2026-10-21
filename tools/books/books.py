@@ -123,7 +123,11 @@ def cmd_publish(a):
         sys.exit("--store <sparse clone of indecenti/nucleoos-p4-store> is required")
     langs = a.langs.split(",") if a.langs else None
     if not langs:
-        sys.exit("--langs is required (publishing is per language)")
+        sys.exit("--langs is required (publishing is per language; 'all' = every language of the build, smallest first)")
+    if langs == ["all"]:
+        from bk.common import OUT, load_json
+        idx = load_json(OUT / "books" / "index-v1.json")
+        langs = [l["code"] for l in sorted(idx["langs"], key=lambda l: l["count"])]
     publish.publish(a.store, langs)
 
 

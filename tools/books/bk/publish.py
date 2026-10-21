@@ -1,19 +1,25 @@
-"""F5 publishing, one language at a time (only with the user's OK).
+"""F5 publishing (only with the user's OK): Releases for the EPUBs, books/ on Pages for the indexes.
 
-For each language: create the missing GitHub Releases books-<lang>-<n> (never marked Latest, so the
-firmware channels are untouched), upload the EPUBs that are not there yet, verify every asset's name
-and size (and sha256 when GitHub reports a digest), and only then put that language's shards, covers,
-the index, CREDITS.md and release-map.json into books/ of a sparse clone of the store repo and push it.
-The app therefore never sees a row whose file is not downloadable yet.
+GitHub allows about 500 content-creating requests an hour (each asset upload is one), so uploads go one
+at a time at a steady pace (UPLOAD_EVERY seconds), and a secondary-rate-limit answer pauses until the
+time GitHub gives. A language goes live with the rows whose asset is verified (name, size and GitHub's
+sha256 digest equal to the row's s/h) and grows at every checkpoint: after each CHECKPOINT uploads its
+shards are rewritten from the verified rows only and books/ is pushed. The app never sees a row whose
+file is not downloadable. Releases are never marked Latest, so the firmware channels are untouched.
 """
+import datetime
 import json
+import re
 import shutil
 import subprocess
+import time
 from pathlib import Path
 
-from .common import OUT, load_json, save_json
+from .common import MAX_ROWS_PER_SHARD, OUT, load_json, save_json
 
 REPO = "indecenti/nucleoos-p4-store"
+UPLOAD_EVERY = 8.0          # seconds between uploads: ~450 an hour, under GitHub's ~500/hour
+CHECKPOINT = 400            # push the verified rows of a language after this many uploads
 NOTES = {
     "it": "Libri liberi (pubblico dominio e licenze libere) per l'app Libri di NucleoOS. Catalogo, licenze e crediti: "
           "https://indecenti.github.io/nucleoos-p4-store/books/",
@@ -29,15 +35,33 @@ def gh(*args, check=True):
     return r
 
 
+def _limited(text):
+    return "secondary rate limit" in text or "scraping GitHub" in text or "abuse" in text.lower() \
+        or "rate limit" in text.lower()
+
+
+def _wait_for_limit(text, log):
+    """Sleep until the 'HH:MM UTC' GitHub names (+1 min), or 15 minutes."""
+    m = re.search(r"(\d{2}):(\d{2}) UTC", text)
+    now = datetime.datetime.now(datetime.timezone.utc)
+    wait = 900
+    if m:
+        t = now.replace(hour=int(m.group(1)), minute=int(m.group(2)), second=0, microsecond=0)
+        if t < now - datetime.timedelta(minutes=5):
+            t += datetime.timedelta(days=1)
+        wait = max(60, (t - now).total_seconds() + 60)
+    log("  GitHub rate limit: pausing %d min" % (wait // 60))
+    time.sleep(wait)
+
+
 def release_assets(tag):
     r = gh("api", "repos/%s/releases/tags/%s" % (REPO, tag), check=False)
     if r.returncode != 0:
         return None
-    js = json.loads(r.stdout)
-    out = {}
-    page = 1
+    rid = json.loads(r.stdout)["id"]
+    out, page = {}, 1
     while True:
-        a = json.loads(gh("api", "repos/%s/releases/%d/assets?per_page=100&page=%d" % (REPO, js["id"], page)).stdout)
+        a = json.loads(gh("api", "repos/%s/releases/%d/assets?per_page=100&page=%d" % (REPO, rid, page)).stdout)
         for x in a:
             out[x["name"]] = {"size": x["size"], "digest": x.get("digest"), "state": x.get("state")}
         if len(a) < 100:
@@ -55,41 +79,48 @@ def ensure_release(tag, lang):
     return {}
 
 
-def upload_language(lang, log=print, batch=20):
-    """Upload every EPUB of `lang` that is missing or different; returns (rows, ok)."""
+def _good(a, r):
+    return bool(a) and a["size"] == r["s"] and a.get("state") in (None, "uploaded") and \
+        (not a.get("digest") or a["digest"] == "sha256:" + r["h"])
+
+
+def lang_rows(lang):
     rows = []
     for f in sorted((OUT / "books" / lang).glob("*.json"), key=lambda p: int(p.stem)):
         rows += load_json(f)["books"]
-    by_tag = {}
+    return rows
+
+
+def _tag(r):
+    return r["u"].split("/download/")[1].split("/")[0]
+
+
+def verified(rows, cache):
+    """Rows whose asset is on GitHub and matches; cache = {tag: assets} (refreshed by the caller)."""
+    out = []
     for r in rows:
-        tag = r["u"].split("/download/")[1].split("/")[0]
-        by_tag.setdefault(tag, []).append(r)
-    ok = True
-    for tag, rs in sorted(by_tag.items()):
-        have = ensure_release(tag, lang)
-        todo = []
-        for r in rs:
-            a = have.get(r["id"] + ".epub")
-            if not a or a["size"] != r["s"] or a.get("state") not in (None, "uploaded") or \
-                    (a.get("digest") and a["digest"] != "sha256:" + r["h"]):
-                todo.append(r)
-        log("%s: %d assets present, %d to upload" % (tag, len(rs) - len(todo), len(todo)))
-        rel = OUT / "releases" / tag
-        for i in range(0, len(todo), batch):
-            files = [str(rel / (r["id"] + ".epub")) for r in todo[i:i + batch]]
-            r = gh("release", "upload", tag, "--repo", REPO, "--clobber", *files, check=False)
-            if r.returncode != 0:
-                log("  upload error: %s" % (r.stderr or "").strip()[-300:])
-            if (i // batch) % 10 == 0:
-                log("  %s %d/%d" % (tag, min(i + batch, len(todo)), len(todo)))
-        have = release_assets(tag) or {}
-        for r in rs:
-            a = have.get(r["id"] + ".epub")
-            if not a or a["size"] != r["s"] or (a.get("digest") and a["digest"] != "sha256:" + r["h"]):
-                log("  NOT OK: %s %s" % (tag, r["id"]))
-                ok = False
-        ok = head_check(rs, log) and ok
-    return rows, ok
+        tag = _tag(r)
+        if tag not in cache:
+            cache[tag] = release_assets(tag) or {}
+        if _good(cache[tag].get(r["id"] + ".epub"), r):
+            out.append(r)
+    return out
+
+
+def upload(r, log):
+    """One asset, retried through rate limits. True when GitHub accepted it."""
+    f = OUT / "releases" / _tag(r) / (r["id"] + ".epub")
+    for attempt in range(6):
+        p = gh("release", "upload", _tag(r), "--repo", REPO, "--clobber", str(f), check=False)
+        if p.returncode == 0:
+            return True
+        err = (p.stderr or p.stdout or "")
+        if _limited(err):
+            _wait_for_limit(err, log)
+            continue
+        log("  upload %s failed: %s" % (r["id"], err.strip()[-200:]))
+        time.sleep(30 * (attempt + 1))
+    return False
 
 
 def head_check(rows, log=print, n=5):
@@ -97,7 +128,7 @@ def head_check(rows, log=print, n=5):
     import random
     import requests
     good = True
-    for r in random.Random(0).sample(rows, min(n, len(rows))):
+    for r in random.Random(len(rows)).sample(rows, min(n, len(rows))):
         try:
             h = requests.head(r["u"], allow_redirects=True, timeout=60)
             size = int(h.headers.get("content-length", -1))
@@ -112,15 +143,16 @@ def head_check(rows, log=print, n=5):
 
 
 def stage_language(store, lang, rows, log=print):
-    """Copy a verified language into <store>/books and update the published index."""
-    store = Path(store)
-    dst = store / "books"
+    """Write the verified rows of a language into <store>/books (own shards, index entry, covers)."""
+    dst = Path(store) / "books"
     ldir = dst / lang
     if ldir.exists():
         shutil.rmtree(ldir)
     ldir.mkdir(parents=True)
-    for f in (OUT / "books" / lang).glob("*.json"):
-        shutil.copy2(f, ldir / f.name)
+    shards = [rows[i:i + MAX_ROWS_PER_SHARD] for i in range(0, len(rows), MAX_ROWS_PER_SHARD)]
+    for k, part in enumerate(shards, 1):
+        save_json(ldir / ("%d.json" % k), {"format": 1, "lang": lang, "part": k, "parts": len(shards),
+                                            "books": part}, compact=True)
     cdir = dst / "covers"
     cdir.mkdir(exist_ok=True)
     for r in rows:
@@ -128,15 +160,16 @@ def stage_language(store, lang, rows, log=print):
             shutil.copy2(OUT / "books" / "covers" / (r["id"] + ".jpg"), cdir / (r["id"] + ".jpg"))
     full = load_json(OUT / "books" / "index-v1.json")
     pub = load_json(dst / "index-v1.json", None) or {"format": 1, "langs": []}
-    entry = next(l for l in full["langs"] if l["code"] == lang)
-    langs = [l for l in pub["langs"] if l["code"] != lang] + [entry]
-    order = [l["code"] for l in full["langs"]]
-    langs.sort(key=lambda l: order.index(l["code"]) if l["code"] in order else 999)
+    langs = [l for l in pub["langs"] if l["code"] != lang] + [{"code": lang, "count": len(rows), "shards": len(shards)}]
+    order = ["it", "en", "de", "fr", "es"]
+    langs.sort(key=lambda l: (order.index(l["code"]) if l["code"] in order else 99, -l["count"]))
     save_json(dst / "index-v1.json", {"format": 1, "generated": full["generated"], "langs": langs,
                                       "cats": full["cats"]}, compact=True)
     shutil.copy2(OUT / "CREDITS.md", dst / "CREDITS.md")
-    shutil.copy2(OUT / "release-map.json", dst / "release-map.json")
-    log("staged %s: %d books, %d covers" % (lang, len(rows), sum(1 for r in rows if r.get("cv"))))
+    rmap = load_json(dst / "release-map.json", {}) or {}
+    rmap.update(load_json(OUT / "release-map.json", {}) or {})
+    save_json(dst / "release-map.json", rmap, compact=True)
+    log("staged %s: %d books in %d shards, %d covers" % (lang, len(rows), len(shards), sum(1 for r in rows if r.get("cv"))))
 
 
 def commit_push(store, message, log=print):
@@ -150,10 +183,25 @@ def commit_push(store, message, log=print):
         log("nothing to commit")
         return False
     git("commit", "-q", "-m", message)
-    git("pull", "-q", "--rebase", "origin", "main")
-    git("push", "-q", "origin", "HEAD:main")
-    log("pushed: %s" % message)
-    return True
+    for attempt in range(3):
+        git("pull", "-q", "--rebase", "origin", "main")
+        if git("push", "-q", "origin", "HEAD:main", check=False).returncode == 0:
+            log("pushed: %s" % message)
+            return True
+        time.sleep(20)
+    raise RuntimeError("push failed")
+
+
+def go_live(store, lang, rows, cache, log):
+    ok = verified(rows, cache)
+    if not ok:
+        return 0
+    if not head_check(ok, log):
+        log("%s: HEAD check failed - not published" % lang)
+        return 0
+    stage_language(store, lang, ok, log)
+    commit_push(store, "books: %s catalog (%d books)" % (lang, len(ok)), log)
+    return len(ok)
 
 
 def publish(store, langs, log=print):
@@ -161,9 +209,23 @@ def publish(store, langs, log=print):
         if not (OUT / "books" / lang).exists():
             log("%s: not in the build, skipped" % lang)
             continue
-        rows, ok = upload_language(lang, log)
-        if not ok:
-            log("%s: some assets failed verification - index NOT published" % lang)
-            continue
-        stage_language(store, lang, rows, log)
-        commit_push(store, "books: %s catalog (%d books)" % (lang, len(rows)), log)
+        rows = lang_rows(lang)
+        cache = {}
+        for tag in sorted({_tag(r) for r in rows}):
+            cache[tag] = ensure_release(tag, lang)
+        todo = [r for r in rows if not _good(cache[_tag(r)].get(r["id"] + ".epub"), r)]
+        log("%s: %d rows, %d already uploaded, %d to upload" % (lang, len(rows), len(rows) - len(todo), len(todo)))
+        live = go_live(store, lang, rows, cache, log) if len(todo) < len(rows) else 0
+        done = 0
+        for r in todo:
+            t0 = time.time()
+            upload(r, log)
+            done += 1
+            if done % CHECKPOINT == 0 or done == len(todo):
+                cache = {}                       # re-read the releases: verification is against GitHub
+                live = go_live(store, lang, rows, cache, log)
+                log("%s: %d/%d uploaded, %d live" % (lang, done, len(todo), live))
+            time.sleep(max(0.0, UPLOAD_EVERY - (time.time() - t0)))
+        if not todo:
+            live = go_live(store, lang, rows, cache, log)
+        log("%s: done, %d of %d rows live" % (lang, live, len(rows)))
