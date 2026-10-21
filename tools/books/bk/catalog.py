@@ -20,6 +20,7 @@ from . import appcheck, categories, covers, curate, dedup, describe, epubcheck, 
 from .common import (CACHE, MAX_ASSETS_PER_RELEASE, MAX_ROWS_PER_SHARD, OUT, PRIORITY_LANGS, RELEASE_BASE,
                      load_json, save_json, sha256_file)
 
+FROZEN = CACHE / "published"
 ID_RX = re.compile(r"^[a-z0-9-]{1,40}$")
 VALIDATE_CACHE = CACHE / "validate.json"
 ROW_FIELDS = ("id", "t", "st", "a", "ad", "y", "c", "src", "lic", "s", "h", "u", "u2", "d", "cv")
@@ -74,6 +75,7 @@ def build(candidates, excluded, log=print, link_assets=True, use_app_check=True)
         files = [r["_file"] for r in kept if r.get("_file") and curate.keep(r)[0] and Path(r["_file"]).exists()]
         actx = appcheck.run(files, log=log)
     app_fail = []
+    frozen = load_json(FROZEN / "index.json", {}) or {}
     for r in kept:
         ok, why = curate.keep(r)
         if not ok:
@@ -88,6 +90,8 @@ def build(candidates, excluded, log=print, link_assets=True, use_app_check=True)
         if "gutenberg" in (r.get("d") or "").lower():
             r["d"] = ""
         f = r.get("_file")
+        if r["id"] in frozen and (FROZEN / (r["id"] + ".epub")).exists():
+            f = r["_file"] = str(FROZEN / (r["id"] + ".epub"))   # published: always that exact file
         if not f or not Path(f).exists():
             excluded[r["lang"]]["file:missing"] += 1
             continue
@@ -103,7 +107,7 @@ def build(candidates, excluded, log=print, link_assets=True, use_app_check=True)
         if not v["text_ok"] and not (r.get("c") and r["c"][0] == "comics"):
             excluded[r["lang"]]["file:" + v["text_why"]] += 1
             continue
-        if actx is not None:
+        if actx is not None and r["id"] not in frozen:     # published ids passed the gate already
             a = appcheck.result(str(f), actx)
             if not a or a["status"] != "ok":
                 why = a["status"] if a else "unchecked"

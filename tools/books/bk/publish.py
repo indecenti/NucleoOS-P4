@@ -8,14 +8,19 @@ shards are rewritten from the verified rows only and books/ is pushed. The app n
 file is not downloadable. Releases are never marked Latest, so the firmware channels are untouched.
 """
 import datetime
+import hashlib
 import json
+import os
 import re
 import shutil
 import subprocess
 import time
 from pathlib import Path
 
-from .common import MAX_ROWS_PER_SHARD, OUT, load_json, save_json
+from .common import CACHE, MAX_ROWS_PER_SHARD, OUT, load_json, save_json
+
+FROZEN = CACHE / "published"            # the exact file of every published id (hard links)
+FROZEN_INDEX = FROZEN / "index.json"    # id -> [size, sha256]
 
 REPO = "indecenti/nucleoos-p4-store"
 UPLOAD_EVERY = 8.0          # seconds between uploads: ~450 an hour, under GitHub's ~500/hour
@@ -176,7 +181,10 @@ def stage_language(store, lang, rows, log=print):
             shutil.copy2(OUT / "books" / "covers" / (r["id"] + ".jpg"), cdir / (r["id"] + ".jpg"))
     full = load_json(OUT / "books" / "index-v1.json")
     pub = load_json(dst / "index-v1.json", None) or {"format": 1, "langs": []}
-    langs = [l for l in pub["langs"] if l["code"] != lang] + [{"code": lang, "count": len(rows), "shards": len(shards)}]
+    # rev changes exactly when the language's shards change (the app keys its cache on count/shards/rev)
+    digest = hashlib.sha256("".join(f.read_text(encoding="utf-8") for f in sorted(ldir.glob("*.json"))).encode()).hexdigest()
+    rev = int(digest[:8], 16)
+    langs = [l for l in pub["langs"] if l["code"] != lang] + [{"code": lang, "count": len(rows), "shards": len(shards), "rev": rev}]
     order = ["it", "en", "de", "fr", "es"]
     langs.sort(key=lambda l: (order.index(l["code"]) if l["code"] in order else 99, -l["count"]))
     save_json(dst / "index-v1.json", {"format": 1, "generated": full["generated"], "langs": langs,
@@ -208,6 +216,28 @@ def commit_push(store, message, log=print):
     raise RuntimeError("push failed")
 
 
+def freeze(rows, log=print):
+    """Keep the published file of each id forever: later builds reuse it (u/h/s never change for an id)."""
+    FROZEN.mkdir(parents=True, exist_ok=True)
+    idx = load_json(FROZEN_INDEX, {}) or {}
+    n = 0
+    for r in rows:
+        if r["id"] in idx:
+            continue
+        src = OUT / "releases" / _tag(r) / (r["id"] + ".epub")
+        dst = FROZEN / (r["id"] + ".epub")
+        if not dst.exists():
+            try:
+                os.link(src, dst)
+            except OSError:
+                shutil.copy2(src, dst)
+        idx[r["id"]] = [r["s"], r["h"]]
+        n += 1
+    save_json(FROZEN_INDEX, idx, compact=True)
+    if n:
+        log("  frozen %d published files" % n)
+
+
 def go_live(store, lang, rows, cache, log):
     ok = verified(rows, cache)
     if not ok:
@@ -215,6 +245,7 @@ def go_live(store, lang, rows, cache, log):
     if not head_check(ok, log):
         log("%s: HEAD check failed - not published" % lang)
         return 0
+    freeze(ok, log)
     stage_language(store, lang, ok, log)
     commit_push(store, "books: %s catalog (%d books)" % (lang, len(ok)), log)
     return len(ok)
