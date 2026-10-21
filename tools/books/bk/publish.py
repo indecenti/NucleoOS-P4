@@ -47,17 +47,22 @@ def _limited(text):
         or "rate limit" in text.lower()
 
 
+_limit_hits = []
+
+
 def _wait_for_limit(text, log):
-    """Sleep until the 'HH:MM UTC' GitHub names (+1 min), or 15 minutes."""
-    m = re.search(r"(\d{2}):(\d{2}) UTC", text)
-    now = datetime.datetime.now(datetime.timezone.utc)
-    wait = 900
-    if m:
-        t = now.replace(hour=int(m.group(1)), minute=int(m.group(2)), second=0, microsecond=0)
-        if t < now - datetime.timedelta(minutes=5):
-            t += datetime.timedelta(days=1)
-        wait = max(60, (t - now).total_seconds() + 60)
-    log("  GitHub rate limit: pausing %d min" % (wait // 60))
+    """Back off 10, 20, then 30 minutes (the time in GitHub's message is the request's, not the reset's;
+    for the primary limit the reset time comes from /rate_limit)."""
+    now = time.time()
+    _limit_hits[:] = [t for t in _limit_hits if now - t < 3 * 3600] + [now]
+    wait = min(30, 10 * len(_limit_hits)) * 60
+    if "API rate limit exceeded" in text:
+        r = subprocess.run(["gh", "api", "rate_limit", "--jq", ".resources.core.reset"], capture_output=True, text=True)
+        try:
+            wait = max(60, int(r.stdout.strip()) - now + 60)
+        except ValueError:
+            pass
+    log("  GitHub rate limit (%s): pausing %d min" % (datetime.datetime.now().strftime("%H:%M"), wait // 60))
     time.sleep(wait)
 
 
