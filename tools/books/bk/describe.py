@@ -38,7 +38,10 @@ def person_name(pg_name):
     parts = [p.strip() for p in n.split(",")]
     if len(parts) >= 2 and parts[1] and not re.match(r"^\d", parts[1]):
         given, surname = parts[1], parts[0]
-        n = given if given.split()[-1] == surname else given + " " + surname
+        if given.split()[-1] == surname:
+            n = given
+        else:
+            n = given + ("" if given.endswith(("'", "’")) else " ") + surname
     else:
         n = parts[0]
     return re.sub(r"\s+", " ", n).strip()
@@ -62,17 +65,46 @@ def dates(birth, death, lang):
     return "%s-%s" % (year_str(birth, lang), year_str(death, lang))
 
 
+TITLE_TAGS = re.compile(r"\s*[\[(](illustrated|illustrated edition|annotated|unabridged|abridged|with illustrations|"
+                        r"illustrato|illustrata|illustré|illustriert|ilustrado|ilustrada)[\])]\s*$", re.I)
+
+
 def clean_title(t):
+    """Raw source title -> one-line title (subtitle joined with ': ' when the main title is short)."""
     t = (t or "").replace("$b", "").replace("\r", "")
     lines = [l.strip(" :;") for l in t.split("\n") if l.strip()]
     t = lines[0] if lines else ""
-    if len(lines) > 1 and len(t) < 30:
-        t = t + ": " + lines[1]
+    if len(lines) > 1:
+        t = t + ": " + " ".join(lines[1:])
     t = re.sub(r"\s+", " ", t).strip(" :;,")
-    if len(t) > 140:
-        cut = t[:140]
-        t = cut[:cut.rfind(" ")] + "…" if " " in cut else cut
+    return _limit(t, 240)
+
+
+def _limit(t, n):
+    if len(t) <= n:
+        return t
+    cut = t[:n]
+    return cut[:cut.rfind(" ")] + "…" if " " in cut else cut
+
+
+def _trim_end(t):
+    t = TITLE_TAGS.sub("", t).strip(" :;,")
+    if t.endswith(".") and not t.endswith(".."):
+        t = t[:-1].rstrip()
     return t
+
+
+def split_title(t):
+    """'I promessi sposi.: Opere di A. Manzoni, vol. 1' -> ('I promessi sposi', 'Opere di A. Manzoni, vol. 1').
+    The main title stops at the first ':' / ' ; ' / ' - ' break; the rest is the subtitle (may be '')."""
+    t = re.sub(r"\s+", " ", t or "").strip()
+    m = re.search(r"\s*(?::|\s;\s| — )\s*", t)
+    if m and m.start() >= 2:
+        main, sub = t[:m.start()], t[m.end():]
+    else:
+        main, sub = t, ""
+    main, sub = _trim_end(main), _trim_end(sub)
+    return _limit(main, 140), _limit(sub, 160)
 
 
 def _cut(s, n=D_MAX):

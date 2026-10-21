@@ -208,7 +208,7 @@ def meta(log=print):
         from .categories import order, MAX_CATS
         cats = order(cats + ["classic"])[:MAX_CATS]
         auts = [a for a in agents if a["role"] == "aut"] or agents[:1]
-        author = ", ".join(a["name"] for a in auts[:3])
+        author = " & ".join(a["name"] for a in auts[:3])
         ad = describe.dates(auts[0]["birth"], auts[0]["death"], lang) if auts else ""
         pop = max([r.get("downloads", 0) for r in pgrecs] or [0])
         sid = "se-" + re.sub(r"[^a-z0-9]+", "-", b["url"].rsplit("/ebooks/", 1)[-1].lower()).strip("-")
@@ -220,6 +220,7 @@ def meta(log=print):
             "d": describe._cut(b["abstract"]) if b["abstract"] else describe.description(lang, author, ad, cats, y),
             "u2": b["url"], "dup_of": ["pg%d" % i for i in pgids],
             "_repo": b["repo"], "_file": str(EPUB_DIR / (b["repo"] + ".epub")),
+            "_qid": (res.get(b["work_wiki"][0]) or {}).get("qid") if b["work_wiki"] else None,
         })
     ids = Counter(r["id"] for r in recs)
     for r in recs:

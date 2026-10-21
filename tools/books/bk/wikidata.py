@@ -133,6 +133,8 @@ def enrich_pg(meta, log=print):
                 nb += 1
             if r.get("desc"):
                 b["wd_desc"] = r["desc"]
+            if r.get("qid"):
+                b["wd_qid"] = r["qid"]
     log("wikidata: filled %d author deaths, %d publication years" % (na, nb))
     return meta
 

@@ -114,8 +114,10 @@ def metadata(lang, log=print):
         cats = [c.replace("_", " ") for c in page["cats"]]
         qid = state["info"].get(t, {}).get("qid") or (page.get("props") or {}).get("wikibase_item")
         agents, years, names = [], [], []
+        work_qid = qid
         if qid:
             e = ents.get([qid]).get(qid) or {}
+            work_qid = (e.get("edition_of") or [qid])[0]
             work = ents.get(e.get("edition_of", [])[:1])
             people = [(q, "aut") for q in e.get("authors", [])] + [(q, "trl") for q in e.get("translators", [])] + \
                      [(q, "ill") for q in e.get("illustrators", [])] + [(q, "edt") for q in e.get("editors", [])]
@@ -150,7 +152,7 @@ def metadata(lang, log=print):
             excl[lang]["rights:" + why] += 1
             continue
         a0 = next((a for a in agents if a["role"] == "aut"), agents[0])
-        author = ", ".join(names[:3])
+        author = " & ".join(names[:3])
         ad = describe.dates(a0.get("birth"), a0.get("death"), lang) if rights.name_kind(a0["name"]) == "person" else ""
         c = src_mw.ws_categories(cats)
         title = re.sub(r"<[^>]+>", "", page["title"])
@@ -160,7 +162,7 @@ def metadata(lang, log=print):
         recs.append({"id": rid, "lang": lang, "t": describe.clean_title(title), "a": author, "ad": ad, "y": y,
                      "c": c, "src": "ws", "lic": "cc-by-sa", "pop": 0,
                      "d": describe.description(lang, author, ad, c, y), "u2": url,
-                     "_site": site, "_title": t, "_file": str(src_mw.EPUB_DIR / (rid + ".epub")),
+                     "_site": site, "_title": t, "_file": str(src_mw.EPUB_DIR / (rid + ".epub")), "_qid": work_qid,
                      "_attrib": "Wikisource (%s), trascrizione CC BY-SA 4.0" % site})
     return recs, excl
 

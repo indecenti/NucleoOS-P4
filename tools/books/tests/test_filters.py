@@ -210,6 +210,25 @@ class Misc(unittest.TestCase):
                                    '(This is an automatically generated summary.)')
         self.assertEqual(s, '"X" by Y is a novel. It tells of Z.')
 
+    def test_split_title(self):
+        s = describe.split_title
+        self.assertEqual(s("I promessi sposi.: Opere di Alessando Manzoni, vol. 1"),
+                         ("I promessi sposi", "Opere di Alessando Manzoni, vol. 1"))
+        self.assertEqual(s("Le avventure di Pinocchio: Storia di un burattino"),
+                         ("Le avventure di Pinocchio", "Storia di un burattino"))
+        self.assertEqual(s("Pride and Prejudice [Illustrated]"), ("Pride and Prejudice", ""))
+        self.assertEqual(s("Eh! la vita....: Novelle"), ("Eh! la vita....", "Novelle"))
+        self.assertEqual(describe.person_name("Azeglio, Massimo d'"), "Massimo d'Azeglio")
+
+    def test_canon_rank(self):
+        from bk import rank
+        rank.sitelinks = lambda qids, log=print: {}
+        rows = [{"id": "pg1", "lang": "it", "t": "Ricordi d'infanzia e di scuola", "a": "Edmondo De Amicis", "pop": 9700},
+                {"id": "pg2", "lang": "it", "t": "Le avventure di Pinocchio", "a": "Carlo Collodi", "pop": 3000}]
+        rank.apply(rows, log=lambda *a: None)
+        self.assertGreater(rows[1]["pop"], rows[0]["pop"])
+        self.assertEqual(rows[0]["_downloads"], 9700)
+
     def test_lang_pick(self):
         self.assertEqual(pick_lang(["it"]), "it")
         self.assertEqual(pick_lang(["de", "en"]), "en")

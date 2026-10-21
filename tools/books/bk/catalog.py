@@ -16,13 +16,13 @@ import re
 from collections import Counter, defaultdict
 from pathlib import Path
 
-from . import appcheck, categories, covers, curate, dedup, epubcheck, quality
+from . import appcheck, categories, covers, curate, dedup, describe, epubcheck, quality, rank
 from .common import (CACHE, MAX_ASSETS_PER_RELEASE, MAX_ROWS_PER_SHARD, OUT, PRIORITY_LANGS, RELEASE_BASE,
                      load_json, save_json, sha256_file)
 
 ID_RX = re.compile(r"^[a-z0-9-]{1,40}$")
 VALIDATE_CACHE = CACHE / "validate.json"
-ROW_FIELDS = ("id", "t", "a", "ad", "y", "c", "src", "lic", "s", "h", "u", "u2", "d", "cv")
+ROW_FIELDS = ("id", "t", "st", "a", "ad", "y", "c", "src", "lic", "s", "h", "u", "u2", "d", "cv")
 PAGES_BUDGET = 120_000_000      # covers + indexes on Pages (Pages is ~790 MB of its 1 GB limit)
 ROW_BYTES_ESTIMATE = 520        # one compact JSON row, measured
 
@@ -120,6 +120,15 @@ def build(candidates, excluded, log=print, link_assets=True, use_app_check=True)
             "".join("| %s | %s | %s | %s |\n" % (l, i, w, m.replace("|", "/")) for l, i, w, m in sorted(app_fail)),
             encoding="utf-8")
         log("app check: %d books dropped (see reports/app-check-failures.md)" % len(app_fail))
+
+    for r in rows:
+        # main title in "t", the rest (subtitle, series, volume note) in "st"; several authors joined by " & "
+        r["t"], st = describe.split_title(r["t"])
+        if st:
+            r["st"] = st
+        if r.get("a") and ", " in r["a"] and r["src"] in ("pg", "se", "ws", "mn"):
+            r["a"] = r["a"].replace(", ", " & ")
+    rank.apply(rows, log)
 
     by_lang = defaultdict(list)
     for r in rows:

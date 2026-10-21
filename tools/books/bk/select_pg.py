@@ -73,7 +73,7 @@ def candidates(meta):
             continue
         names = [describe.person_name(a["name"]) for a in auts if rights.name_kind(a["name"]) == "person"]
         a0 = auts[0]
-        author = ", ".join(names[:3]) + (" et al." if len(names) > 3 else "")
+        author = " & ".join(names[:3]) + (" et al." if len(names) > 3 else "")
         ad = describe.dates(a0.get("birth"), a0.get("death"), lang) if rights.name_kind(a0["name"]) == "person" else ""
         t = describe.clean_title(b["title"])
         rec = {
@@ -82,7 +82,7 @@ def candidates(meta):
             "d": describe.description(lang, author, ad, cats, y, b.get("summary"), "en",
                                       (b.get("wd_desc") or {}).get(lang)),
             "u2": src_pg.epub_url(b["id"], edition),
-            "_pg": b["id"], "_edition": edition, "_est_size": sizes[edition],
+            "_pg": b["id"], "_edition": edition, "_est_size": sizes[edition], "_qid": b.get("wd_qid"),
             "_contributors": [(a["name"], a["role"], a.get("birth"), a.get("death")) for a in b["agents"]],
         }
         out.append(rec)
