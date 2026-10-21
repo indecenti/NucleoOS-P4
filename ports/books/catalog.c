@@ -40,7 +40,7 @@ typedef struct {
 } crow_t;
 
 typedef struct {             // a book in full (its sheet, a download)
-    char id[48], t[200], a[160], ad[24], src[8], lic[16], h[72], u[300], d[600], lang[8];
+    char id[48], t[200], st[200], a[160], ad[24], src[8], lic[16], h[72], u[300], d[600], lang[8];
     int y, cv, nc;
     uint32_t s;
     char c[3][24];
@@ -297,6 +297,7 @@ static void parse_book(js_t *j, crow_t *r, cbook_t *b) {
         else if (!strcmp(key, "a")) { r->a = pool_add(v); if (b) snprintf(b->a, sizeof b->a, "%s", v); }
         else if (b) {
             if (!strcmp(key, "ad")) snprintf(b->ad, sizeof b->ad, "%s", v);
+            else if (!strcmp(key, "st")) snprintf(b->st, sizeof b->st, "%s", v);
             else if (!strcmp(key, "src")) snprintf(b->src, sizeof b->src, "%s", v);
             else if (!strcmp(key, "lic")) snprintf(b->lic, sizeof b->lic, "%s", v);
             else if (!strcmp(key, "h")) snprintf(b->h, sizeof b->h, "%s", v);
@@ -890,8 +891,9 @@ static void draw_book_sheet(void) {
     if (e && e->state == 1) draw_cover565(e->px, x + 28, y + 28, CELL_W, CELL_H);
     else draw_typo_cover(b->t, b->a, (uint32_t)strlen(b->t) * 2654435761u, x + 28, y + 28, CELL_W, CELL_H);
     const int tx = x + 28 + CELL_W + 28, tw = w - (tx - x) - 60;
-    wrap_text(F_SERIF_BOLD, 22, tx, y + 58, tw, 28, b->t, 3, g_col[C_TEXT]);
-    int ry = y + 58 + 28 * 3;
+    const int tl = wrap_text(F_SERIF_BOLD, 22, tx, y + 58, tw, 28, b->t, b->st[0] ? 2 : 3, g_col[C_TEXT]);
+    int ry = y + 58 + 28 * (b->st[0] ? tl : 3);
+    if (b->st[0]) ry += 22 * wrap_text(F_SERIF_ITALIC, 17, tx, ry - 4, tw, 22, b->st, 2, g_col[C_DIM]) + 6;   // the subtitle
     char line[300];
     snprintf(line, sizeof line, "%s%s%s%s", b->a[0] ? b->a : tr(S_UNKNOWN_AUTHOR), b->ad[0] ? " (" : "", b->ad, b->ad[0] ? ")" : "");
     text_draw_fit(F_SANS, 17, tx, ry, line, (int)strlen(line), tw + 40, g_col[C_TEXT]);

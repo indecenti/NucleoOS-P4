@@ -60,6 +60,7 @@ typedef struct {
     char skip_tag[16];
     // rich text (opts.rich)
     int rich;
+    int book;                  // opts.book: MediaWiki's classes mean nothing here
     int heading;               // inside h1-h6: plain text, its id kept for the anchor
     int tables;                // nesting of tables: only the current one has rows and cells
     int flat[4], nflat;        // tables met inside a cell: their own rows, then the cell goes on
@@ -690,7 +691,7 @@ static int rich_start(st_t *s, const tag_t *t, const attr_t *cls) {
             s->space = 1;   // deeper still: words of the cell
             return 1;
         }
-        if (!s->box_tables && is_infobox(cls)) {
+        if (!s->box_tables && !s->book && is_infobox(cls)) {
             close_styles(s);
             s->box_tables = 1;
             s->out = &s->box;
@@ -835,7 +836,7 @@ static void on_start(st_t *s, const tag_t *t) {
     const int is_void = is(nm, kVoid);
     if (!is_void && !t->self_close) {
         int drop = is(nm, kDrop) || attr(t, "hidden") || hidden_style(attr(t, "style"));
-        for (const char *const *c = kDropClass; !drop && *c; c++) drop = has_word(cls, *c);
+        for (const char *const *c = kDropClass; !s->book && !drop && *c; c++) drop = has_word(cls, *c);
         if (!strcmp(nm, "math")) {
             const attr_t *alt = attr(t, "alttext");
             if (alt) tex(s, alt->val, alt->vlen);
@@ -894,7 +895,7 @@ static void on_start(st_t *s, const tag_t *t) {
     if (!strcmp(nm, "tr")) { brk(s, 1); s->cells = s->cell = 0; return; }
     if (!strcmp(nm, "table")) {
         if (s->box_tables) s->box_tables++;
-        else if (is_infobox(cls)) { s->box_tables = 1; s->out = &s->box; }
+        else if (!s->book && is_infobox(cls)) { s->box_tables = 1; s->out = &s->box; }
         brk(s, 2);
         return;
     }
@@ -1111,6 +1112,7 @@ char *nvhtml_text(const char *html, size_t n, const nvhtml_opts_t *opts, size_t 
     memset(&s, 0, sizeof s);
     s.out = &s.text;
     s.rich = o->rich;
+    s.book = o->book;
     convert(&s, html, n);
     close_styles(&s);
     s.out = &s.text;   // an infobox left open by broken HTML

@@ -295,6 +295,7 @@ typedef struct {
 } book_t;
 
 int book_open(const char *path, book_t **out);   // BKE_*
+int book_open_meta(const char *path, book_t **out);   // the same for the library: a plain text's first 64 KB only
 void book_close(book_t *b);
 const char *book_kind_name(int kind);
 int book_kind_of(const char *path);   // by extension; -1 unknown

@@ -26,8 +26,16 @@ void *__real_realloc(void *p, size_t n);
 void __real_free(void *p);
 static size_t mem_now, mem_peak, mem_cap = BK_MEMCAP;
 static long mem_fail;
+#include <execinfo.h>
+static void mem_trace(void) {   // where a refused allocation came from (addr2line -e the binary)
+    void *bt[12];
+    const int n = backtrace(bt, 12);
+    fprintf(stderr, "memory: refused at");
+    for (int i = 1; i < n; i++) fprintf(stderr, " %p", bt[i]);
+    fprintf(stderr, "\n");
+}
 void *__wrap_malloc(size_t n) {
-    if (mem_now + n + 16 > mem_cap) { mem_fail++; return NULL; }
+    if (mem_now + n + 16 > mem_cap) { mem_fail++; fprintf(stderr, "memory: refused %zu bytes with %zu in use\n", n, mem_now); mem_trace(); return NULL; }
     size_t *p = (size_t *)__real_malloc(n + 16);
     if (!p) return NULL;
     p[0] = n;
@@ -51,7 +59,7 @@ void *__wrap_realloc(void *q, size_t n) {
     if (!q) return __wrap_malloc(n);
     size_t *p = (size_t *)((char *)q - 16);
     const size_t old = p[0];
-    if (n > old && mem_now + (n - old) > mem_cap) { mem_fail++; return NULL; }
+    if (n > old && mem_now + (n - old) > mem_cap) { mem_fail++; fprintf(stderr, "memory: refused growing %zu to %zu bytes with %zu in use\n", old, n, mem_now); mem_trace(); return NULL; }
     size_t *r = (size_t *)__real_realloc(p, n + 16);
     if (!r) return NULL;
     mem_now = mem_now - old + n;

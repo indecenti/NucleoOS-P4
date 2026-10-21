@@ -97,6 +97,7 @@ extern app_t A;
 void perf(const char *fmt, ...);
 void toast(const char *fmt, const char *arg);
 int pump(void);
+int input_during_turn(void);
 int reg_add(int x, int y, int w, int h, int act, int arg);
 int reg_state(int idx);
 void button(int x, int y, int ic, int act, int arg, int enabled, uint16_t fg);
@@ -112,7 +113,7 @@ void draw_field(int x, int y, int w, const char *placeholder);
 void q_append(uint32_t c);
 void q_backspace(void);
 void theme_apply(void);
-void wrap_text(int f, int px, int x, int y, int w, int lh, const char *s, int max_lines, uint16_t c);
+int wrap_text(int f, int px, int x, int y, int w, int lh, const char *s, int max_lines, uint16_t c);
 void draw_cover(int i, int x, int y, int w, int h);   // a library entry's cover (picture or drawn)
 void draw_typo_cover(const char *title, const char *author, uint32_t hue, int x, int y, int w, int h);
 

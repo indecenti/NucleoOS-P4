@@ -549,7 +549,7 @@ static void animate(int dir, float from, float to) {
     int frames = 0;
     for (;;) {
         float t = (float)(nv_millis() - t0) / (float)ms;
-        if (t > 1) t = 1;
+        if (t > 1 || (frames && input_during_turn())) t = 1;   // more input: this turn ends now
         const float e = 1 - (1 - t) * (1 - t) * (1 - t);   // ease out
         compose_turn(dir, from + (to - from) * e);
         frames++;
@@ -885,14 +885,25 @@ static void viewer_load(void) {
     if (book_resource(A.book, s_draw_chap = A.chap, A.doc.text + im->src_off, im->src_len, &data, &n)) return;
     int iw, ih;
     if (img_size(data, n, &iw, &ih)) { free(data); return; }
-    // fitted to the screen, times the zoom (1x, 2x), at most 1.6 million pixels (3.2 MB)
+    // fitted to the screen, times the zoom (1x, 2x), at most a million pixels (2 MB, 6 MB while it is
+    // decoded); with less memory free, the page pictures' cache goes first, then the size comes down
     long s = (long)g_w * 1000 / iw < (long)g_h * 1000 / ih ? (long)g_w * 1000 / iw : (long)g_h * 1000 / ih;
     s = s * A.zoom100 / 100;
     int w = (int)(iw * s / 1000), h = (int)(ih * s / 1000);
-    while ((long)w * h > 1600000L) { w = w * 9 / 10; h = h * 9 / 10; }
+    while ((long)w * h > 1000000L) { w = w * 9 / 10; h = h * 9 / 10; }
     if (w < 1) w = 1;
     if (h < 1) h = 1;
     s_view_px = img_render565(data, n, w, h, g_col[C_SCRIM], 0);
+    if (!s_view_px) {
+        img_clear();
+        s_view_px = img_render565(data, n, w, h, g_col[C_SCRIM], 0);
+    }
+    while (!s_view_px && (long)w * h > 90000L) {
+        w = w * 4 / 5;
+        h = h * 4 / 5;
+        s_view_px = img_render565(data, n, w, h, g_col[C_SCRIM], 0);
+    }
+    if (!s_view_px) perf("viewer: no memory for the picture");
     free(data);
     s_view_w = w;
     s_view_h = h;

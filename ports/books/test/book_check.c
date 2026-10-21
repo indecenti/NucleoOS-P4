@@ -68,6 +68,18 @@ int main(int argc, char **argv) {
             const double ms = now_ms() - c0 + rms;
             if (!quiet && ms > 200) printf("  (chapter %d: text %.0f ms, layout %.0f ms)\n", i, rms, ms - rms);
             if (ms > worst) { worst = ms; worst_ch = i; }
+            if (getenv("BK_PAGES") && b->ch[i].path && strstr(b->ch[i].path, getenv("BK_PAGES"))) {   // the lines and pages
+                int pg = 0;
+                for (int k = 0; k < d.nops; k++)   // what reaches across lines
+                    if (d.ops[k].y1 - d.ops[k].y0 > 40)
+                        printf("  op %4d kind %d y %5d-%5d x %4d w %4d\n", k, d.ops[k].kind, d.ops[k].y0, d.ops[k].y1, d.ops[k].x, d.ops[k].w);
+                for (int k = 0; k < d.nlines; k++) {
+                    const dline_t *l = &d.lines[k];
+                    while (pg < d.npages && d.page_top[pg] <= l->y0) { printf("  ---- page %d at %d\n", pg + 1, d.page_top[pg]); pg++; }
+                    printf("  line %3d y %5d-%5d para %3d flags %02x  %.50s\n", k, l->y0, l->y1, l->para, l->flags,
+                           l->off >= 0 ? d.text + l->off : "");
+                }
+            }
             pages += d.npages;
             for (int k = 0; k < d.nimgs; k++) {
                 int w, h;

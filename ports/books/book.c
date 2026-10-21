@@ -134,6 +134,122 @@ static int toc_add(book_t *b, const char *title, int chap, const char *anchor, i
     return 0;
 }
 
+// A chapter's label ("CHAPTER II", "Capitolo 3", "XIV."): how a document that the contents skip
+// names itself in its first line.
+static int chapter_label(const char *s) {
+    static const char *const kWords[] = {"chapter", "capitolo", "kapitel", "chapitre", "cap\xC3\xADtulo", "capitulo",
+                                         "hoofdstuk", "kapitola", "book", "part", "parte", "libro", "livre", "buch",
+                                         "teil", "canto", "act", "atto", "acte", "akt", "letter", "lettera", "lettre",
+                                         "brief", "stave", NULL};
+    for (const char *const *w = kWords; *w; w++) {
+        const size_t n = strlen(*w);
+        if (!strncasecmp(s, *w, n) && (s[n] == ' ' || s[n] == '.')) return 1;
+    }
+    const char *p = s;   // a numeral alone, a dot after it perhaps
+    while (*p && strchr("IVXLC", *p)) p++;
+    if (p == s) while (*p >= '0' && *p <= '9') p++;
+    return p > s && p - s < 8 && (!*p || (*p == '.' && !p[1]));
+}
+
+// The first two blocks of text of an XHTML document, entities decoded and spaces folded.
+static void first_blocks(const char *s, size_t n, char *a, size_t ac, char *b2, size_t bc) {
+    static const char *const kBlock[] = {"div", "p", "h1", "h2", "h3", "h4", "h5", "h6", "br", "li", "td", "tr",
+                                         "section", "header", "table", "blockquote", "hr", "img", NULL};
+    a[0] = b2[0] = 0;
+    size_t i = 0;
+    for (; i + 5 < n; i++)
+        if (s[i] == '<' && !strncasecmp(s + i + 1, "body", 4)) break;
+    int got = 0;
+    char buf[400];   // the current block's text, its inline tags left out
+    size_t bn = 0;
+    while (i < n && got < 2) {
+        if (s[i] == '<') {
+            size_t j = i + 1;
+            if (j < n && s[j] == '/') j++;
+            size_t k = j;
+            while (k < n && ((s[k] >= 'a' && s[k] <= 'z') || (s[k] >= 'A' && s[k] <= 'Z') || (s[k] >= '0' && s[k] <= '9'))) k++;
+            int block = 0;
+            for (const char *const *t = kBlock; *t && !block; t++)
+                block = strlen(*t) == k - j && !strncasecmp(s + j, *t, k - j);
+            while (k < n && s[k] != '>') k++;
+            i = k + 1;
+            if (block && bn) {
+                char out[200];
+                xml_text(buf, (int)bn, out, sizeof out);
+                if (out[0]) {
+                    if (got == 0) snprintf(a, ac, "%s", out);
+                    else snprintf(b2, bc, "%s", out);
+                    got++;
+                }
+                bn = 0;
+            }
+            continue;
+        }
+        if (bn + 1 < sizeof buf) buf[bn++] = s[i];
+        i++;
+    }
+}
+
+// Documents of the spine that the contents leave out but that open with a chapter's label get their
+// own entry (old Gutenberg books list only a few landmarks): the contents and the running head name
+// every chapter.
+static void toc_fill(book_t *b) {
+    if (b->fixed || b->nch < 2 || b->nch > 600 || !b->zip) return;
+    uint8_t *has = (uint8_t *)calloc((size_t)b->nch, 1);
+    tocent_t *add = (tocent_t *)calloc((size_t)b->nch, sizeof(tocent_t));
+    if (!has || !add) { free(has); free(add); return; }
+    for (int i = 0; i < b->ntoc; i++)
+        if (b->toc[i].chap >= 0 && b->toc[i].chap < b->nch) has[b->toc[i].chap] = 1;
+    int nadd = 0, looked = 0;
+    for (int c = 0; c < b->nch && looked < 200; c++) {
+        const chap_t *ch = &b->ch[c];
+        if (has[c] || !ch->path || ch->part || !ch->linear) continue;
+        const int zi = zip_find(b->zip, ch->path);
+        uint8_t *d;
+        size_t dn;
+        looked++;
+        if (zi < 0 || zip_read_head(b->zip, zi, &d, &dn, 6144)) continue;
+        char l1[120], l2[120];
+        first_blocks((const char *)d, dn, l1, sizeof l1, l2, sizeof l2);
+        free(d);
+        if (!l1[0] || strlen(l1) > 60 || !chapter_label(l1)) continue;
+        char title[200];
+        const size_t n2 = strlen(l2);
+        if (n2 && n2 <= 60 && !chapter_label(l2) && !strchr(".!?;:", l2[n2 - 1]))
+            snprintf(title, sizeof title, "%s \xE2\x80\x94 %s", l1, l2);   // "CHAPTER II — Pool of Tears"
+        else
+            snprintf(title, sizeof title, "%s", l1);
+        add[nadd].title = strdup(title);
+        add[nadd].anchor = strdup("");
+        if (!add[nadd].title || !add[nadd].anchor) { free(add[nadd].title); free(add[nadd].anchor); continue; }
+        add[nadd].chap = c;
+        nadd++;
+    }
+    free(has);
+    if (!nadd || b->ntoc + nadd > TOC_MAX) {
+        for (int i = 0; i < nadd; i++) { free(add[i].title); free(add[i].anchor); }
+        free(add);
+        return;
+    }
+    // merged in reading order: each new entry before the first old one of a later chapter
+    tocent_t *m = (tocent_t *)malloc(sizeof(tocent_t) * (size_t)((b->ntoc + nadd + 63) & ~63));
+    if (!m) {
+        for (int i = 0; i < nadd; i++) { free(add[i].title); free(add[i].anchor); }
+        free(add);
+        return;
+    }
+    int k = 0, o = 0;
+    for (int i = 0; i < b->ntoc; i++) {
+        while (k < nadd && add[k].chap < b->toc[i].chap) m[o++] = add[k++];
+        m[o++] = b->toc[i];
+    }
+    while (k < nadd) m[o++] = add[k++];
+    free(b->toc);
+    free(add);
+    b->toc = m;
+    b->ntoc = o;
+}
+
 static int chap_add(book_t *b, const char *path, uint32_t size, uint32_t start, int linear, int fixed) {
     if (!(b->nch & 63)) {
         chap_t *c = (chap_t *)realloc(b->ch, sizeof(chap_t) * (size_t)(b->nch + 64));
@@ -496,6 +612,7 @@ static int open_epub(book_t *b) {
             free(nd);
             if (b->ntoc) break;
         }
+    toc_fill(b);
     for (int s = 0; s < nspine; s++) free(spine[s]);
     free(spine);
     free(spine_lin);
@@ -654,6 +771,9 @@ static void cut_chapters(book_t *b) {
     if (!b->nch) chap_add(b, NULL, 1, 0, 1, 0);
 }
 
+static int s_meta_only;   // book_open_meta: the whole-text formats read only their first bytes
+#define META_HEAD (64 * 1024)
+
 static int open_whole(book_t *b, const char *path) {
     FILE *f = fopen(path, "rb");
     if (!f) return BKE_OPEN;
@@ -663,9 +783,11 @@ static int open_whole(book_t *b, const char *path) {
         const long sz = ftell(f);
         if (sz < 0 || (unsigned long)sz > WHOLE_MAX) { fclose(f); return BKE_BIG; }
         fseek(f, 0, SEEK_SET);
-        s = (char *)malloc((size_t)sz + 1);
+        size_t want = (size_t)sz;
+        if (s_meta_only && b->kind != BK_FB2 && want > META_HEAD) want = META_HEAD;   // a title is near the top
+        s = (char *)malloc(want + 1);
         if (!s) { fclose(f); return BKE_MEM; }
-        n = fread(s, 1, (size_t)sz, f);
+        n = fread(s, 1, want, f);
         s[n] = 0;
     }
     fclose(f);
@@ -736,6 +858,7 @@ static int open_whole(book_t *b, const char *path) {
             memset(&o, 0, sizeof o);
             o.rich = 1;
             o.back_matter = 1;
+            o.book = 1;
             rt = nvhtml_text(u, un, &o, &rn);
         }
         free(u);
@@ -749,6 +872,13 @@ static int open_whole(book_t *b, const char *path) {
 }
 
 // ------------------------------------------------------------------------------------ the API
+
+int book_open_meta(const char *path, book_t **out) {
+    s_meta_only = 1;
+    const int r = book_open(path, out);
+    s_meta_only = 0;
+    return r;
+}
 
 int book_open(const char *path, book_t **out) {
     *out = NULL;
@@ -852,6 +982,7 @@ int book_chapter(book_t *b, int i, char **text, size_t *n) {
         memset(&opt, 0, sizeof opt);
         opt.rich = 1;
         opt.back_matter = 1;
+        opt.book = 1;
         o = nvhtml_text(html, dn, &opt, &on);
     }
     free(html);

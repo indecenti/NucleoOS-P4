@@ -142,9 +142,18 @@ typedef struct {
     int32_t bottom;
     int img_above, img_below;
     int max_px;              // the largest text size of the line
+    int float_edge;          // a small picture floated at the left (a drop cap): lines beside it start
+    int32_t float_bottom;    // at float_edge (px from the left of the page) until float_bottom
 } lay_t;
 
 // Line height: line_h percent of the text size (as in CSS), never less than the font's own height.
+// Where a line starts at the least: after a picture floated at the left, while beside it.
+static int pen_start(const lay_t *L, int indent16) {
+    if (L->y >= L->float_bottom) return indent16;
+    const int m = (L->float_edge - L->x0) << 4;
+    return m > indent16 ? m : indent16;
+}
+
 static int line_height(const lay_t *L, int asc, int desc) {
     const int px = L->max_px ? L->max_px : L->body;
     const int lh = px * L->o->line_h / 100;
@@ -153,7 +162,7 @@ static int line_height(const lay_t *L, int asc, int desc) {
 
 static void line_flush_end(lay_t *L, int last) {
     if (!L->nline && !L->asc) {   // nothing on the line yet: only the pen goes back (a first-line indent
-        L->lx = L->indent;        // too narrow for the first word) — the callers' loops rely on that
+        L->lx = pen_start(L, L->indent);   // too narrow for the first word) — the callers' loops rely on that
         L->space_w = 0;
         return;
     }
@@ -219,7 +228,7 @@ static void line_flush_end(lay_t *L, int last) {
     L->nline = 0;
     L->y += lh;
     if (L->y > L->bottom) L->bottom = L->y;
-    L->lx = L->indent;
+    L->lx = pen_start(L, L->indent);
     L->asc = L->desc = 0;
     L->img_above = L->img_below = 0;
     L->space_w = 0;
@@ -495,11 +504,16 @@ static int image_frag(lay_t *L, const ist_t *st, const int32_t *fs, const int *f
         h = (int)(h * s / 1000);
     }
     if (w > col && col > 0) { h = (int)((long)h * col / w); w = col; }
-    const int hmax = page > 0 ? page - (fixed ? 0 : body) : body * 30;   // never taller than a page
+    // never taller than a page, with room under it for a line of caption
+    const int hmax = page > 0 ? page - (fixed ? 0 : body * 3) : body * 30;
     if (h > hmax && hmax > 0) { w = (int)((long)w * hmax / h); h = hmax; }
     if (w < 1) w = 1;
     if (h < 1) h = 1;
-    if (!mask && (figure || fixed || w > col * 6 / 10)) block = 1;
+    // a small picture first in its block, taller than the text (a drop cap): at the left, the text beside
+    const int floated = !mask && !fixed && !figure && !block && !measure && !L->nline && !L->nword && !L->space_w &&
+                        w <= col / 4 && h >= body * 2 && h <= body * 7 && L->y >= L->float_bottom;
+    // taller than a few lines, or wide: a line of its own (its caption goes under it)
+    if (!mask && !floated && (figure || fixed || w > col * 6 / 10 || h > body * 3)) block = 1;
     if (measure) return w << 4;
     dimg_t im = {fs[0], fs[5], (uint16_t)fl[0], (uint16_t)fl[5], (int16_t)w, (int16_t)h, (uint8_t)mask, (uint8_t)block,
                  (uint8_t)fixed};
@@ -511,13 +525,33 @@ static int image_frag(lay_t *L, const ist_t *st, const int32_t *fs, const int *f
     f.ih = h;
     f.below = mask ? -va : 0;   // a formula's vertical-align: negative goes under the baseline
     f.link = (int16_t)(st->head ? -1 : st->link);
+    if (floated) {
+        op_t *o = push_op(d);
+        if (!o) return 0;
+        memset(o, 0, sizeof *o);
+        o->kind = OP_IMAGE;
+        o->x = (int16_t)L->x0;
+        o->w = (int16_t)w;
+        o->off = f.image;
+        o->len = (uint16_t)h;
+        o->y0 = L->y + 2;
+        o->y1 = o->y0 + h;
+        o->base = o->y1;
+        o->link = f.link;
+        L->float_edge = L->x0 + w + body / 2;
+        L->float_bottom = o->y1 + 2;
+        if (L->float_bottom > L->bottom) L->bottom = L->float_bottom;
+        L->lx = pen_start(L, L->lx);
+        return f.w;
+    }
     if (!block) {
         word_add(L, &f);
         return f.w;
     }
-    // on its own line, in the middle of the column
+    // on its own line, in the middle of the column, below a floated picture
     word_commit(L);
     if (L->nline || L->lx > L->indent) line_flush_end(L, 1);
+    if (L->y < L->float_bottom) L->y = L->float_bottom;
     const int keep_center = L->center, keep_just = L->justify;
     L->center = L->justify = 0;
     L->lx = ((col << 4) - f.w) / 2;
@@ -727,7 +761,7 @@ static void lay_paragraph(lay_t *L, int32_t off, int len, int px, int color, int
     st.px = px;
     st.color = color;
     st.head = head;
-    L->lx = first_indent << 4;
+    L->lx = pen_start(L, first_indent << 4);
     L->asc = L->desc = 0;
     L->space_w = 0;
     L->first_line = 1;
@@ -964,7 +998,7 @@ static void paginate(doc_t *d) {
             j++;
         }
         if (j >= nl && d->lines[nl - 1].y1 <= limit + 1) break;   // the rest fits on this page
-        if (j < nl && (d->lines[j].flags & LF_PAGE) && can[j]) best = j;
+        if (j < nl && can[j]) best = j;   // the next page starts at the first line that does not fit
         if (best < 0) {   // nothing breaks cleanly: cut at the first line below the page
             best = j > i + 1 ? j : i + 1;
             if (best >= nl) break;
@@ -976,11 +1010,11 @@ static void paginate(doc_t *d) {
             if (b != best && d->lines[b].y0 > half) best = b;
             const dline_t *last = &d->lines[best - 1], *next = &d->lines[best];
             // orphan: a paragraph's first line alone at the bottom
-            if (best - 1 > i && (last->flags & LF_FIRST) && !(last->flags & LF_LAST) && next->para == last->para &&
+            if (best - 1 > i && (last->flags & LF_FIRST) && !(last->flags & (LF_LAST | LF_IMAGE)) && next->para == last->para &&
                 can[best - 1] && last->y0 > half)
                 best--;
             // widow: a paragraph's last line alone at the top of the next page
-            else if ((next->flags & LF_LAST) && !(next->flags & LF_FIRST) && last->para == next->para && best - 1 > i &&
+            else if ((next->flags & LF_LAST) && !(next->flags & (LF_FIRST | LF_IMAGE)) && last->para == next->para && best - 1 > i &&
                      can[best - 1] && !(d->lines[best - 1].flags & LF_FIRST) && d->lines[best - 1].y0 > half)
                 best--;
         }
@@ -1027,6 +1061,7 @@ int doc_relayout(doc_t *d, const lopt_t *opt) {
     for (int i = 0; i < nl; i++) {
         line_t *l = &ls[i];
         if (!l->kind) { pending_gap = 1; prev_item_indent = -1; block_start = 1; continue; }
+        if (l->kind != 'p' && l->kind != 'd' && l->kind != 'i' && y < L->float_bottom) y = L->float_bottom;   // below it
         L->justify = 0;
         L->center = 0;
         L->head = 0;
@@ -1173,6 +1208,7 @@ int doc_relayout(doc_t *d, const lopt_t *opt) {
         after_head = 0;
         block_start = 0;
     }
+    if (y < L->float_bottom) y = L->float_bottom;
     d->height = y + body;
     free(L);
     free(ls);

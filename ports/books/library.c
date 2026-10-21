@@ -327,7 +327,7 @@ static int idle_step(void) {
     snprintf(p, sizeof p, "%s/%s", books_dir(), g_lib[target].file);
     book_t *b = NULL;
     const int t0 = nv_millis();
-    const int r = book_open(p, &b);
+    const int r = book_open_meta(p, &b);
     lib_update(target, r == BKE_OK ? b : NULL);
     if (b && A.cover_tried[target] && !A.covers[target]) A.covers[target] = lib_cover(target, b);
     book_close(b);

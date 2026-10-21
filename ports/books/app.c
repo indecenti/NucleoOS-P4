@@ -127,6 +127,28 @@ int pump(void) {   // one frame shown now (long work keeps the screen and the wa
     return 1;
 }
 
+// Input that comes while a page turns is kept for the main loop (a key pressed and let go, a tap, would
+// be lost otherwise) and tells the turn to end now: reading fast never drops a page.
+static kev_t s_pend[8];
+static int s_npend, s_ptouch, s_px, s_py;   // s_ptouch: 1 pressed, 2 pressed and let go
+
+int input_during_turn(void) {
+    kev_t k[8];
+    const int n = kbd_poll(k, 8, nv_millis(), i18n_italian_keys());
+    for (int i = 0; i < n && s_npend < 8; i++) s_pend[s_npend++] = k[i];
+    int x, y;
+    const int down = nv_touch(&x, &y) != 0;
+    if (down && !s_ptouch) {
+        gfx_touch_map(&x, &y);
+        s_ptouch = 1;
+        s_px = x;
+        s_py = y;
+    } else if (!down && s_ptouch == 1) {
+        s_ptouch = 2;
+    }
+    return s_npend > 0 || s_ptouch;
+}
+
 int reg_add(int x, int y, int w, int h, int act, int arg) {
     if (A.nregs >= REG_MAX) return -1;
     reg_t *r = &A.regs[A.nregs];
@@ -221,8 +243,8 @@ void draw_toast(void) {
     text_draw_fit(F_SANS, px, x + 20, y + 30, A.toast, (int)strlen(A.toast), w - 40, g_col[C_BG]);
 }
 
-// Text wrapped at spaces in a box; at most max_lines lines, the last cut with an ellipsis.
-void wrap_text(int f, int px, int x, int y, int w, int lh, const char *s, int max_lines, uint16_t c) {
+// Text wrapped at spaces in a box; at most max_lines lines, the last cut with an ellipsis. Returns the lines drawn.
+int wrap_text(int f, int px, int x, int y, int w, int lh, const char *s, int max_lines, uint16_t c) {
     int n = (int)strlen(s), line = 0;
     while (n > 0 && line < max_lines) {
         while (n > 0 && *s == ' ') { s++; n--; }
@@ -232,7 +254,7 @@ void wrap_text(int f, int px, int x, int y, int w, int lh, const char *s, int ma
             while (b > 0 && s[b] != ' ') b--;
             if (b > 0) k = b;
         }
-        if (line + 1 == max_lines && k < n) { text_draw_fit(f, px, x, y, s, n, w, c); return; }
+        if (line + 1 == max_lines && k < n) { text_draw_fit(f, px, x, y, s, n, w, c); return max_lines; }
         if (k <= 0) k = 1;
         text_draw(f, px, x, y, s, k, c);
         s += k;
@@ -240,6 +262,7 @@ void wrap_text(int f, int px, int x, int y, int w, int lh, const char *s, int ma
         y += lh;
         line++;
     }
+    return line;
 }
 
 // A cover drawn for a book without a picture: a muted colour from its name, a frame, the title and
@@ -730,10 +753,18 @@ void run(void) {
         if (nv_gfx_back()) go_back();
         kev_t keys[8];
         const int nk = kbd_poll(keys, 8, A.now, i18n_italian_keys());
+        for (int i = 0; i < s_npend && !A.quit; i++) on_key(&s_pend[i]);   // came during a turn
+        s_npend = 0;
         for (int i = 0; i < nk && !A.quit; i++) on_key(&keys[i]);
         int x, y;
         const int down = nv_touch(&x, &y) != 0;
         gfx_touch_map(&x, &y);
+        if (s_ptouch && !A.quit) {   // a touch that came during a turn
+            const int let_go = s_ptouch == 2;
+            s_ptouch = 0;
+            on_touch(1, s_px, s_py);
+            if (let_go && !down && !A.quit) on_touch(0, s_px, s_py);
+        }
         if (down || A.touch_down) on_touch(down, x, y);
         if (A.quit) break;
         if (A.vel != 0 && !A.touch_down) {   // fling of the lists
