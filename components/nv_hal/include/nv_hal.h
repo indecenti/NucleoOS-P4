@@ -85,9 +85,11 @@ bool nv_hal_video_blit(const void *src, int sw, int sh, int src_pitch, int dx, i
 // The video stopped or LVGL UI now covers its rect: stop carrying the rect across swaps (else a
 // drawer or the notification shade drawn over it would be overwritten with the old picture).
 void nv_hal_video_blit_end(void);
-// Immediate blits since boot and their cost in µs (moving average, and the last one), for
-// GET /api/display ("blits", "blit_us_avg", "blit_us_last"): a scaled game canvas is one per frame.
-void nv_hal_video_blit_stats(uint32_t *count, uint32_t *us_avg, uint32_t *us_last);
+// Immediate blits since boot and their cost in µs, for GET /api/display ("blits", "blit_us_avg",
+// "blit_us_last", "blit_wait_us_avg"): the draw itself (PPA scale/turn or DMA copy; moving average and
+// the last one) and, apart, the wait for the frame on screen (a swap in progress holds it). A scaled
+// game canvas is one blit per frame.
+void nv_hal_video_blit_stats(uint32_t *count, uint32_t *us_avg, uint32_t *us_last, uint32_t *wait_us_avg);
 
 // The geometry nv_hal_video_blit applies for the same arguments (nv_blit_geom.h): the block it scales
 // by kx/16 × ky/16 into (ox,oy,tw,th) on the panel, inside the clamped rect (dx,dy,dw,dh). Lets a

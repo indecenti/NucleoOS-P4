@@ -643,8 +643,8 @@ esp_err_t h_tasks(httpd_req_t *req) {
 // of pixels (DSI underrun, seen as a light-blue frame). Both must stay 0, also during flash writes.
 // "ppa" is "retired" once a PPA job never finished (nv_2d_srm); ?ppa_drill=1 arms the drill that
 // retires it on the next job (display rotation, scaled video, Recents...) until the next restart.
-// "blits" / "blit_us_avg" / "blit_us_last": immediate PPA blits to the panel (a scaled game canvas,
-// one per frame, turned or not) and their cost.
+// "blits" / "blit_us_avg" / "blit_us_last" / "blit_wait_us_avg": immediate blits to the panel (a scaled
+// game canvas, one per frame, turned or not), their cost and the wait for the frame on screen.
 esp_err_t h_display(httpd_req_t *req) {
     char q[32], v[8];
     if (httpd_req_get_url_query_str(req, q, sizeof q) == ESP_OK &&
@@ -663,8 +663,8 @@ esp_err_t h_display(httpd_req_t *req) {
     const uint32_t late = st.vsync_late - s_prev_late;
     s_prev_late = st.vsync_late;
     s_prev_t = now;
-    uint32_t blits = 0, blit_avg = 0, blit_last = 0;
-    nv_hal_video_blit_stats(&blits, &blit_avg, &blit_last);
+    uint32_t blits = 0, blit_avg = 0, blit_last = 0, blit_wait = 0;
+    nv_hal_video_blit_stats(&blits, &blit_avg, &blit_last, &blit_wait);
     char body[896];
     snprintf(body, sizeof body,
              "{\"mode\":\"%s\",\"rotation\":%d,\"swaps\":%lu,\"vsyncs\":%lu,\"fps\":%.1f,"
@@ -673,7 +673,7 @@ esp_err_t h_display(httpd_req_t *req) {
              "\"wait_us_avg\":%lu,\"wait_us_max\":%lu,\"present_us_avg\":%lu,\"sync_us_avg\":%lu,"
              "\"render_us_avg\":%lu,\"frame_us_avg\":%lu,\"layer_draws\":%lu,\"layer_copies\":%lu,"
              "\"layer_draw_us_avg\":%lu,\"layer_copy_us_avg\":%lu,\"blits\":%lu,\"blit_us_avg\":%lu,"
-             "\"blit_us_last\":%lu,\"ppa\":\"%s\"}",
+             "\"blit_us_last\":%lu,\"blit_wait_us_avg\":%lu,\"ppa\":\"%s\"}",
              st.rotated ? "rotated" : "direct", st.rotation * 90, (unsigned long)st.swaps,
              (unsigned long)st.vsyncs, fps, hz, dt, (unsigned long)st.vsync_timeouts,
              (unsigned long)st.violations, (unsigned long)late, (unsigned long)st.vsync_late,
@@ -682,7 +682,7 @@ esp_err_t h_display(httpd_req_t *req) {
              (unsigned long)st.render_us_avg, (unsigned long)st.frame_us_avg,
              (unsigned long)st.layer_draws, (unsigned long)st.layer_copies,
              (unsigned long)st.layer_draw_us_avg, (unsigned long)st.layer_copy_us_avg,
-             (unsigned long)blits, (unsigned long)blit_avg, (unsigned long)blit_last,
+             (unsigned long)blits, (unsigned long)blit_avg, (unsigned long)blit_last, (unsigned long)blit_wait,
              nv_2d_ppa_ok() ? "ok" : "retired");
     httpd_resp_set_type(req, "application/json");
     return httpd_resp_send(req, body, HTTPD_RESP_USE_STRLEN);

@@ -674,7 +674,9 @@ bool nv_hal_video_draw(uint16_t *fb, int stride, const void *src, int sw, int sh
     return video_draw_into(fb, src, sw, sh, src_pitch, dx, dy, dw, dh, mode, clear_bars);
 }
 
-static uint32_t s_vblit_n, s_vblit_us_avg, s_vblit_us_last;   // nv_hal_video_blit_stats (LVGL task)
+// nv_hal_video_blit_stats (LVGL task): the draw (scale/turn/copy) apart from the wait for the frame.
+static uint32_t s_vblit_n, s_vblit_us_avg, s_vblit_us_last, s_vblit_wait_avg;
+static uint32_t ema_us(uint32_t avg, uint32_t v) { return avg ? (avg * 7 + v) / 8 : v; }
 
 bool nv_hal_video_blit(const void *src, int sw, int sh, int src_pitch, int dx, int dy, int dw, int dh,
                        int mode, bool clear_bars) {
@@ -685,11 +687,13 @@ bool nv_hal_video_blit(const void *src, int sw, int sh, int src_pitch, int dx, i
     // the latest picture into the next frame.
     nv_disp_surface_t fs;
     if (!nv_disp_front_begin(&fs, 40)) return false;
+    const int64_t t1 = esp_timer_get_time();
     const bool ok = video_draw_into(fs.px, src, sw, sh, src_pitch, dx, dy, dw, dh, mode, clear_bars);
     nv_disp_front_end();
     if (ok) {
-        s_vblit_us_last = (uint32_t)(esp_timer_get_time() - t0);
-        s_vblit_us_avg = s_vblit_us_avg ? (s_vblit_us_avg * 7 + s_vblit_us_last) / 8 : s_vblit_us_last;
+        s_vblit_us_last = (uint32_t)(esp_timer_get_time() - t1);
+        s_vblit_us_avg = ema_us(s_vblit_us_avg, s_vblit_us_last);
+        s_vblit_wait_avg = ema_us(s_vblit_wait_avg, (uint32_t)(t1 - t0));
         s_vblit_n++;
     }
     if (ok && (dx != s_vregion[0] || dy != s_vregion[1] || dw != s_vregion[2] || dh != s_vregion[3])) {
@@ -699,10 +703,11 @@ bool nv_hal_video_blit(const void *src, int sw, int sh, int src_pitch, int dx, i
     return ok;
 }
 
-void nv_hal_video_blit_stats(uint32_t *count, uint32_t *us_avg, uint32_t *us_last) {
+void nv_hal_video_blit_stats(uint32_t *count, uint32_t *us_avg, uint32_t *us_last, uint32_t *wait_us_avg) {
     if (count) *count = s_vblit_n;
     if (us_avg) *us_avg = s_vblit_us_avg;
     if (us_last) *us_last = s_vblit_us_last;
+    if (wait_us_avg) *wait_us_avg = s_vblit_wait_avg;
 }
 
 void nv_hal_video_blit_end(void) {

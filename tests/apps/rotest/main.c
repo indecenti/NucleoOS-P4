@@ -4,7 +4,8 @@
 // Draws an upright test card on the turned canvas: a coloured square in each corner (top-left red,
 // top-right green, bottom-left blue, bottom-right yellow), "TOP" and an arrow at the top, a 100 px
 // grid. Each touch logs its canvas pixel ("touch x y") and leaves a cross there. Buttons R0..R3 turn
-// the canvas; BENCH repaints the whole canvas 120 times and logs the time per frame. The firmware's
+// the canvas; BENCH shows 120 frames with one pixel changed, then 120 full repaints, and logs the
+// time per frame. The firmware's
 // cost of each turned blit is in GET /api/display (blit_us_avg).
 #include "nucleo_sdk.h"
 
@@ -21,10 +22,23 @@ static int mark_x = -1, mark_y = -1;
 enum { NBTN = 5, BW = 100, BH = 70, GAP = 10 };
 static const char *kBtn[NBTN] = { "R0", "R1", "R2", "R3", "BENCH" };
 
+// Every event goes to the log and to events.txt ("<n> <text>" lines, the newest ~3 KB): the log ring
+// drops a line when it is busy (a reader holds it), the file is what tools/hil/rotation.py reads.
+static char s_ev[3072];
+static int s_ev_len, s_ev_n;
 static void log_line(const char *fmt, int a, int b, int c, int d) {
-    char s[96];
+    char s[96], line[112];
     nv_snprintf(s, sizeof s, fmt, a, b, c, d);
     nv_log(NV_LOG_INFO, s);
+    const int k = nv_snprintf(line, sizeof line, "%d %s\n", ++s_ev_n, s);
+    if (s_ev_len + k > (int)sizeof s_ev) {   // keep the newer half
+        int cut = s_ev_len / 2;
+        while (cut < s_ev_len && s_ev[cut - 1] != '\n') cut++;
+        for (int i = cut; i < s_ev_len; i++) s_ev[i - cut] = s_ev[i];
+        s_ev_len -= cut;
+    }
+    for (int i = 0; i < k; i++) s_ev[s_ev_len++] = line[i];
+    nv_save("events.txt", s_ev, s_ev_len);
 }
 
 static int btn_x(int i) { return (W - (NBTN * BW + (NBTN - 1) * GAP)) / 2 + i * (BW + GAP); }
@@ -70,16 +84,26 @@ static void set_rot(int q) {
     log_line("rot %d -> %d size %d %d", q, r, W, H);
 }
 
-// Full-canvas repaints back to back: the frame time is the app's clear + the OS's turned blit.
-static void bench(void) {
+// Back-to-back frames, each blitted whole by the OS. "full": the app repaints the whole canvas (its
+// writes share the PSRAM with the blit); "light": one pixel changes, so the frame time is the blit.
+static int bench_run(int full) {
     const int n = 120, t0 = nv_millis();
     for (int i = 0; i < n; i++) {
-        nv_gfx_clear(i & 1 ? NV_RGB(80, 30, 30) : NV_RGB(30, 30, 80));
-        nv_gfx_rect(0, (i * 8) % H, W, 8, C_TEXT);
-        if (!nv_gfx_present()) return;
+        if (full) {
+            nv_gfx_clear(i & 1 ? NV_RGB(80, 30, 30) : NV_RGB(30, 30, 80));
+            nv_gfx_rect(0, (i * 8) % H, W, 8, C_TEXT);
+        } else {
+            nv_gfx_rect(W / 2, H / 2, 1, 1, i & 1 ? C_TEXT : C_BG);
+        }
+        if (!nv_gfx_present()) return 0;
     }
     const int ms = nv_millis() - t0;
-    log_line("bench rot %d frames %d total_ms %d us_per_frame %d", rot, n, ms, ms * 1000 / n);
+    log_line(full ? "bench full rot %d frames %d total_ms %d us_per_frame %d"
+                  : "bench light rot %d frames %d total_ms %d us_per_frame %d", rot, n, ms, ms * 1000 / n);
+    return 1;
+}
+static void bench(void) {
+    if (bench_run(0)) bench_run(1);
 }
 
 NV_EXPORT("run") void run(void) {

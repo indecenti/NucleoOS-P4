@@ -9,8 +9,10 @@ Drives the test app tests/apps/rotest over Wi-Fi (firmware with ABI >= 19). For 
      panel where the turn puts them (upright (x, y) -> q=1 (y, W-1-x), q=2 (W-1-x, H-1-y),
      q=3 (H-1-y, x): the system portrait mode's direction)
   3. taps six panel points; the app must log the canvas pixel the turn maps each one to
-  4. BENCH: 120 full-canvas repaints; the app logs ms per frame, /api/display the firmware's
-     cost per blit (blit_us_avg: the PPA scaling, and turning, the canvas into the panel)
+  4. BENCH: 120 frames with one pixel changed ("light": the frame time is the blit), then 120
+     full-canvas repaints ("full": the app's writes share the PSRAM with the blit); the app logs ms
+     per frame, /api/display the firmware's cost per blit (blit_us_avg / blit_us_last: the draw;
+     blit_wait_us_avg: the wait for the frame on screen)
 Then back to Home. Remote taps reach the app through the LVGL pointer (the game view maps it with
 the same nv_blit_unmap as the raw finger points), so finger touch is checked by the same code.
 
@@ -39,7 +41,8 @@ APP_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "..", "
 PW, PH = 1024, 600
 CANVAS = (1024, 600)   # the manifest's canvas: upright size at turn 0
 # Panel points that miss the app's button row under every turn (a tap there would turn the canvas).
-TAPS = ((100, 100), (900, 80), (300, 450), (700, 200), (40, 560), (1000, 590))
+# The system edge gestures own a 24 px band along the panel edges: stay out of it.
+TAPS = ((100, 100), (900, 80), (300, 450), (700, 200), (40, 560), (990, 550))
 CORNERS = {            # test card squares (60 px): canvas point inside each -> colour
     "red": ((30, 30), (230, 40, 40)),
     "green": ((-31, 30), (40, 200, 60)),
@@ -84,24 +87,40 @@ def button(q, i):
 
 
 class Log:
-    """New lines of the app's log since the previous call (GET /api/logs is the whole ring)."""
+    """The app's new events since the previous call. It also logs them, but the nv_log ring drops a
+    line while a reader (GET /api/logs) holds it, so they are read from its events.txt: "<n> <text>"."""
+
+    PATH = "/apps/%s/events.txt" % APP
 
     def __init__(self, host):
         self.host = host
-        self.seen = set(self.lines())
+        self.last = 0
+        try:   # a fresh run numbers its events from 1 again
+            req(host, "/api/fs/delete?path=" + self.PATH, method="POST")
+        except OSError:
+            pass
 
-    def lines(self):
-        return [l for l in req(self.host, "/api/logs", timeout=20).splitlines() if "app:" + APP in l]
+    def events(self):
+        try:
+            text = req(self.host, "/api/fs/read?path=" + self.PATH, timeout=20)
+        except OSError:
+            return []
+        out = []
+        for l in text.splitlines():
+            n, _, ev = l.partition(" ")
+            if n.isdigit():
+                out.append((int(n), ev))
+        return out
 
     def wait(self, pattern, timeout):
         rx = re.compile(pattern)
         end = time.time() + timeout
         while time.time() < end:
-            for l in self.lines():
-                if l in self.seen:
+            for n, ev in self.events():
+                if n <= self.last:
                     continue
-                self.seen.add(l)
-                m = rx.search(l)
+                self.last = n
+                m = rx.search(ev)
                 if m:
                     return m
             time.sleep(0.4)
@@ -188,20 +207,21 @@ def main():
             elif (int(m.group(1)), int(m.group(2))) != want:
                 fails.append("q%d: tap %s -> canvas %s,%s, want %s" % (q, p, m.group(1), m.group(2), want))
             time.sleep(0.3)
-        get_json(host, "/api/display")
         tap(host, button(q, 4))
-        m = log.wait(r"bench rot %d frames (\d+) total_ms (\d+) us_per_frame (\d+)" % q, 60)
-        d = get_json(host, "/api/display")
-        if not m:
-            fails.append("q%d: no bench result" % q)
-        else:
-            bench.append((q, int(m.group(3)) / 1000.0, d.get("blit_us_avg", 0) / 1000.0, d.get("blit_us_last", 0) / 1000.0))
+        for kind in ("light", "full"):
+            m = log.wait(r"bench %s rot %d frames (\d+) total_ms (\d+) us_per_frame (\d+)" % (kind, q), 60)
+            d = get_json(host, "/api/display")   # right after the phase: its blits fill the average
+            if not m:
+                fails.append("q%d: no %s bench result" % (q, kind))
+            else:
+                bench.append((q, kind, int(m.group(3)) / 1000.0, d.get("blit_us_avg", 0) / 1000.0,
+                              d.get("blit_us_last", 0) / 1000.0, d.get("blit_wait_us_avg", 0) / 1000.0))
         time.sleep(0.5)
     req(host, "/api/ui/home")
 
-    print("\nturn  app ms/frame  blit ms avg  blit ms last")
-    for q, ms, avg, last in bench:
-        print("q%d    %8.1f    %9.1f    %10.1f" % (q, ms, avg, last))
+    print("\nturn  bench  app ms/frame  blit ms avg  blit ms last  wait ms avg")
+    for q, kind, ms, avg, last, wait in bench:
+        print("q%d    %-5s  %11.1f  %11.1f  %12.1f  %11.1f" % (q, kind, ms, avg, last, wait))
     for f in fails:
         print("FAIL " + f)
     print("rotation: %s" % ("FAIL" if fails else "PASS"))
