@@ -22,6 +22,7 @@
 #define MEMBER_MAX (24u << 20)   // a chapter or picture larger than this is not read
 #define WHOLE_MAX (48u << 20)    // a whole-text file larger than this is refused
 #define CHAP_SPLIT 96000u        // whole-text formats: a chapter longer than this is cut
+#define EPUB_SPLIT (256u << 10)  // an EPUB member larger than this is read as parts of about this size
 #define TOC_MAX 4000
 
 typedef struct bin_s { char id[64]; size_t off, len; } bin_t;   // FB2 pictures: base64 in b->src
@@ -146,9 +147,23 @@ static int chap_add(book_t *b, const char *path, uint32_t size, uint32_t start, 
     c->start = start;
     c->linear = (uint8_t)linear;
     c->fixed = (uint8_t)fixed;
+    c->part = 0;
+    c->nparts = 1;
     b->total += c->size;
     b->nch++;
     return 0;
+}
+
+// A huge XHTML member (a whole library reference in one file): parts of about EPUB_SPLIT, so no page
+// waits for megabytes of layout. The parts share the member; book_chapter cuts its text.
+static void chap_add_parts(book_t *b, const char *path, uint32_t size, int linear) {
+    int n = size > EPUB_SPLIT ? (int)((size + EPUB_SPLIT - 1) / EPUB_SPLIT) : 1;
+    if (n > 64) n = 64;
+    for (int k = 0; k < n; k++) {
+        if (chap_add(b, path, size / (uint32_t)n, 0, linear, 0) < 0) return;
+        b->ch[b->nch - 1].part = (uint8_t)k;
+        b->ch[b->nch - 1].nparts = (uint8_t)n;
+    }
 }
 
 static int chap_of_path(const book_t *b, const char *path) {
@@ -443,7 +458,8 @@ static int open_epub(book_t *b) {
                 if (zi < 0) break;
                 const int fx = spine_fix[s] == 1 || (fixed_book && spine_fix[s] != 2);
                 nfixed += fx;
-                chap_add(b, zip_name(b->zip, zi), zip_size(b->zip, zi), 0, pass == 0, fx);
+                if (fx) chap_add(b, zip_name(b->zip, zi), zip_size(b->zip, zi), 0, pass == 0, fx);
+                else chap_add_parts(b, zip_name(b->zip, zi), zip_size(b->zip, zi), pass == 0);
                 break;
             }
         }
@@ -783,6 +799,7 @@ void book_close(book_t *b) {
     free(b->rt);
     free(b->bins);
     free(b->src);
+    free(b->part_rt);
     free(b);
 }
 
@@ -812,6 +829,7 @@ int book_chapter(book_t *b, int i, char **text, size_t *n) {
         *n = (size_t)k;
         return BKE_OK;
     }
+    if (c->nparts > 1 && b->part_rt && !strcmp(b->part_path, c->path)) goto cut;   // the member read just before
     const int zi = zip_find(b->zip, c->path);
     uint8_t *d;
     size_t dn;
@@ -838,9 +856,26 @@ int book_chapter(book_t *b, int i, char **text, size_t *n) {
     }
     free(html);
     if (!o) return BKE_MEM;
-    *text = o;
-    *n = on;
-    return BKE_OK;
+    if (c->nparts <= 1) {
+        *text = o;
+        *n = on;
+        return BKE_OK;
+    }
+    free(b->part_rt);   // kept: the next part is read from it
+    b->part_rt = o;
+    b->part_rtn = on;
+    snprintf(b->part_path, sizeof b->part_path, "%s", c->path);
+cut:;
+    // part k: from the first paragraph break after k/n of the text to the one after (k+1)/n
+    const size_t tn = b->part_rtn;
+    size_t lo = tn * c->part / c->nparts, hi = c->part + 1 == c->nparts ? tn : tn * (c->part + 1) / c->nparts;
+    const char *t = b->part_rt;
+    if (c->part) { while (lo < tn && !(t[lo] == '\n' && lo + 1 < tn && t[lo + 1] == '\n')) lo++; }
+    if (hi < tn) { while (hi < tn && !(t[hi] == '\n' && hi + 1 < tn && t[hi + 1] == '\n')) hi++; }
+    if (lo > hi) lo = hi;
+    *text = dupn(t + lo, hi - lo);
+    *n = hi - lo;
+    return *text ? BKE_OK : BKE_MEM;
 }
 
 static size_t b64_decode(const char *s, size_t n, uint8_t *out) {

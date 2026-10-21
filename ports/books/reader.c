@@ -476,7 +476,16 @@ static void go_to_anchor(int chap, const char *anchor, int remember) {
     if (!d) return;
     int32_t off = 0;
     if (anchor && *anchor) {
-        const int a = doc_anchor(d, anchor, (int)strlen(anchor));
+        int a = doc_anchor(d, anchor, (int)strlen(anchor));
+        // a member read in parts: the id may be in a later part of it
+        const chap_t *c0 = &A.book->ch[chap];
+        for (int k = chap + 1; a < 0 && c0->nparts > 1 && k < A.book->nch && A.book->ch[k].path &&
+                               !strcmp(A.book->ch[k].path, c0->path) && A.book->ch[k].part > 0; k++) {
+            doc_t *dk = doc_of(k);
+            if (!dk) break;
+            a = doc_anchor(dk, anchor, (int)strlen(anchor));
+            if (a >= 0) { chap = k; d = dk; }
+        }
         if (a >= 0) {
             const int p = doc_page_of_y(d, d->anchors[a].y);
             off = d->page_off[p];

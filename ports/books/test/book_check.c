@@ -55,6 +55,10 @@ int main(int argc, char **argv) {
             const double r0 = now_ms();
             if (book_chapter(b, i, &t, &n)) { free(t); empty++; continue; }
             const double rms = now_ms() - r0;   // reading the member and nvhtml
+            if (getenv("BK_DUMP") && atoi(getenv("BK_DUMP")) == i) {   // a chapter's rich text, to look at
+                FILE *df = fopen("/tmp/bk_chapter.txt", "wb");
+                if (df) { fwrite(t, 1, n, df); fclose(df); }
+            }
             text += n;
             s_chap = i;
             doc_t d;

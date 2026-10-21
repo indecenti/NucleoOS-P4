@@ -80,6 +80,8 @@ static struct {
     cdl_t dl[16];
     int ndl, dl_next_poll, dl_active;
     int dl_armed;            // a cancel tapped once (download id)
+    char done_title[4][96], done_file[4][120];   // the last downloads that finished
+    int ndone;
 } C;
 
 // ---------------------------------------------------------------------------------- helpers
@@ -661,6 +663,9 @@ static void dl_refresh(void) {
                 finished++;
                 nv_dl_cancel(d.id);
                 toast(tr(S_CAT_DONE), d.title);
+                snprintf(C.done_title[C.ndone % 4], sizeof C.done_title[0], "%s", d.title);
+                snprintf(C.done_file[C.ndone % 4], sizeof C.done_file[0], "%s", d.dest + 7);
+                C.ndone++;
                 continue;
             }
             active += d.state == DL_RUNNING || d.state == DL_QUEUED;
@@ -670,6 +675,11 @@ static void dl_refresh(void) {
     C.dl_active = active;
     if (finished) {
         library_rescan();
+        // until the book itself is read (idle): the catalog's title on its tile
+        for (int i = 0; i < 4 && i < C.ndone; i++) {
+            const int li = lib_find(C.done_file[i]);
+            if (li >= 0 && g_lib[li].nch < 0) snprintf(g_lib[li].title, sizeof g_lib[li].title, "%s", C.done_title[i]);
+        }
         A.redraw |= R_ALL;
     }
     if (k && A.screen == SCR_CATALOG) A.redraw |= R_ALL;   // the progress on the cards and the sheet

@@ -152,7 +152,11 @@ static int line_height(const lay_t *L, int asc, int desc) {
 }
 
 static void line_flush_end(lay_t *L, int last) {
-    if (!L->nline && !L->asc) return;
+    if (!L->nline && !L->asc) {   // nothing on the line yet: only the pen goes back (a first-line indent
+        L->lx = L->indent;        // too narrow for the first word) — the callers' loops rely on that
+        L->space_w = 0;
+        return;
+    }
     const int fam = L->o->serif ? F_SERIF : F_SANS;
     int asc = L->asc ? L->asc : font_ascent(fam, L->body);
     int desc = L->desc ? L->desc : font_descent(fam, L->body);

@@ -258,6 +258,7 @@ typedef struct {
     uint32_t start;          // whole-text formats: where it begins in book->rt
     uint8_t linear;
     uint8_t fixed;           // a pre-paginated page (fixed-layout EPUB, a comic picture)
+    uint8_t part, nparts;    // a huge EPUB member is read as nparts chapters (parts of its text)
 } chap_t;
 
 typedef struct {
@@ -285,6 +286,9 @@ typedef struct {
     char *rt;                // whole-text formats: the converted rich text, chapters cut in it
     size_t rtn;
     struct bin_s *bins;      // FB2: the pictures (base64 decoded on demand)
+    char *part_rt;           // the rich text of the last member read in parts (its path: part_path)
+    size_t part_rtn;
+    char part_path[300];
     int nbins;
     char *src;               // FB2: the file text (pictures are read from it)
     size_t srcn;
