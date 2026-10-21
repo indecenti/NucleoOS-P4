@@ -1,0 +1,17 @@
+# A comic in a reflowable EPUB (Pepper&Carrot, full-page JPEGs 1000x1383), read upright: every
+# page's picture decoded once, kept, the pages turned without decoding again.
+wait 60
+key 0x12 0x01
+wait 40
+tap 176 505
+wait 120
+key 0x4F
+wait 60
+key 0x4F
+wait 60
+key 0x4F
+wait 60
+shot 01_page
+key 0x50
+wait 60
+shot 02_back

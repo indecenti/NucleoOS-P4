@@ -35,6 +35,7 @@
 #include "nanosvgrast_nv.h"   // ports/zim/biblioteca/nanosvgrast.patch applied (fetch.sh)
 
 #include "tjpgd.h"
+#include "nucleo_sdk.h"
 
 #define IMG_SRC_MAX (1300u * 1000u)   // largest picture decoded whole: 5 MB as RGBA, inside 12 MiB
 #define JPEG_SRC_MAX (8192u * 8192u)  // baseline JPEG: decoded at 1/2..1/8 by TJpgDec, any size within reason
@@ -46,8 +47,9 @@ typedef struct {
     char key[KEY_MAX];
     int w, h, mask, mode;
     uint16_t *px;                     // NULL for a mask
-    uint8_t *a;                       // coverage
-    int state;                        // 1 ready, -1 failed
+    uint8_t *a;                       // coverage; NULL: opaque (a photo, a comic page)
+    int state;                        // 1 ready, -1 failed, -2 no memory to keep it (again at retry)
+    int retry;                        // state -2: asked again from this time (ms)
     uint32_t used;
     size_t bytes;
 } img_t;
@@ -149,6 +151,7 @@ typedef struct {
     uint8_t *out;            // w x h RGBA
     int w, h;                // the result
     int sw, sh;              // the decoded size
+    int16_t *colx;           // per target column: its source column (decoded size)
 } tj_t;
 
 static size_t tj_in(JDEC *jd, uint8_t *buf, size_t len) {
@@ -174,7 +177,7 @@ static int tj_out(JDEC *jd, void *bitmap, JRECT *r) {
         const int sy2 = sy + 1 < bh ? sy + 1 : sy;
         uint8_t *o = t->out + ((size_t)ty * t->w + tx0) * 4;
         for (int tx = tx0; tx < tx1 && tx < t->w; tx++, o += 4) {
-            int sx = (int)((long)tx * t->sw / t->w) - r->left;
+            int sx = t->colx[tx] - r->left;
             if (sx < 0) sx = 0;
             if (sx >= bw) sx = bw - 1;
             const uint8_t *p = s + ((size_t)sy * bw + sx) * 3;
@@ -196,7 +199,7 @@ static uint8_t *jpeg_scaled(const uint8_t *d, size_t n, int w, int h) {
     void *pool = malloc(16384);
     if (!pool) return NULL;
     JDEC jd;
-    tj_t t = {d, n, 0, NULL, w, h, 0, 0};
+    tj_t t = {d, n, 0, NULL, w, h, 0, 0, NULL};
     uint8_t *out = NULL;
     if (jd_prepare(&jd, tj_in, pool, 16384, &t) == JDR_OK && (size_t)jd.width * jd.height <= JPEG_SRC_MAX) {
         int s = 0;
@@ -204,8 +207,12 @@ static uint8_t *jpeg_scaled(const uint8_t *d, size_t n, int w, int h) {
         t.sw = (jd.width + (1 << s) - 1) >> s;
         t.sh = (jd.height + (1 << s) - 1) >> s;
         t.out = (uint8_t *)calloc((size_t)w * h, 4);
-        if (t.out && jd_decomp(&jd, tj_out, (uint8_t)s) == JDR_OK) out = t.out;
+        t.colx = (int16_t *)malloc(sizeof(int16_t) * (size_t)w);
+        if (t.colx)
+            for (int x = 0; x < w; x++) t.colx[x] = (int16_t)((long)x * t.sw / w);
+        if (t.out && t.colx && jd_decomp(&jd, tj_out, (uint8_t)s) == JDR_OK) out = t.out;
         else free(t.out);
+        free(t.colx);
     }
     free(pool);
     return out;
@@ -405,34 +412,55 @@ static void store(const job_t *j, uint8_t *rgba) {
         return;
     }
     if (!j->mask) tone(rgba, j->w, j->h, g_rmode);
-    e->a = (uint8_t *)malloc(px);
-    if (!j->mask) e->px = (uint16_t *)malloc(px * 2);
-    if (!e->a || (!j->mask && !e->px)) {
+    int opaque = !j->mask;
+    for (size_t i = 0; i < px && opaque; i++) opaque = rgba[i * 4 + 3] == 255;
+    const size_t abytes = opaque ? 0 : px;
+    for (int pass = 0; pass < 2; pass++) {   // no memory: the other pictures go first, then once more
+        e->a = abytes ? (uint8_t *)malloc(abytes) : NULL;
+        e->px = j->mask ? NULL : (uint16_t *)malloc(px * 2);
+        if ((!abytes || e->a) && (j->mask || e->px)) break;
         free(e->a);
         free(e->px);
-        return;
+        e->a = NULL;
+        e->px = NULL;
+        if (pass) {   // not now: asked again in a while (not on every frame)
+            snprintf(s_last, sizeof s_last, "no memory to keep %dx%d", j->w, j->h);
+            e->state = -2;
+            e->retry = nv_millis() + 2000;
+            s_nimg++;
+            return;
+        }
+        const img_t keep = *e;
+        evict(IMG_CACHE_BYTES);
+        e = &s_img[s_nimg];
+        *e = keep;
     }
+    const size_t bytes_kept = px * (j->mask ? 0 : 2) + abytes;
     for (size_t i = 0; i < px; i++) {
         const uint8_t *p = rgba + i * 4;
         if (j->mask) {   // a formula: dark strokes on transparent (or on white)
             const unsigned lum = (p[0] * 77u + p[1] * 150u + p[2] * 29u) >> 8;
             e->a[i] = (uint8_t)(p[3] * (255u - lum) / 255u);
         } else {
-            e->a[i] = p[3];
+            if (e->a) e->a[i] = p[3];
             e->px[i] = rgb565(p[0], p[1], p[2]);
         }
     }
     e->state = 1;
-    e->bytes = bytes;
-    s_bytes += bytes;
+    e->bytes = bytes_kept;
+    s_bytes += bytes_kept;
     s_nimg++;
 }
 
 int img_lookup(const char *key, int w, int h, int mask) {
     img_t *e = find(key, w, h);
+    if (e && e->state == -2 && nv_millis() - e->retry >= 0) {   // kept no memory before: again now
+        *e = s_img[--s_nimg];
+        e = NULL;
+    }
     if (e) {
         e->used = ++s_clock;
-        return e->state;
+        return e->state == -2 ? 0 : e->state;
     }
     for (int i = 0; i < s_nqueue; i++)
         if (s_queue[i].w == w && s_queue[i].h == h && !strcmp(s_queue[i].key, key)) return 0;
@@ -456,7 +484,7 @@ int img_draw(const char *key, int w, int h, int x, int y, uint16_t tint) {
     for (int j = 0; j < h; j++) {
         const int sy = y + j;
         if (sy < 0 || sy >= g_h) continue;
-        gfx_row(sy, x, e->px + (size_t)j * w, e->a + (size_t)j * w, w);
+        gfx_row(sy, x, e->px + (size_t)j * w, e->a ? e->a + (size_t)j * w : NULL, w);
     }
     gfx_dirty(y, y + h);
     return 0;

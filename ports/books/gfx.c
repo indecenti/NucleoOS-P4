@@ -316,6 +316,10 @@ void gfx_row(int y, int x, const uint16_t *px, const uint8_t *a, int w) {
     if (y < s_cy0 || y >= s_cy1) return;
     const int i0 = x < s_cx0 ? s_cx0 - x : 0, i1 = x + w > s_cx1 ? s_cx1 - x : w;
     uint16_t *d = g_rows[y] + x;
+    if (!a) {   // opaque: copied
+        if (i1 > i0) memcpy(d + i0, px + i0, (size_t)(i1 - i0) * 2);
+        return;
+    }
     if (g_rmode == RM_MONO) {   // the pixels are black or white already (img.c): alpha on or off
         for (int i = i0; i < i1; i++)
             if (a[i] >= 128) d[i] = px[i];
