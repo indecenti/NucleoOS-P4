@@ -236,6 +236,22 @@ class Misc(unittest.TestCase):
         self.assertGreater(rows[1]["pop"], rows[0]["pop"])
         self.assertEqual(rows[0]["_downloads"], 9700)
 
+    def test_cover_pack_format(self):
+        import struct
+        from bk.publish import cover_pack
+        jpgs = [("pg1012", b"\xff\xd8one\xff\xd9"), ("wsit-0123456789", b"\xff\xd8second\xff\xd9")]
+        b = cover_pack(jpgs)
+        self.assertEqual(b[:4], b"NVCP")
+        ver, zero, n = struct.unpack_from("<BBH", b, 4)
+        self.assertEqual((ver, zero, n), (1, 0, 2))
+        p = 8
+        for want_id, want in jpgs:
+            idlen = b[p]
+            self.assertEqual(b[p + 1:p + 1 + idlen].decode(), want_id)
+            off, ln = struct.unpack_from("<II", b, p + 1 + idlen)
+            self.assertEqual(b[off:off + ln], want)
+            p += 1 + idlen + 8
+
     def test_lang_pick(self):
         self.assertEqual(pick_lang(["it"]), "it")
         self.assertEqual(pick_lang(["de", "en"]), "en")

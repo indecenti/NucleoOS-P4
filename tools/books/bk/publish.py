@@ -163,6 +163,42 @@ def head_check(rows, log=print, n=5):
     return good
 
 
+PACK = 30   # covers per pack: books/covers/<lang>/<k>-<p>.bin = rows [p*PACK, p*PACK+PACK) of shard k
+
+
+def cover_pack(items):
+    """NVCP v1, little-endian: "NVCP" u8 1 u8 0 u16 n | n x {u8 idlen, id, u32 off, u32 len} | the JPEGs."""
+    import struct
+    head = b"NVCP" + struct.pack("<BBH", 1, 0, len(items))
+    table_len = sum(1 + len(i.encode()) + 8 for i, _ in items)
+    off = len(head) + table_len
+    table, blobs = b"", b""
+    for i, data in items:
+        idb = i.encode()
+        table += struct.pack("<B", len(idb)) + idb + struct.pack("<II", off, len(data))
+        off += len(data)
+        blobs += data
+    return head + table + blobs
+
+
+def write_cover_packs(pdir, lang, shards):
+    """One pack per PACK rows of each shard (rows without a cover are skipped but keep their place)."""
+    if pdir.exists():
+        shutil.rmtree(pdir)
+    pdir.mkdir(parents=True)
+    out = []
+    for k, part in enumerate(shards, 1):
+        for p in range(0, (len(part) + PACK - 1) // PACK):
+            items = [(r["id"], (OUT / "books" / "covers" / (r["id"] + ".jpg")).read_bytes())
+                     for r in part[p * PACK:(p + 1) * PACK] if r.get("cv")]
+            if not items:
+                continue
+            f = pdir / ("%d-%d.bin" % (k, p))
+            f.write_bytes(cover_pack(items))
+            out.append(f)
+    return out
+
+
 def stage_language(store, lang, rows, log=print):
     """Write the verified rows of a language into <store>/books (own shards, index entry, covers)."""
     dst = Path(store) / "books"
@@ -179,15 +215,19 @@ def stage_language(store, lang, rows, log=print):
     for r in rows:
         if r.get("cv"):
             shutil.copy2(OUT / "books" / "covers" / (r["id"] + ".jpg"), cdir / (r["id"] + ".jpg"))
+    packs = write_cover_packs(cdir / lang, lang, shards)
     full = load_json(OUT / "books" / "index-v1.json")
     pub = load_json(dst / "index-v1.json", None) or {"format": 1, "langs": []}
     # rev changes exactly when the language's shards change (the app keys its cache on count/shards/rev)
-    digest = hashlib.sha256("".join(f.read_text(encoding="utf-8") for f in sorted(ldir.glob("*.json"))).encode()).hexdigest()
+    h = hashlib.sha256()
+    for f in sorted(ldir.glob("*.json")) + packs:
+        h.update(f.read_bytes())
+    digest = h.hexdigest()
     rev = int(digest[:8], 16)
     langs = [l for l in pub["langs"] if l["code"] != lang] + [{"code": lang, "count": len(rows), "shards": len(shards), "rev": rev}]
     order = ["it", "en", "de", "fr", "es"]
     langs.sort(key=lambda l: (order.index(l["code"]) if l["code"] in order else 99, -l["count"]))
-    save_json(dst / "index-v1.json", {"format": 1, "generated": full["generated"], "langs": langs,
+    save_json(dst / "index-v1.json", {"format": 1, "generated": full["generated"], "pack": PACK, "langs": langs,
                                       "cats": full["cats"]}, compact=True)
     shutil.copy2(OUT / "CREDITS.md", dst / "CREDITS.md")
     rmap = load_json(dst / "release-map.json", {}) or {}
