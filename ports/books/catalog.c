@@ -46,7 +46,7 @@ typedef struct {             // a book in full (its sheet, a download)
     char c[3][24];
 } cbook_t;
 
-typedef struct { char code[8]; int count, shards; uint64_t loaded, asked; } clang_t;
+typedef struct { char code[8]; int count, shards; double rev; uint64_t loaded, asked; } clang_t;   // rev: of its shards
 typedef struct { char id[24], name[48]; int count; } ccat_t;
 typedef struct { char id[48]; uint16_t *px; uint32_t used; int state; } ccov_t;   // state: 1 ready, -1 none
 
@@ -209,7 +209,7 @@ static const cdl_t *dl_of(const char *id) {
 
 // -------------------------------------------------------------------------------- parsing
 
-// A new index against the one known: a language whose count or shards changed was republished (the
+// A new index against the one known: a language whose count, shards or rev changed was republished (the
 // catalog grows, its shards are rewritten), so its rows and cached shards go and come again; the
 // others keep theirs, renumbered.
 static void index_changed(const clang_t *old, int nold) {
@@ -218,7 +218,7 @@ static void index_changed(const clang_t *old, int nold) {
         map[o] = -1;
         for (int i = 0; i < C.nlang; i++)
             if (!strcmp(old[o].code, C.lang[i].code)) {
-                if (old[o].count == C.lang[i].count && old[o].shards == C.lang[i].shards) {
+                if (old[o].count == C.lang[i].count && old[o].shards == C.lang[i].shards && old[o].rev == C.lang[i].rev) {
                     map[o] = i;
                     C.lang[i].loaded = old[o].loaded;
                     C.lang[i].asked = old[o].asked;
@@ -266,6 +266,7 @@ static void parse_index(const char *s, size_t n) {
                     if (!strcmp(k2, "code")) js_string(&j, l.code, sizeof l.code);
                     else if (!strcmp(k2, "count")) l.count = (int)js_number(&j);
                     else if (!strcmp(k2, "shards")) l.shards = (int)js_number(&j);
+                    else if (!strcmp(k2, "rev")) l.rev = js_number(&j);
                     else js_skip(&j);
                 }
                 if (l.code[0] && l.shards > 0 && l.shards <= 64 && C.nlang < LANG_MAX) C.lang[C.nlang++] = l;
