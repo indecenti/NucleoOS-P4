@@ -63,7 +63,7 @@ for n in "${names[@]}"; do
     if [ -f "$T/$n.books" ]; then while read -r f; do [ -n "$f" ] && ln -s "$FIXTURES/$f" "$ROOT/books/$f"; done < "$T/$n.books"
     else for f in "$FIXTURES"/*; do ln -s "$f" "$ROOT/books/$(basename "$f")"; done; fi
     echo "== $n"
-    if ! BK_ROOT="$ROOT" BK_TESTDATA="$B/_out/testdata" ASAN_OPTIONS=detect_leaks=1 UBSAN_OPTIONS=halt_on_error=1:print_stacktrace=1 \
+    if ! BK_ROOT="$ROOT" BK_TESTDATA="${BK_DATA:-$B/_out/testdata}" ASAN_OPTIONS=detect_leaks=1 UBSAN_OPTIONS=halt_on_error=1:print_stacktrace=1 \
         "$BIN" "$T/$n.script" "$O/$n" >"$O/$n/log.txt" 2>&1; then
         echo "FAIL $n"; tail -30 "$O/$n/log.txt"; fail=1
     else
@@ -74,7 +74,7 @@ for n in "${names[@]}"; do
     fi
     rm -rf "$ROOT/appdata" && mkdir -p "$ROOT/appdata"   # again, within the device's memory budget
     mkdir -p "$O/$n/cap"
-    BK_ROOT="$ROOT" BK_TESTDATA="$B/_out/testdata" "$CAP" "$T/$n.script" "$O/$n/cap" >"$O/$n/cap/log.txt" 2>&1
+    BK_ROOT="$ROOT" BK_TESTDATA="${BK_DATA:-$B/_out/testdata}" "$CAP" "$T/$n.script" "$O/$n/cap" >"$O/$n/cap/log.txt" 2>&1
     grep -E "^memory:" "$O/$n/cap/log.txt" || { echo "FAIL $n (memory budget run)"; tail -5 "$O/$n/cap/log.txt"; fail=1; }
     rm -rf "$O/$n/cap"/*.ppm
 done

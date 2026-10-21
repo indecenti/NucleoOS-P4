@@ -21,7 +21,7 @@ scripts=()
 for s in "$@"; do scripts+=("$s"); done
 rc=0
 MSYS_NO_PATHCONV=1 wsl.exe -d "${DISTRO:-Ubuntu-24.04}" -- env FIXTURES="${FIXTURES:-/mnt/d/bookstest/fixtures}" \
-    BK_LANG="${BK_LANG:-it}" bash "$(wsl_path "$here/test/run_native.sh")" "${scripts[@]}" || rc=$?
+    BK_LANG="${BK_LANG:-it}" BK_DATA="${BK_DATA:-}" bash "$(wsl_path "$here/test/run_native.sh")" "${scripts[@]}" || rc=$?
 python - "$(cygpath -m "$here/_out/shots")" <<'EOF'
 import os, sys
 from PIL import Image
