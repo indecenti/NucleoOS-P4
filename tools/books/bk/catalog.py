@@ -64,6 +64,9 @@ def assign_releases(rows_by_lang, rmap):
 def build(candidates, excluded, log=print, link_assets=True, use_app_check=True):
     """candidates: records from all sources (with _file); excluded: {lang: Counter(reason)}."""
     excluded = defaultdict(Counter, {k: Counter(v) for k, v in excluded.items()})
+    published = load_json(FROZEN / "index.json", {}) or {}
+    for r in candidates:
+        r["_published"] = r["id"] in published
     kept, dropped = dedup.dedupe(candidates)
     for r, w in dropped:
         excluded[r["lang"]]["duplicate"] += 1

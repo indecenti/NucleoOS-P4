@@ -90,6 +90,13 @@ class Dedup(unittest.TestCase):
         self.assertEqual(kept[0]["pop"], 190000)   # popularity carried over to the winner
         self.assertEqual(len(dropped), 2)
 
+    def test_published_edition_stays(self):
+        kept, _ = dedup.dedupe([
+            self.rec("pg1012", "pg", "La Divina Commedia", "Dante Alighieri", 9000, lang="it", _published=True),
+            self.rec("wsit-abc", "ws", "La Divina Commedia", "Dante Alighieri", 100, lang="it"),
+        ])
+        self.assertEqual([r["id"] for r in kept], ["pg1012"])
+
     def test_popularity_inside_source(self):
         kept, _ = dedup.dedupe([self.rec("pg1", "pg", "Emma", "Jane Austen", 10),
                                 self.rec("pg2", "pg", "Emma", "Jane Austen", 500)])

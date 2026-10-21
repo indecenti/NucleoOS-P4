@@ -28,7 +28,8 @@ VOLUME_RX = re.compile(r"\b(vol|volume|volumen|tome|tomo|band|bd|book|libro|livr
 
 
 def rank(rec):
-    return (SOURCE_RANK.get(rec.get("src"), 9), -(rec.get("pop") or 0))
+    # an edition already published stays (the app may be downloading it); otherwise the best source wins
+    return (0 if rec.get("_published") else 1, SOURCE_RANK.get(rec.get("src"), 9), -(rec.get("pop") or 0))
 
 
 def dedupe(records):
