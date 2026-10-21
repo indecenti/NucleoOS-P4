@@ -10,6 +10,8 @@
   python books.py mn-fetch           # hand-curated manuals (data/manuals.json)
   python books.py comics [--langs ...] # Pepper&Carrot comics (CC BY 4.0)
   python books.py build              # validate, dedup, assign releases, write out/books + reports
+  python books.py publish --langs it --store D:
+v_books_store   # F5: Releases + books/ on Pages (user's OK!)
   python books.py all                # everything above, in order
 
 Nothing here publishes: out/ is ready for F5 (GitHub Releases + Pages books/), which needs the user's OK.
@@ -114,6 +116,16 @@ def cmd_comics(a):
     src_comics.build(_langs(a))
 
 
+def cmd_publish(a):
+    from bk import publish
+    if not a.store:
+        sys.exit("--store <sparse clone of indecenti/nucleoos-p4-store> is required")
+    langs = a.langs.split(",") if a.langs else None
+    if not langs:
+        sys.exit("--langs is required (publishing is per language)")
+    publish.publish(a.store, langs)
+
+
 def cmd_all(a):
     cmd_pg_meta(a)
     cmd_se_meta(a)
@@ -133,10 +145,11 @@ def main(argv=None):
     for name, fn in (("pg-meta", cmd_pg_meta), ("pg-fetch", cmd_pg_fetch), ("se-meta", cmd_se_meta),
                      ("se-fetch", cmd_se_fetch), ("ws-scan", cmd_ws_scan), ("ws-build", cmd_ws_build),
                      ("wb-build", cmd_wb_build), ("mn-fetch", cmd_mn_fetch), ("comics", cmd_comics),
-                     ("build", cmd_build), ("all", cmd_all)):
+                     ("build", cmd_build), ("publish", cmd_publish), ("all", cmd_all)):
         sp = sub.add_parser(name)
         sp.add_argument("--force", action="store_true", help="refetch metadata")
         sp.add_argument("--langs", help="comma-separated language codes (default: all)")
+        sp.add_argument("--store", help="publish: sparse clone of the store repo")
         sp.set_defaults(fn=fn)
     a = p.parse_args(argv)
     a.fn(a)
