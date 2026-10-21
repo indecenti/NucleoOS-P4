@@ -235,8 +235,13 @@ class Misc(unittest.TestCase):
         self.assertEqual(pick_lang(["la", "fr"]), "fr")
 
     def test_description_cut(self):
-        d = describe.description("it", "Giovanni Verga", "1840-1922", ["novel", "classic"], 1881)
-        self.assertEqual(d, "Giovanni Verga (1840-1922). Romanzi · Classici. Prima edizione: 1881.")
+        # no real description -> empty, never a line rebuilt from author/dates/categories
+        self.assertEqual(describe.description("it", "Giovanni Verga", "1840-1922", ["novel", "classic"], 1881), "")
+        self.assertEqual(describe.description("it", "", "", [], None, None, None, "romanzo verista ambientato ad Aci Trezza"),
+                         "Romanzo verista ambientato ad Aci Trezza.")
+        rec = {"lang": "it", "a": "Edmondo De Amicis", "ad": "1846-1908", "c": ["biography"], "y": None}
+        self.assertTrue(describe.is_filler("Edmondo De Amicis (1846-1908). Biografie.", rec))
+        self.assertFalse(describe.is_filler("Ricordi della scuola torinese e dei maestri dell'autore.", rec))
         long = "A sentence that is long enough. " * 30
         self.assertLessEqual(len(describe.description("en", "X", "", [], None, long, "en")), describe.D_MAX)
 

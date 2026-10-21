@@ -132,25 +132,51 @@ def clean_summary(s):
 
 
 def description(lang, author, adates, cats, year, summary=None, summary_lang=None, wd_desc=None):
+    """A real description or "" (the app shows nothing rather than filler).
+
+    Real = the source's own summary in the book's language (Gutenberg's catalog summary is part of its
+    public-domain catalog data), or the work's Wikidata description (CC0) in that language. Author,
+    dates and categories are already separate fields, so they are never repeated here.
+    """
     if summary and summary_lang == lang:
         d = _cut(clean_summary(summary))
         if len(d) >= 40:
             return d
-    bits = []
-    if wd_desc:
+    if wd_desc and len(wd_desc.strip()) >= 12:
         w = wd_desc.strip().rstrip(".")
-        bits.append(w[:1].upper() + w[1:])
-    surname = (author or "").split(",")[0].split(" ")[-1]
-    if author and not (wd_desc and surname and surname.lower() in wd_desc.lower()):
+        return _cut(w[:1].upper() + w[1:] + ".")
+    return ""
+
+
+def legacy_template(lang, author, adates, cats, year):
+    """The synthetic line older candidate files still carry (author, dates, categories, year): it is
+    recognised and dropped at build time."""
+    bits = []
+    if author:
         bits.append(author + (" (%s)" % adates if adates else ""))
-    elif author and adates:
-        bits[-1] += " (%s)" % adates if surname.lower() in bits[-1].lower() else ""
     if cats and lang in UI_LANGS:
         i = UI_LANGS.index(lang)
         bits.append(" · ".join(CATS[c][i] for c in cats))
     if year and lang in FIRST_PUB:
         bits.append("%s: %s" % (FIRST_PUB[lang], year_str(year, lang)))
     return _cut(". ".join(bits) + ".") if bits else ""
+
+
+def is_filler(d, rec):
+    """True when d only repeats the row's own fields."""
+    if not d:
+        return True
+    if d == legacy_template(rec["lang"], rec.get("a"), rec.get("ad"), rec.get("c"), rec.get("y")):
+        return True
+    rest = d
+    for f in (rec.get("a") or "", rec.get("ad") or ""):
+        rest = rest.replace(f, "")
+    if rec["lang"] in UI_LANGS:
+        for c in rec.get("c") or []:
+            rest = rest.replace(CATS[c][UI_LANGS.index(rec["lang"])], "")
+    if rec["lang"] in FIRST_PUB:
+        rest = rest.replace(FIRST_PUB[rec["lang"]], "")
+    return len(re.sub(r"[\W\d_]+", "", rest)) < 12
 
 
 def norm_key(s):

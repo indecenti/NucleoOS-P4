@@ -122,6 +122,9 @@ def build(candidates, excluded, log=print, link_assets=True, use_app_check=True)
         log("app check: %d books dropped (see reports/app-check-failures.md)" % len(app_fail))
 
     for r in rows:
+        # "d" only when it says something the other fields don't
+        if describe.is_filler(r.get("d"), r):
+            r["d"] = ""
         # main title in "t", the rest (subtitle, series, volume note) in "st"; several authors joined by " & "
         r["t"], st = describe.split_title(r["t"])
         if st:
