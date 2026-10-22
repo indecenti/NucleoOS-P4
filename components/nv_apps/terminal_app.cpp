@@ -219,14 +219,20 @@ VTermAllocatorFunctions kVtAlloc = {vt_malloc, vt_free};
 // A curses program that can_change_color() (WordGrinder) redefines indexed colours with OSC 4 and
 // puts them back with OSC 104 (xterm-256color's initc / oc). libvterm keeps only 0-15 and passes
 // both on: the redefinitions live here, for all 256 indexed colours, and win over its palette.
-NV_PSRAM_BSS uint32_t s_pal[256];
-NV_PSRAM_BSS uint8_t  s_pal_set[256 / 8];
-NV_PSRAM_BSS char     s_osc[256];   // one OSC 4 / 104 string, gathered across fragments
+// With the type-ahead below: one PSRAM heap block allocated with the tty ring (the static PSRAM
+// budget is full). Without it the Terminal works with the stock palette and no type-ahead.
+struct TermTables {
+    uint32_t pal[256];
+    uint8_t  pal_set[256 / 8];
+    char     osc[256];     // one OSC 4 / 104 string, gathered across fragments
+    char     ahead[512];   // keys the program cannot take yet (prog_stdin)
+};
+TermTables *s_tt = nullptr;
 size_t s_osc_n = 0;
-bool   s_osc_long = false;          // longer than s_osc: ignored
+bool   s_osc_long = false;          // longer than s_tt->osc: ignored
 
-bool pal_has(int i) { return s_pal_set[i >> 3] & (1u << (i & 7)); }
-void pal_reset(void) { memset(s_pal_set, 0, sizeof s_pal_set); }
+bool pal_has(int i) { return s_tt && (s_tt->pal_set[i >> 3] & (1u << (i & 7))); }
+void pal_reset(void) { if (s_tt) memset(s_tt->pal_set, 0, sizeof s_tt->pal_set); }
 
 int hexval(char c) {
     return c >= '0' && c <= '9' ? c - '0' : c >= 'a' && c <= 'f' ? c - 'a' + 10 : c >= 'A' && c <= 'F' ? c - 'A' + 10 : -1;
@@ -269,7 +275,7 @@ bool parse_color(const char *s, size_t n, uint32_t *out) {
 
 // An indexed colour as RGB: a redefinition, else libvterm's palette.
 uint32_t pal_rgb(int i) {
-    if (pal_has(i)) return s_pal[i];
+    if (pal_has(i)) return s_tt->pal[i];
     VTermColor c;
     vterm_color_indexed(&c, (uint8_t)i);
     vterm_screen_convert_color_to_rgb(s_vs, &c);
@@ -298,8 +304,8 @@ void osc_palette_set(const char *s) {
                                        (unsigned)(c >> 8) & 0xFF, (unsigned)c & 0xFF, (unsigned)c & 0xFF);
                 if (k > 0 && k < (int)sizeof b) cb_output(b, (size_t)k, nullptr);
             } else if (parse_color(spec, sn, &rgb)) {
-                s_pal[i] = rgb;
-                s_pal_set[i >> 3] |= (uint8_t)(1u << (i & 7));
+                s_tt->pal[i] = rgb;
+                s_tt->pal_set[i >> 3] |= (uint8_t)(1u << (i & 7));
             }
         }
         if (!se) return;
@@ -314,22 +320,22 @@ void osc_palette_reset(const char *s) {
         char *end;
         const long i = strtol(s, &end, 10);
         if (end == s) return;
-        if (i >= 0 && i < 256) s_pal_set[i >> 3] &= (uint8_t)~(1u << (i & 7));
+        if (i >= 0 && i < 256) s_tt->pal_set[i >> 3] &= (uint8_t)~(1u << (i & 7));
         if (*end != ';') return;
         s = end + 1;
     }
 }
 
 int cb_osc(int cmd, VTermStringFragment f, void *) {
-    if (cmd != 4 && cmd != 104) return 0;
+    if ((cmd != 4 && cmd != 104) || !s_tt) return 0;
     if (f.initial) { s_osc_n = 0; s_osc_long = false; }
-    if (s_osc_n + f.len >= sizeof s_osc) s_osc_long = true;
-    else { memcpy(s_osc + s_osc_n, f.str, f.len); s_osc_n += f.len; }
+    if (s_osc_n + f.len >= sizeof s_tt->osc) s_osc_long = true;
+    else { memcpy(s_tt->osc + s_osc_n, f.str, f.len); s_osc_n += f.len; }
     if (!f.final) return 1;
-    s_osc[s_osc_n] = 0;
+    s_tt->osc[s_osc_n] = 0;
     if (!s_osc_long) {
-        if (cmd == 4) osc_palette_set(s_osc);
-        else osc_palette_reset(s_osc);
+        if (cmd == 4) osc_palette_set(s_tt->osc);
+        else osc_palette_reset(s_tt->osc);
     }
     if (s_view) lv_obj_invalidate(s_view);
     return 1;
@@ -342,7 +348,7 @@ const VTermStateFallbacks kFallbacks = {nullptr, nullptr, cb_osc, nullptr, nullp
 uint32_t color_rgb(VTermColor c, bool fg) {
     if (fg && VTERM_COLOR_IS_DEFAULT_FG(&c)) return (1u << 24) | kFg;
     if (!fg && VTERM_COLOR_IS_DEFAULT_BG(&c)) return (1u << 24) | kBg;
-    if (VTERM_COLOR_IS_INDEXED(&c) && pal_has(c.indexed.idx)) return s_pal[c.indexed.idx];
+    if (VTERM_COLOR_IS_INDEXED(&c) && pal_has(c.indexed.idx)) return s_tt->pal[c.indexed.idx];
     vterm_screen_convert_color_to_rgb(s_vs, &c);
     return ((uint32_t)c.rgb.red << 16) | ((uint32_t)c.rgb.green << 8) | c.rgb.blue;
 }
@@ -836,8 +842,27 @@ void vt_puts_cap(const char *s) {
 
 // ---------------------------------------------------------------- terminal programs
 
+// Keys typed before the program can take them (its stdin opens with its WASI instance, seconds
+// after the start) or while its pipe is full: they wait here, in order, and go on from prog_poll.
+size_t s_ahead_n = 0;
+
+void ahead_flush(void) {
+    if (!s_ahead_n || !s_tt) return;
+    const size_t w = nv_wasm_exec_write_stdin(s_prog.run, s_tt->ahead, s_ahead_n);
+    if (!w) return;
+    memmove(s_tt->ahead, s_tt->ahead + w, s_ahead_n - w);
+    s_ahead_n -= w;
+}
+
 void prog_stdin(const char *s, size_t n) {
-    if (nv_wasm_exec_write_stdin(s_prog.run, s, n) < n) vt_puts("\r\n[input dropped: program busy]\r\n");
+    ahead_flush();
+    const size_t w = s_ahead_n ? 0 : nv_wasm_exec_write_stdin(s_prog.run, s, n);
+    s += w;
+    n -= w;
+    if (!n) return;
+    if (!s_tt || n > sizeof s_tt->ahead - s_ahead_n) { vt_puts("\r\n[input dropped: program busy]\r\n"); return; }
+    memcpy(s_tt->ahead + s_ahead_n, s, n);
+    s_ahead_n += n;
 }
 
 // Move program output to its sink (the screen, a pipe buffer or a file).
@@ -856,6 +881,7 @@ bool prog_drain(void) {
 void prog_finish(int status) {
     const bool was = s_prog.active;
     s_prog.active = false;
+    s_ahead_n = 0;
     s_prog.out = nullptr;
     s_prog.in = nullptr;
     s_prog.in_left = 0;
@@ -891,6 +917,7 @@ void prog_poll(void) {
         }
         if (!s_prog.in_left) { nv_wasm_exec_end_stdin(s_prog.run); s_prog.in = nullptr; }
     }
+    ahead_flush();
     prog_drain();
     raw_update();   // the program may have switched to / from the alternate screen
     const nv_wrun_state_t st = nv_wasm_exec_state_of(s_prog.run);
@@ -967,6 +994,7 @@ bool prog_start(void) {
     }
     prog_stop_retry();
     s_prog.active = true;
+    s_ahead_n = 0;
     s_prog.aborted = false;
     s_org_valid = false;
     raw_update();
@@ -1567,6 +1595,7 @@ bool tty_init_once(void) {
     // The capture ring is optional: without it the terminal works, /api/term just sees no output.
     if (!s_cap_mtx) s_cap_mtx = xSemaphoreCreateMutex();
     if (!s_cap && s_cap_mtx) s_cap = (char *)heap_caps_malloc(kCap, MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
+    if (!s_tt) s_tt = (TermTables *)heap_caps_calloc(1, sizeof(TermTables), MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
     return true;
 }
 
@@ -1639,6 +1668,9 @@ void build_widgets(lv_obj_t *content) {
     nv_event_unsubscribe(NV_EV_IME_VISIBILITY, on_ime, nullptr);
     nv_event_subscribe(NV_EV_IME_VISIBILITY, on_ime, nullptr);
     lv_obj_update_layout(root);
+    // With a physical keyboard the Terminal takes its keys at once, as a tap would: opened from a
+    // program's Home tile nothing else is bound, so they went nowhere until the screen was touched.
+    if (nv_ime_physical_keyboard()) nv_ime_focus(s_input);
 }
 
 // Rebuild (theme, language, rotation, a new intent): the session goes on as it was (grid,

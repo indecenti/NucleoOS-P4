@@ -124,6 +124,11 @@ void nv_ime_focus(lv_obj_t *ta);
 // (nv_ui_focus) leaves keys to the IME while this holds. LVGL-thread only.
 bool nv_ime_bound(void);
 
+// True when typing comes from a physical keyboard: one is connected, or keys from one (any
+// transport) arrived in the last minutes. A screen that is all keyboard (the Terminal) binds its
+// field at once then: focusing raises no on-screen keyboard with a physical one in use.
+bool nv_ime_physical_keyboard(void);
+
 // The on-screen keyboard object (never a keyboard-focus target itself). NULL before nv_ime_init.
 lv_obj_t *nv_ime_keyboard_obj(void);
 

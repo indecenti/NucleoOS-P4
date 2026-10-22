@@ -469,6 +469,7 @@ void nv_ime_set_submit_cb(nv_ime_submit_cb_t cb, void *user) {
 static uint32_t s_phys_tick;
 static bool s_phys_seen;
 bool ime_typed_physically(void) { return s_phys_seen && lv_tick_elaps(s_phys_tick) < 5 * 60 * 1000; }
+bool nv_ime_physical_keyboard(void) { return nv_hid_host_keyboard_present() || ime_typed_physically(); }
 void nv_ime_physical_key(void) {
     s_phys_tick = lv_tick_get();
     s_phys_seen = true;
