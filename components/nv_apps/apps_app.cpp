@@ -583,10 +583,13 @@ void gv_poll(lv_timer_t *) {
     // guest is stuck in a loop that never presents. Abort forcibly interrupts the interpreter
     // (THREAD_MGR terminate); the run lands in DONE within a tick and the branch above collects
     // it and shows the error ("terminated by user"). Keep polling — just re-arm the clock so a
-    // slow teardown doesn't re-fire the abort every 16 ms.
+    // slow teardown doesn't re-fire the abort every 16 ms. The clock only runs while guest code
+    // does: reading and loading the module is not the guest's to answer for (ScummVM: ~1 s for
+    // its 8 MB app.aot, 3.6 s for the interpreter's app.wasm, which the old clock counted and
+    // then killed the game 4 s into its own start).
     if (s_gv.active && nv_wasm_exec_state_of(s_gv.run) == NV_WRUN_RUNNING) {
         const uint32_t seq = nv_wasm_gfx_present_seq();
-        if (seq != s_gv.hb_seq) {
+        if (seq != s_gv.hb_seq || !nv_wasm_exec_guest_live(s_gv.run)) {
             s_gv.hb_seq = seq;
             s_gv.hb_tick = lv_tick_get();
         } else if (lv_tick_elaps(s_gv.hb_tick) > kGameWedgeMs) {

@@ -91,10 +91,10 @@ index 949e5747..b8f82e34 100644
          size_t bytes_read = 0;
          char *buf;
 diff --git a/core/shared/platform/esp-idf/espidf_memmap.c b/core/shared/platform/esp-idf/espidf_memmap.c
-index b0c493d2..d5e47888 100644
+index b0c493d2..dfa41150 100644
 --- a/core/shared/platform/esp-idf/espidf_memmap.c
 +++ b/core/shared/platform/esp-idf/espidf_memmap.c
-@@ -17,9 +17,70 @@
+@@ -17,9 +17,95 @@
  static portMUX_TYPE s_spinlock = portMUX_INITIALIZER_UNLOCKED;
  #endif
  
@@ -111,13 +111,38 @@ index b0c493d2..d5e47888 100644
 +
 +#define P4_EXEC_LINE 128 /* >= every L1/L2 line size the P4 can be configured with */
 +
++static void *s_exec_handoff;
++static size_t s_exec_handoff_size;
++
++/* NucleoV2: hand the next executable os_mmap (an AOT module's code) a block the embedder already
++   placed (heap_caps_aligned_alloc, P4_EXEC_LINE-aligned; freed through os_munmap -> os_free like
++   any other). nv_wasm sets the code next to the block the linear memory will take (see
++   os_mmap_set_handoff), at the top end of PSRAM, so the two never have to be found again in a
++   heap that small allocations have cut up. Returns the block still pending, if any. */
++void *
++os_mmap_set_exec_handoff(void *block, size_t size)
++{
++    void *prev = s_exec_handoff;
++    s_exec_handoff = block;
++    s_exec_handoff_size = block ? size : 0;
++    return prev;
++}
++
 +static void *
 +p4_exec_alloc(size_t size)
 +{
 +    size_t body = (size + P4_EXEC_LINE - 1) & ~(size_t)(P4_EXEC_LINE - 1);
 +    /* One leading line holds the origin pointer that os_munmap() -> os_free() reads back. */
-+    uint8_t *origin = heap_caps_aligned_alloc(P4_EXEC_LINE, P4_EXEC_LINE + body,
-+                                              MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
++    uint8_t *origin = NULL;
++    if (s_exec_handoff && P4_EXEC_LINE + body <= s_exec_handoff_size) {
++        origin = s_exec_handoff;
++        s_exec_handoff = NULL;
++        s_exec_handoff_size = 0;
++    }
++    if (!origin) {
++        origin = heap_caps_aligned_alloc(P4_EXEC_LINE, P4_EXEC_LINE + body,
++                                         MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
++    }
 +    if (!origin) {
 +        return NULL;
 +    }
@@ -165,7 +190,7 @@ index b0c493d2..d5e47888 100644
      if (prot & MMAP_PROT_EXEC) {
  #if (WASM_MEM_DUAL_BUS_MIRROR != 0)
          uint32_t mem_caps = MALLOC_CAP_SPIRAM;
-@@ -56,8 +117,33 @@ os_mmap(void *hint, size_t size, int prot, int flags, os_file_handle file)
+@@ -56,8 +142,33 @@ os_mmap(void *hint, size_t size, int prot, int flags, os_file_handle file)
  #else
          uint32_t mem_caps = MALLOC_CAP_8BIT;
  #endif
@@ -201,7 +226,7 @@ index b0c493d2..d5e47888 100644
          if (!buf_origin) {
              return NULL;
          }
-@@ -81,6 +167,24 @@ os_mmap(void *hint, size_t size, int prot, int flags, os_file_handle file)
+@@ -81,6 +192,24 @@ os_mmap(void *hint, size_t size, int prot, int flags, os_file_handle file)
  void *
  os_mremap(void *old_addr, size_t old_size, size_t new_size)
  {
@@ -226,7 +251,7 @@ index b0c493d2..d5e47888 100644
      return os_mremap_slow(old_addr, old_size, new_size);
  }
  
-@@ -127,7 +231,23 @@ void
+@@ -127,7 +256,23 @@ void
  
  void
  os_icache_flush(void *start, size_t len)

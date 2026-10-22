@@ -477,6 +477,11 @@ bool nv_wasm_exec_take_toast_run(nv_wrun_id_t id, int *kind, char *msg, size_t n
 // `id` is the engine's run and RUNNING.
 void nv_wasm_exec_abort_run(nv_wrun_id_t id);
 
+// True once run `id` is executing guest code: its module is loaded and instantiated (reading and
+// loading a big module - ScummVM's 8 MB app.aot, or the interpreter preparing its bytecode - takes
+// seconds before that). False while loading, and once the run is DONE.
+bool nv_wasm_exec_guest_live(nv_wrun_id_t id);
+
 // True while an aborted run is still unwinding (RUNNING with an abort requested): a start refused
 // with "busy" right now will succeed once that worker lands in DONE. An app opened straight out of
 // another WASM app hits this — the old app's teardown aborts its run just before the new one starts,

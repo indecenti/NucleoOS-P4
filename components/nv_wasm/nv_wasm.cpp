@@ -86,6 +86,8 @@ struct RunReq {
     bool           console;      // Terminal run: stdin pipe, argv, no opcode cap, output backpressure
     const char    *args;         // console command line after the program name (Exec-owned)
     const char    *fallback;     // app.wasm to load instead when `mod` is an app.aot WAMR rejects
+    void          *code_blk;     // app.aot: block placed for its native code (os_mmap_set_exec_handoff)
+    size_t         code_size;
     char           tag[44];      // log tag ("wasmapp" or "app:<id>")
     Exec          *ex;           // async sink; NULL on the synchronous demo paths
     char          *out;          // sync fallback sink (demo paths)
@@ -1966,6 +1968,113 @@ const char *read_module(const char *path, uint8_t **out, size_t *out_n, size_t m
     return nullptr;
 }
 
+// The free PSRAM blocks of 256 KB or more in address order, with the used bytes between
+// consecutive ones, in one log line: what an app.aot that did not fit was up against.
+struct FragWalk { uint32_t addr[16], size[16], gap[16]; int n; uint32_t used_since; };
+bool frag_walk(walker_heap_into_t, walker_block_info_t b, void *user) {
+    auto *w = static_cast<FragWalk *>(user);
+    if (!b.used && b.size >= 256 * 1024) {
+        if (w->n < 16) { w->addr[w->n] = (uint32_t)(uintptr_t)b.ptr; w->size[w->n] = b.size; w->gap[w->n] = w->used_since; w->n++; }
+        w->used_since = 0;
+    } else if (b.used) {
+        w->used_since += b.size;
+    }
+    return true;
+}
+void log_frag(const char *tag, const char *when) {
+    FragWalk w = {};
+    heap_caps_walk(MALLOC_CAP_SPIRAM, frag_walk, &w);
+    char line[400];
+    int n = snprintf(line, sizeof line, "%s: frag %s:", tag, when);
+    for (int i = 0; i < w.n && n < (int)sizeof line - 32; i++)
+        n += snprintf(line + n, sizeof line - n, " [+%uK] %08lx:%uK", (unsigned)(w.gap[i] / 1024),
+                      (unsigned long)w.addr[i], (unsigned)(w.size[i] / 1024));
+    NV_LOGI(TAG, "%s", line);
+}
+
+// Size of an app.aot's native code (WAMR AOT_SECTION_TYPE_TEXT = 2) from its section headers, and
+// of the whole file; 0 when the image cannot be read.
+size_t aot_text_size(const char *path, size_t *file_size) {
+    const int fd = open(path, O_RDONLY);
+    if (fd < 0) return 0;
+    struct stat st;
+    *file_size = fstat(fd, &st) == 0 ? (size_t)st.st_size : 0;
+    uint32_t h[2];
+    size_t text = 0;
+    if (read(fd, h, sizeof h) == (ssize_t)sizeof h && h[0] == 0x746f6100u) {   // "\0aot"
+        off_t at = sizeof h;
+        for (int i = 0; i < 32; i++) {
+            if (lseek(fd, at, SEEK_SET) != at || read(fd, h, sizeof h) != (ssize_t)sizeof h) break;
+            if (h[0] == 2) { text = h[1]; break; }
+            at += (off_t)sizeof h + (off_t)h[1];
+        }
+    }
+    close(fd);
+    return text;
+}
+
+struct LargestFree { uintptr_t addr; size_t size; };
+bool largest_walk(walker_heap_into_t, walker_block_info_t b, void *user) {
+    auto *l = static_cast<LargestFree *>(user);
+    if (!b.used && b.size > l->size) { l->addr = (uintptr_t)b.ptr; l->size = b.size; }
+    return true;
+}
+
+// An AOT run's two big blocks - its native code and the block its linear memory starts in - at the
+// TOP end of the largest free PSRAM block: [free][memory][code]. Allocated the usual way they took
+// the bottom end, and whatever the system allocated while the app ran (stacks, buffers, a few
+// bytes here and there) then landed right next to them and stayed: after two or three apps the
+// 22 MB block was cut into 16 + 6 MB or 14 + 4 MB, and ScummVM (10.25 MB memory + 6.3 MB code,
+// one piece each) fell back to the interpreter with 22 MB free. At the top end the run leaves the
+// low part free for everyone else, and its own blocks merge back into one when it ends. Returns
+// why (nothing allocated) when the two do not fit there.
+const char *place_top(size_t code, size_t mem, void **code_out, void **mem_out) {
+    LargestFree l = {};
+    heap_caps_walk(MALLOC_CAP_SPIRAM, largest_walk, &l);
+    // TLSF searches for a block one size class above the request (1/32 of its power of two: 128 KB
+    // for 4-8 MB) and the headers come on top: that much stays free above the last block.
+    const size_t slack = code / 16 + 4096;
+    const size_t need = mem + code + slack;
+    if (l.size < need + 64 * 1024) return "too small";
+    const uint32_t caps = MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT;
+    void *low = heap_caps_aligned_alloc(128, l.size - need, caps);   // holds the bottom end meanwhile
+    if (!low) return "no bottom";
+    void *c = nullptr, *m = nullptr;
+    const char *why = nullptr;
+    if ((uintptr_t)low < l.addr || (uintptr_t)low >= l.addr + l.size) {
+        why = "bottom elsewhere";
+    } else {
+        m = heap_caps_aligned_alloc(128, mem, caps);
+        c = m ? heap_caps_aligned_alloc(128, code, caps) : nullptr;
+        if (!c) why = m ? "no code block" : "no memory block";
+    }
+    heap_caps_free(low);
+    if (why) { if (m) heap_caps_free(m); return why; }
+    *code_out = c;
+    *mem_out = m;
+    return nullptr;
+}
+
+// Read a whole file into `b` (cap bytes, cache-line aligned: see read_module).
+const char *read_into(const char *path, uint8_t *b, size_t cap, size_t *out_n) {
+    const int fd = open(path, O_RDONLY);
+    if (fd < 0) return "open app module failed";
+    struct stat st;
+    const long sz = fstat(fd, &st) == 0 ? (long)st.st_size : -1;
+    if (sz <= 0 || (size_t)sz > cap) { close(fd); return "bad app module size"; }
+    size_t rd = 0;
+    while (rd < (size_t)sz) {
+        const size_t want = (size_t)sz - rd > 256 * 1024 ? 256 * 1024 : (size_t)sz - rd;
+        const ssize_t n = read(fd, b + rd, want);
+        if (n <= 0) break;
+        rd += (size_t)n;
+    }
+    close(fd);
+    if (rd != (size_t)sz) return "read app module failed";
+    *out_n = (size_t)sz;
+    return nullptr;
+}
+
 // "<dir>/app.wasm" -> "<dir>/app.aot", true only if that AOT image exists and is non-empty.
 bool aot_path_for(const char *wasm_path, char *out, size_t n) {
     const size_t len = strlen(wasm_path);
@@ -2101,8 +2210,17 @@ void w4_loop(RunReq *r, wasm_module_inst_t inst, wasm_exec_env_t env, wasm_funct
     }
 }
 
+// The first PSRAM allocation that failed while an app.aot was loading (0 = none): WAMR only says
+// "allocate memory failed", and which block did not fit decides what to do about it.
+volatile size_t s_aot_fail_size = 0;
+volatile bool   s_aot_tracing = false;
+void aot_alloc_failed(size_t size, uint32_t caps, const char *) {
+    if (s_aot_tracing && (caps & MALLOC_CAP_SPIRAM) && !s_aot_fail_size) s_aot_fail_size = size;
+}
+
 extern "C" void *os_mmap_set_handoff(void *block, size_t size);   // WAMR esp-idf platform (tools/patches)
 extern "C" void os_mmap_set_handoff_keep(bool keep);              // (same patch)
+extern "C" void *os_mmap_set_exec_handoff(void *block, size_t size);   // (same patch)
 
 // The module bytes an async run was started with (Exec::bytes, read by exec_start) as soon as the
 // loader is done with them, instead of at collect: an AOT image can be several MB of PSRAM.
@@ -2144,6 +2262,7 @@ void *run_worker(void *p) {
                  : r->mod_size <= sizeof(stackbuf) ? stackbuf
                  : (uint8_t *)heap_caps_malloc(r->mod_size, MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
     bool borrowed = is_aot;   // buf is the Exec's own copy (r->mod): never freed here
+    if (!is_aot && r->code_blk) { heap_caps_free(r->code_blk); r->code_blk = nullptr; }
     if (!buf) { set_err(r->err, sizeof r->err, "oom"); goto done; }
     if (!is_aot) {
         memcpy(buf, r->mod, r->mod_size);
@@ -2157,7 +2276,19 @@ void *run_worker(void *p) {
             LoadArgs la = {};
             la.name = const_cast<char *>("");
             la.wasm_binary_freeable = true;
+            s_aot_fail_size = 0;
+            s_aot_tracing = true;
+            if (r->code_blk) os_mmap_set_exec_handoff(r->code_blk, r->code_size);   // the code goes there
             module = wasm_runtime_load_ex(buf, r->mod_size, &la, ebuf, sizeof(ebuf));
+            if (void *unused = os_mmap_set_exec_handoff(nullptr, 0)) heap_caps_free(unused);   // not taken
+            r->code_blk = nullptr;
+            s_aot_tracing = false;
+            if (!module) log_frag(r->tag, "aot rejected");
+            if (!module && s_aot_fail_size)
+                NV_LOGW(TAG, "%s: no room for a %u KB block of its app.aot: PSRAM free %u KB, largest block %u KB",
+                        r->tag, (unsigned)(s_aot_fail_size / 1024),
+                        (unsigned)(heap_caps_get_free_size(MALLOC_CAP_SPIRAM) / 1024),
+                        (unsigned)(heap_caps_get_largest_free_block(MALLOC_CAP_SPIRAM) / 1024));
             release_module_bytes(r, module != nullptr);   // loaded: the block becomes the memory
             buf = nullptr;
         } else {
@@ -2490,6 +2621,7 @@ bool nv_wasm_init(void) {
     init.mem_alloc_option.allocator.realloc_func = (void *)wamr_realloc;
     init.mem_alloc_option.allocator.free_func    = (void *)wamr_free;
 
+    heap_caps_register_failed_alloc_callback(aot_alloc_failed);
     if (!wasm_runtime_full_init(&init)) {
         NV_LOGE(TAG, "wasm_runtime_full_init failed");
         return false;
@@ -3046,6 +3178,14 @@ nv_wrun_state_t nv_wasm_exec_state_of(nv_wrun_id_t id) {
     return st;
 }
 
+bool nv_wasm_exec_guest_live(nv_wrun_id_t id) {
+    pthread_mutex_lock(&s_exec.lock);
+    const bool live = id != NV_WRUN_NONE && s_exec.run_id == id && s_exec.state == NV_WRUN_RUNNING
+                   && s_exec.inst != nullptr;
+    pthread_mutex_unlock(&s_exec.lock);
+    return live;
+}
+
 nv_wrun_id_t nv_wasm_exec_current(void) {
     pthread_mutex_lock(&s_exec.lock);
     const nv_wrun_id_t id = s_exec.run_id;
@@ -3364,7 +3504,31 @@ nv_wrun_id_t nv_wasm_exec_start(const nv_wasm_app_t *app, char *err, size_t err_
     // + margin: TLSF rounds a request up to its size class (256 KB steps at 8-16 MB), so a block
     // exactly heap-sized cannot hold heap + the allocator header.
     const size_t mem_room = (size_t)clamp_u32(app->ram_budget, kMinHeap, kMaxHeap) + 256 * 1024;
-    const char *why = aot ? read_module(aot_path, &bytes, &sz, mem_room) : "no app.aot";
+    void *code_blk = nullptr;
+    size_t code_size = 0;
+    const char *why = "no app.aot";
+    if (aot) {
+        // The code block exactly as WAMR's loader asks for it (espidf_memmap.c p4_exec_alloc: one
+        // cache line for the origin pointer + the text rounded to 4, then to whole lines; riscv32
+        // has no PLT), placed with the memory block at the top end of PSRAM (place_top).
+        size_t file_size = 0;
+        const size_t text = aot_text_size(aot_path, &file_size);
+        void *mem_blk = nullptr;
+        const size_t mem_size = file_size > mem_room ? file_size : mem_room;
+        if (text && file_size) {
+            code_size = 128 + ((((text + 3) & ~(size_t)3) + 127) & ~(size_t)127);
+            const char *miss = place_top(code_size, mem_size, &code_blk, &mem_blk);
+            if (!miss) {
+                why = read_into(aot_path, (uint8_t *)mem_blk, mem_size, &sz);
+                if (why) { heap_caps_free(mem_blk); heap_caps_free(code_blk); code_blk = nullptr; }
+                else     bytes = (uint8_t *)mem_blk;
+            } else {
+                NV_LOGI(TAG, "'%s': code %u KB + memory %u KB not placed at the top of PSRAM (%s)", app->id,
+                        (unsigned)(code_size / 1024), (unsigned)(mem_size / 1024), miss);
+            }
+        }
+        if (!bytes) why = read_module(aot_path, &bytes, &sz, mem_room);
+    }
     if (why && aot && !strcmp(why, "oom")) {
         // No room for the native image: the interpreter would need even more (bytecode + its
         // preprocessed copy) and run a heavy app far too slowly to be usable — refuse clearly.
@@ -3383,7 +3547,13 @@ nv_wrun_id_t nv_wasm_exec_start(const nv_wasm_app_t *app, char *err, size_t err_
     if (!s_exec.outbuf) {
         s_exec.outbuf = (char *)heap_caps_malloc(kOutCap, MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
         if (!s_exec.outbuf) s_exec.outbuf = (char *)malloc(kOutCap);
-        if (!s_exec.outbuf) { free(bytes); exec_unclaim(); set_err(err, err_n, "oom"); return NV_WRUN_NONE; }
+        if (!s_exec.outbuf) {
+            free(bytes);
+            if (code_blk) heap_caps_free(code_blk);
+            exec_unclaim();
+            set_err(err, err_n, "oom");
+            return NV_WRUN_NONE;
+        }
     }
 
     pthread_mutex_lock(&s_exec.lock);
@@ -3411,6 +3581,8 @@ nv_wrun_id_t nv_wasm_exec_start(const nv_wasm_app_t *app, char *err, size_t err_
     s_exec.req.console    = console;
     s_exec.req.args       = s_exec.args;   // Exec-owned: outlives the run
     s_exec.req.fallback   = aot ? s_exec.app.wasm_path : nullptr;   // s_exec.app outlives the run
+    s_exec.req.code_blk   = code_blk;
+    s_exec.req.code_size  = code_size;
     snprintf(s_exec.req.tag, sizeof s_exec.req.tag, "app:%s", app->id);
 
     // A game gets its double-buffered canvas up before the worker can draw into it.
@@ -3431,6 +3603,7 @@ nv_wrun_id_t nv_wasm_exec_start(const nv_wasm_app_t *app, char *err, size_t err_
         pthread_attr_destroy(&at);
         if (rc == 0) s_exec.thread_valid = true;
     }
+    if (rc != 0 && s_exec.req.code_blk) { heap_caps_free(s_exec.req.code_blk); s_exec.req.code_blk = nullptr; }
     pthread_mutex_unlock(&s_exec.lock);
 
     if (gfx_fail) { exec_unclaim(); set_err(err, err_n, "canvas alloc failed"); return NV_WRUN_NONE; }
@@ -3440,8 +3613,9 @@ nv_wrun_id_t nv_wasm_exec_start(const nv_wasm_app_t *app, char *err, size_t err_
         set_err(err, err_n, "worker thread failed");
         return NV_WRUN_NONE;
     }
-    NV_LOGI(TAG, "run '%s' (%u KB %s, heap %u KB, stack %u KB, %s, from %s)",
-            app->id, (unsigned)(sz / 1024), aot ? "AOT" : "module", (unsigned)(s_exec.req.heap_size / 1024),
+    NV_LOGI(TAG, "run '%s' (%u KB %s%s, heap %u KB, stack %u KB, %s, from %s)",
+            app->id, (unsigned)(sz / 1024), aot ? "AOT" : "module", code_blk ? " at the top" : "",
+            (unsigned)(s_exec.req.heap_size / 1024),
             (unsigned)(s_exec.req.stack_size / 1024), console ? "console" : "async", pcTaskGetName(nullptr));
     if (grant[0]) NV_LOGI(TAG, "run '%s' opened with %s (read-only grant)", app->id, grant);
     return run_id;

@@ -38,6 +38,12 @@ What it changes:
   before, that start memory had to find room outside the block and failed in a fragmented PSRAM
   ("allocate linear memory failed"). Never `heap_caps_realloc()` to grow: TLSF copies a moved block
   with the heap lock held (interrupts off), and a 12 MB copy trips the interrupt watchdog.
+- `core/shared/platform/esp-idf/espidf_memmap.c` (also) — `os_mmap_set_exec_handoff()`: the same
+  for the code. nv_wasm places an app.aot's code block and its memory block together at the top end
+  of the largest free PSRAM block and hands the code block to the next executable `os_mmap`.
+  Left to the loader, the code took the bottom end, small allocations made during a run
+  settled next to it, and after a few apps ScummVM's 10.25 MB memory + 6.3 MB code no longer fitted
+  in 22 MB free.
 - `core/shared/platform/esp-idf/platform_internal.h` — makes `CONFIG_WAMR_ENABLE_LIBC_WASI`
   compile on ESP-IDF: `os_timespec` / `os_poll_file_handle` / `os_nfds_t` were `int`
   placeholders upstream, but libc-wasi uses them as `struct timespec` / `struct pollfd`. The rest
