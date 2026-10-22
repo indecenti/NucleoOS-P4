@@ -13,9 +13,6 @@
  */
 #include "vsng.h"
 
-static int32_t g_sin[VS_ANG_FULL];       /* Q16 */
-static int g_tables_ready;
-
 /* Float only at init, without libm (the device build may be freestanding). */
 static double sin_poly(double x)         /* x in [-pi, pi] */
 {
@@ -36,21 +33,21 @@ static double atan_poly(double x)
     return neg ? -r : r;
 }
 
-void vs_init_tables(void)
-{
-    const double pi = 3.14159265358979323846;
-    int i;
-    if (g_tables_ready) return;
-    for (i = 0; i < VS_ANG_FULL; i++) {
-        double a = (double)i * 2.0 * pi / VS_ANG_FULL;
-        if (a > pi) a -= 2.0 * pi;
-        g_sin[i] = (int32_t)(sin_poly(a) * 65536.0 + (a >= 0 ? 0.5 : -0.5));
-    }
-    g_tables_ready = 1;
-}
+void vs_init_tables(void) {}   /* nothing left to build: vs_sin is a polynomial (no static tables) */
 
-int32_t vs_sin(int32_t ang) { return g_sin[ang & VS_ANG_MASK]; }
-int32_t vs_cos(int32_t ang) { return g_sin[(ang + VS_ANG_FULL / 4) & VS_ANG_MASK]; }
+/* sin(2 pi ang / 4096), Q16, from a 5th-order fit on the quarter wave (max error ~11 / 65536):
+ * no table, so nothing static takes internal RAM on small parts. */
+int32_t vs_sin(int32_t ang)
+{
+    const int32_t a = ang & VS_ANG_MASK, q = a >> (VS_ANG_BITS - 2), r = a & (VS_ANG_FULL / 4 - 1);
+    const int32_t x = ((q & 1) ? VS_ANG_FULL / 4 - r : r) << (15 - (VS_ANG_BITS - 2));   /* Q15, 0..1 */
+    const int32_t x2 = (x * x) >> 15;
+    const int32_t u = 21089 - ((x2 * 2385) >> 15);                 /* 0.6435776, 0.0727813: s(1) = 1 */
+    const int32_t v = 51472 - ((x2 * u) >> 15);                    /* pi / 2 */
+    const int32_t s = (x * v) >> 14;                               /* Q16 */
+    return q >= 2 ? -s : s;
+}
+int32_t vs_cos(int32_t ang) { return vs_sin(ang + VS_ANG_FULL / 4); }
 
 static int ilog2(uint32_t v)
 {

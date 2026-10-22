@@ -51,7 +51,10 @@ typedef struct {
     bool open;
 } voxel_state;
 
-static voxel_state s_v;
+/* The state lives in PSRAM (allocated on the first open, kept): internal RAM is budgeted for drivers
+ * (tools/ci/check_budgets.py). Every entry point but voxel_open returns early while it is NULL. */
+static voxel_state *s_vp;
+#define s_v (*s_vp)
 static vs_mt s_mt;                       /* internal RAM: its strip counter is an atomic shared by the cores */
 
 /* ---- helper task (core 1) ---- */
@@ -141,6 +144,7 @@ static uint8_t *load_psram(const char *path, size_t *len)
 
 void voxel_close(void)
 {
+    if (!s_vp) return;
     vs_mt_free(&s_mt);
     if (s_v.world_file) heap_caps_free(s_v.world_file);
     if (s_v.mips) heap_caps_free(s_v.mips);
@@ -149,7 +153,7 @@ void voxel_close(void)
     memset(&s_v, 0, sizeof s_v);
 }
 
-bool voxel_is_open(void) { return s_v.open; }
+bool voxel_is_open(void) { return s_vp && s_v.open; }
 
 int voxel_open(const char *world_path, const char *sky_path)
 {
@@ -158,6 +162,8 @@ int voxel_open(const char *world_path, const char *sky_path)
     uint16_t sh[6];
     int64_t t0 = esp_timer_get_time();
     if (!world_path || !sky_path) return -1;
+    if (!s_vp && !(s_vp = (voxel_state *)heap_caps_calloc(1, sizeof *s_vp, MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT)))
+        return -4;
     voxel_close();
     s_v.world_file = load_psram(world_path, &wl);
     s_v.sky_file = load_psram(sky_path, &sl);
@@ -212,6 +218,7 @@ static void mt_setup(int rows)
 
 void voxel_camera(int32_t x, int32_t y, int32_t h, int32_t yaw, int32_t pitch, int32_t roll, int32_t time_ms)
 {
+    if (!s_vp) return;
     s_v.cam.x = x; s_v.cam.y = y; s_v.cam.h = h;
     s_v.cam.yaw = yaw & VS_ANG_MASK; s_v.cam.pitch = pitch; s_v.cam.roll = roll; s_v.cam.time_ms = time_ms;
 }
@@ -219,7 +226,7 @@ void voxel_camera(int32_t x, int32_t y, int32_t h, int32_t yaw, int32_t pitch, i
 int32_t voxel_render(uint16_t *fb, int cols, int rows)
 {
     int64_t t0;
-    if (!s_v.open || !fb || cols < 16 || rows < 16 || cols > VS_MAX_W || rows > VS_MAX_H || (rows & 1))
+    if (!s_vp || !s_v.open || !fb || cols < 16 || rows < 16 || cols > VS_MAX_W || rows > VS_MAX_H || (rows & 1))
         return -1;
     if (cols != s_v.view_cols || rows != s_v.view_rows) {
         vs_view_fit(s_v.view, cols, rows, s_v.fov);
@@ -245,13 +252,13 @@ int32_t voxel_render(uint16_t *fb, int cols, int rows)
 
 int32_t voxel_height(int32_t x, int32_t y)
 {
-    return s_v.open ? vs_height_at(&s_v.wd, x, y) : 0;
+    return voxel_is_open() ? vs_height_at(&s_v.wd, x, y) : 0;
 }
 
 int32_t voxel_config(int32_t key, int32_t value)
 {
-    vs_view *v = s_v.view;
-    if (!s_v.open || !v) return -1;
+    vs_view *v;
+    if (!voxel_is_open() || !(v = s_v.view)) return -1;
     switch (key) {
     case VOXEL_CFG_FOV:
         if (value >= 30 && value <= 140) { s_v.fov = value; s_v.view_cols = 0; }
@@ -290,6 +297,7 @@ int32_t voxel_config(int32_t key, int32_t value)
 
 int32_t voxel_info(int32_t key)
 {
+    if (!s_vp) return -1;
     switch (key) {
     case VOXEL_INFO_LOG2SIZE: return s_v.wd.log2size;
     case VOXEL_INFO_WATER: return s_v.wd.water;
