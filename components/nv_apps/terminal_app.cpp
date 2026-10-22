@@ -214,11 +214,135 @@ void *vt_malloc(size_t n, void *) { return heap_caps_calloc(1, n, MALLOC_CAP_SPI
 void  vt_free(void *p, void *)    { heap_caps_free(p); }
 VTermAllocatorFunctions kVtAlloc = {vt_malloc, vt_free};
 
+// ---------------------------------------------------------------- palette (OSC 4 / 104)
+
+// A curses program that can_change_color() (WordGrinder) redefines indexed colours with OSC 4 and
+// puts them back with OSC 104 (xterm-256color's initc / oc). libvterm keeps only 0-15 and passes
+// both on: the redefinitions live here, for all 256 indexed colours, and win over its palette.
+NV_PSRAM_BSS uint32_t s_pal[256];
+NV_PSRAM_BSS uint8_t  s_pal_set[256 / 8];
+NV_PSRAM_BSS char     s_osc[256];   // one OSC 4 / 104 string, gathered across fragments
+size_t s_osc_n = 0;
+bool   s_osc_long = false;          // longer than s_osc: ignored
+
+bool pal_has(int i) { return s_pal_set[i >> 3] & (1u << (i & 7)); }
+void pal_reset(void) { memset(s_pal_set, 0, sizeof s_pal_set); }
+
+int hexval(char c) {
+    return c >= '0' && c <= '9' ? c - '0' : c >= 'a' && c <= 'f' ? c - 'a' + 10 : c >= 'A' && c <= 'F' ? c - 'A' + 10 : -1;
+}
+
+// One X11 colour component of 1-4 hex digits, scaled to 0-255; p moves past it. -1 = not one.
+int hex_comp(const char *&p) {
+    int v = 0, n = 0;
+    for (int d; n < 4 && (d = hexval(*p)) >= 0; p++, n++) v = v * 16 + d;
+    if (!n) return -1;
+    return v * 255 / ((1 << (4 * n)) - 1);
+}
+
+// "rgb:R/G/B" (1-4 hex digits each) or "#RRGGBB" -> 0xRRGGBB; false = not a colour spec.
+bool parse_color(const char *s, size_t n, uint32_t *out) {
+    char b[24];
+    if (n >= sizeof b) return false;
+    memcpy(b, s, n);
+    b[n] = 0;
+    if (b[0] == '#') {
+        if (n != 7) return false;
+        uint32_t v = 0;
+        for (int k = 1; k < 7; k++) {
+            const int d = hexval(b[k]);
+            if (d < 0) return false;
+            v = v * 16 + (uint32_t)d;
+        }
+        *out = v;
+        return true;
+    }
+    if (strncmp(b, "rgb:", 4)) return false;
+    const char *p = b + 4;
+    int r, g, bl;
+    if ((r = hex_comp(p)) < 0 || *p++ != '/') return false;
+    if ((g = hex_comp(p)) < 0 || *p++ != '/') return false;
+    if ((bl = hex_comp(p)) < 0 || *p) return false;
+    *out = ((uint32_t)r << 16) | ((uint32_t)g << 8) | (uint32_t)bl;
+    return true;
+}
+
+// An indexed colour as RGB: a redefinition, else libvterm's palette.
+uint32_t pal_rgb(int i) {
+    if (pal_has(i)) return s_pal[i];
+    VTermColor c;
+    vterm_color_indexed(&c, (uint8_t)i);
+    vterm_screen_convert_color_to_rgb(s_vs, &c);
+    return ((uint32_t)c.rgb.red << 16) | ((uint32_t)c.rgb.green << 8) | c.rgb.blue;
+}
+
+void cb_output(const char *s, size_t n, void *);
+
+// OSC 4 "index;spec[;index;spec...]": a spec sets the colour, "?" asks for it (the answer goes back
+// on the program's input, as xterm does).
+void osc_palette_set(const char *s) {
+    while (*s) {
+        char *end;
+        const long i = strtol(s, &end, 10);
+        if (end == s || *end != ';') return;
+        const char *spec = end + 1;
+        const char *se = strchr(spec, ';');
+        const size_t sn = se ? (size_t)(se - spec) : strlen(spec);
+        if (i >= 0 && i < 256) {
+            uint32_t rgb;
+            if (sn == 1 && spec[0] == '?') {
+                const uint32_t c = pal_rgb((int)i);
+                char b[48];
+                const int k = snprintf(b, sizeof b, "\x1b]4;%ld;rgb:%02x%02x/%02x%02x/%02x%02x\x1b\\", i,
+                                       (unsigned)(c >> 16) & 0xFF, (unsigned)(c >> 16) & 0xFF, (unsigned)(c >> 8) & 0xFF,
+                                       (unsigned)(c >> 8) & 0xFF, (unsigned)c & 0xFF, (unsigned)c & 0xFF);
+                if (k > 0 && k < (int)sizeof b) cb_output(b, (size_t)k, nullptr);
+            } else if (parse_color(spec, sn, &rgb)) {
+                s_pal[i] = rgb;
+                s_pal_set[i >> 3] |= (uint8_t)(1u << (i & 7));
+            }
+        }
+        if (!se) return;
+        s = se + 1;
+    }
+}
+
+// OSC 104 "[index[;index...]]": those colours (none listed = all of them) back to the defaults.
+void osc_palette_reset(const char *s) {
+    if (!*s) { pal_reset(); return; }
+    while (*s) {
+        char *end;
+        const long i = strtol(s, &end, 10);
+        if (end == s) return;
+        if (i >= 0 && i < 256) s_pal_set[i >> 3] &= (uint8_t)~(1u << (i & 7));
+        if (*end != ';') return;
+        s = end + 1;
+    }
+}
+
+int cb_osc(int cmd, VTermStringFragment f, void *) {
+    if (cmd != 4 && cmd != 104) return 0;
+    if (f.initial) { s_osc_n = 0; s_osc_long = false; }
+    if (s_osc_n + f.len >= sizeof s_osc) s_osc_long = true;
+    else { memcpy(s_osc + s_osc_n, f.str, f.len); s_osc_n += f.len; }
+    if (!f.final) return 1;
+    s_osc[s_osc_n] = 0;
+    if (!s_osc_long) {
+        if (cmd == 4) osc_palette_set(s_osc);
+        else osc_palette_reset(s_osc);
+    }
+    if (s_view) lv_obj_invalidate(s_view);
+    return 1;
+}
+
+const VTermStateFallbacks kFallbacks = {nullptr, nullptr, cb_osc, nullptr, nullptr, nullptr, nullptr};
+
 // ---------------------------------------------------------------- grid -> screen
 
 uint32_t color_rgb(VTermColor c, bool fg) {
     if (fg && VTERM_COLOR_IS_DEFAULT_FG(&c)) return (1u << 24) | kFg;
     if (!fg && VTERM_COLOR_IS_DEFAULT_BG(&c)) return (1u << 24) | kBg;
+    if (VTERM_COLOR_IS_INDEXED(&c) && pal_has(c.indexed.idx)) return s_pal[c.indexed.idx];
     vterm_screen_convert_color_to_rgb(s_vs, &c);
     return ((uint32_t)c.rgb.red << 16) | ((uint32_t)c.rgb.green << 8) | c.rgb.blue;
 }
@@ -599,7 +723,9 @@ void shell_prompt(void) {
 // ---------------------------------------------------------------- raw mode
 
 void raw_update(void) {
-    const bool raw = s_sh_raw.load() || (s_prog.active && !s_prog.piped && s_altscreen);
+    // A full-screen ("tty") program is raw from its start: keys typed while it loads reach its
+    // input, rather than the line editor that switching to raw clears.
+    const bool raw = s_sh_raw.load() || (s_prog.active && !s_prog.piped && (s_altscreen || s_prog.tty));
     if (raw == s_raw) return;
     s_raw = raw;
     input_set_quiet(raw ? kRawSentinel : "");
@@ -737,6 +863,11 @@ void prog_finish(int status) {
     // ...or with the mouse reporting: taps go back to the shell's screen
     if (was && s_mouse != VTERM_PROP_MOUSE_NONE)
         vt_puts("\x1b[?1000l\x1b[?1002l\x1b[?1003l\x1b[?1006l");
+    // ...or with its own colours (OSC 4): the shell's palette again
+    if (was) {
+        pal_reset();
+        if (s_view) lv_obj_invalidate(s_view);
+    }
     // A full-screen app opened from Home that the user quit normally: back to Home, as with any
     // app. After an error the Terminal stays, showing it.
     if (was && s_prog.tty && s_prog.from_tile && status == 0) s_exit_req = true;
@@ -1453,6 +1584,8 @@ bool vt_create(void) {
     s_vs = vterm_obtain_screen(s_vt);
     s_vst = vterm_obtain_state(s_vt);
     vterm_screen_set_callbacks(s_vs, &kScreenCb, nullptr);
+    vterm_screen_set_unrecognised_fallbacks(s_vs, &kFallbacks, nullptr);
+    pal_reset();
     vterm_screen_set_damage_merge(s_vs, VTERM_DAMAGE_ROW);
     vterm_screen_enable_altscreen(s_vs, 1);
     vterm_screen_enable_reflow(s_vs, true);
