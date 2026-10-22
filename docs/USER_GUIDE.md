@@ -506,8 +506,7 @@ Settings has a list of categories on the left and the page on the right:
 ## 6. Reading: Books and Library
 
 Two Store apps turn the board into an e-reader and an offline encyclopedia. Install them from the
-Store: **Books** (category books; it reaches the Store with the next store update) and **Library**
-(category knowledge).
+Store: **Books** and **Library**, both in the Knowledge category.
 
 ### Books
 
