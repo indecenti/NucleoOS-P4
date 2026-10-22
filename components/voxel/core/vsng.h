@@ -4,11 +4,12 @@
  * element j of a column is screen row (h - 1 - j). The march writes each column as one contiguous
  * run (good for caches and PSRAM), and on the ESP32-P4 the PPA turns that buffer upright for free.
  *
- * World: square map of 2^n x 2^n cells, wraps, stored in 4x4-cell tiles (vs_tidx: one 64-byte cache
- * line holds a 4x4 patch, so a ray in any direction reuses what it fetched), plus a mip pyramid
- * (vs_build_mips) the march switches to with distance. Cell = 0xFFHHCCCC: CCCC = RGB565 colour
- * (lighting baked), HH = height 0..255, FF = flags: bit 0 water, bits 4..7 material (selects the
- * detail texture drawn up close).
+ * World: square map of 2^n x 2^n 16-bit cells, wraps, stored in 4x4-cell tiles (vs_tidx: one tile is
+ * 32 bytes, so a ray in any direction reuses what it fetched), plus a mip pyramid (vs_build_mips) the
+ * march switches to with distance. Cell = HHHHHHHHH IIIIIII: H = height in half units (0..511), I =
+ * colour index into the world palette of 128 entries (lighting baked). The index also says what the
+ * cell is: group = I >> 4 (8 groups of 16 shades), group VS_G_WATER is water; the group picks the
+ * detail texture drawn up close. Half the bytes of an RGB565 cell: twice the world in the same RAM.
  *
  * Threads: vs_render_strip renders columns [x0, x1) into out, where out holds exactly those columns
  * (column x at out + (x - x0) * h). Columns are independent, so cores share a frame by taking strips
@@ -20,8 +21,8 @@
 
 #include <stdint.h>
 
-#define VS_CELL_WATER 0x01u
-#define VS_MAT_SHIFT  4                  /* material id in flag bits 4..7 */
+#define VS_G_WATER    7                  /* colour group of water cells */
+#define VS_PAL_N      128                /* palette entries: 8 groups x 16 shades */
 
 #define VS_ANG_BITS 12                   /* angles are 0..4095 for a full turn */
 #define VS_ANG_FULL (1 << VS_ANG_BITS)
@@ -33,7 +34,7 @@
 #define VS_MAX_MIPS  7
 
 #define VS_DETAIL_N    64                /* detail tile side, texels */
-#define VS_DETAIL_MATS 16
+#define VS_DETAIL_MATS 8                 /* one per colour group */
 
 /* Index of cell (x, y) in a tiled map of side 1 << log2 (x, y already wrapped). */
 static inline uint32_t vs_tidx(uint32_t x, uint32_t y, int log2)
@@ -42,12 +43,17 @@ static inline uint32_t vs_tidx(uint32_t x, uint32_t y, int log2)
 }
 
 typedef struct {
-    const uint32_t *mip[VS_MAX_MIPS];    /* mip[0] = the map, mip[l] is (size >> l) a side, tiled */
+    const uint16_t *mip[VS_MAX_MIPS];    /* mip[0] = the map, mip[l] is (size >> l) a side, tiled */
+    const uint16_t *pal;                 /* VS_PAL_N RGB565 colours */
     int nmips;
     int log2size;                        /* map is (1 << log2size) cells a side */
     int water;                           /* water level, height units (0..255) */
     int maxh;                            /* highest cell, height units (early ray exit) */
     const int8_t *detail;                /* VS_DETAIL_MATS tiles of 64x64 signed luminance, or NULL */
+    const uint8_t *maxb;                 /* max height (units) of each block, dilated; NULL = no skipping */
+    int maxb_shift;                      /* block side = 1 << maxb_shift cells (vs_build_maxb) */
+    int vscale_q8;                       /* one height unit in cells, Q8 (the view takes it) */
+    int zfar;                            /* suggested view distance, cells */
 } vs_world;
 
 typedef struct {
@@ -120,7 +126,15 @@ int vs_tune(vs_governor *g, vs_view *v, int frame_ms);
 
 /* Mip pyramid: fills wd->mip[1..] from mip[0] into buf (vs_mip_cells(log2size) cells, caller owns). */
 uint32_t vs_mip_cells(int log2size);
-void vs_build_mips(vs_world *wd, uint32_t *buf);
+void vs_build_mips(vs_world *wd, uint16_t *buf);
+
+/* Block maxima for empty-space skipping: the highest cell of every (1 << shift)^2 block, dilated by
+ * two cells so a bilinear sample's neighbours are covered too. A sample whose block top could not
+ * rise above what the column already shows is not read at all (measured: 40-50% of the map reads).
+ * vs_maxb_shift picks ~128 blocks a side (16 KB, small enough for internal RAM). */
+int vs_maxb_shift(int log2size);
+uint32_t vs_maxb_bytes(int log2size, int shift);
+void vs_build_maxb(vs_world *wd, uint8_t *buf, int shift);
 
 void vs_render_strip(const vs_view *v, const vs_world *wd, const vs_sky *sky, const vs_cam *cam,
                      uint16_t *out, int x0, int x1, vs_stats *st);

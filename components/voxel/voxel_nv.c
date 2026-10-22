@@ -13,9 +13,12 @@
  */
 #include "voxel_nv.h"
 
+#include <fcntl.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <sys/stat.h>
+#include <unistd.h>
 
 #include "esp_heap_caps.h"
 #include "esp_timer.h"
@@ -34,7 +37,11 @@ static const char *TAG = "voxel";
 
 typedef struct {
     uint8_t *world_file;                 /* whole .vsw (header + tiled cells + detail) */
-    uint32_t *mips;
+    uint16_t *mips;
+    uint16_t *sram_mip[VS_MAX_MIPS];     /* internal-RAM copies of the small mips (sram_tier) */
+    uint16_t *sram_pal;
+    uint8_t *maxb;                       /* block maxima for empty-space skipping (internal RAM if it fits) */
+    int sram_levels;
     uint8_t *sky_file;
     vs_world wd;
     vs_sky sky;
@@ -135,23 +142,37 @@ static void nv_copy_wait(void *ctx, int core, int slot)
 /* ---- files ---- */
 static uint8_t *load_psram(const char *path, size_t *len)
 {
-    FILE *f = fopen(path, "rb");
+    /* read() in 32 KB pieces straight into a cache-line aligned PSRAM buffer, like the shell's cp:
+     * every piece starts on an aligned address and a sector boundary, so the SD driver does multi-block
+     * DMA. (A single unbuffered fread of the whole file was ~65 KB/s, buffered stdio ~0.6 MB/s.) */
+    const size_t kPiece = 32 * 1024;
+    struct stat st;
     uint8_t *p = NULL;
-    long n;
-    if (!f) return NULL;
-    if (fseek(f, 0, SEEK_END) == 0 && (n = ftell(f)) > 16 && fseek(f, 0, SEEK_SET) == 0) {
-        p = (uint8_t *)heap_caps_aligned_alloc(64, (size_t)n, MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
-        if (p && fread(p, 1, (size_t)n, f) != (size_t)n) { heap_caps_free(p); p = NULL; }
-        if (p) *len = (size_t)n;
+    size_t n, off = 0;
+    int fd = open(path, O_RDONLY);
+    if (fd < 0) return NULL;
+    if (fstat(fd, &st) == 0 && st.st_size > 16) {
+        n = (size_t)st.st_size;
+        p = (uint8_t *)heap_caps_aligned_alloc(64, (n + kPiece - 1) & ~(kPiece - 1), MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
+        while (p && off < n) {
+            const ssize_t r = read(fd, p + off, kPiece);
+            if (r <= 0) { heap_caps_free(p); p = NULL; break; }
+            off += (size_t)r;
+        }
+        if (p) *len = n;
     }
-    fclose(f);
+    close(fd);
     return p;
 }
 
 void voxel_close(void)
 {
+    int l;
     if (!s_vp) return;
     vs_mt_free(&s_mt);
+    for (l = 0; l < VS_MAX_MIPS; l++) if (s_v.sram_mip[l]) heap_caps_free(s_v.sram_mip[l]);
+    if (s_v.sram_pal) heap_caps_free(s_v.sram_pal);
+    if (s_v.maxb) heap_caps_free(s_v.maxb);
     if (s_v.world_file) heap_caps_free(s_v.world_file);
     if (s_v.mips) heap_caps_free(s_v.mips);
     if (s_v.sky_file) heap_caps_free(s_v.sky_file);
@@ -161,12 +182,49 @@ void voxel_close(void)
 
 bool voxel_is_open(void) { return s_vp && s_v.open; }
 
+/* SRAM tier: the small mips (what the far half of every ray reads) and the palette are copied into
+ * internal RAM, smallest first, while enough stays free for the strip buffers, the Wi-Fi driver and
+ * the rest of the OS. Internal RAM answers in a few cycles, PSRAM after a cache miss of ~100 ns.
+ * Freed on close; the PSRAM copies stay, so nothing breaks if a level did not fit. */
+static void sram_tier(void)
+{
+    /* left free: the OS reserve, the strip buffers (2 per core, 8 columns x 1024 rows each), a margin */
+    const size_t keep = SRAM_RESERVE + (size_t)STRIP_W * 1024 * 2 * 2 * 2 + 16 * 1024;
+    int l, n = 0;
+    size_t used = 0;
+    uint16_t *p;
+    /* first the block maxima: every step of every ray reads them */
+    const int sh = vs_maxb_shift(s_v.wd.log2size);
+    const size_t mb = vs_maxb_bytes(s_v.wd.log2size, sh);
+    const bool mb_sram = heap_caps_get_free_size(MALLOC_CAP_INTERNAL) >= mb + keep;
+    s_v.maxb = (uint8_t *)heap_caps_malloc(mb, (mb_sram ? MALLOC_CAP_INTERNAL : MALLOC_CAP_SPIRAM) | MALLOC_CAP_8BIT);
+    if (s_v.maxb) vs_build_maxb(&s_v.wd, s_v.maxb, sh);
+    p = (uint16_t *)heap_caps_malloc(VS_PAL_N * 2, MALLOC_CAP_INTERNAL | MALLOC_CAP_8BIT);
+    if (p) { memcpy(p, s_v.wd.pal, VS_PAL_N * 2); s_v.sram_pal = p; s_v.wd.pal = p; }
+    for (l = s_v.wd.nmips - 1; l >= 1; l--) {
+        const size_t bytes = ((size_t)2 << (2 * (s_v.wd.log2size - l)));
+        if (heap_caps_get_free_size(MALLOC_CAP_INTERNAL) < bytes + keep) break;
+        if (heap_caps_get_largest_free_block(MALLOC_CAP_INTERNAL) < bytes) break;
+        p = (uint16_t *)heap_caps_aligned_alloc(32, bytes, MALLOC_CAP_INTERNAL | MALLOC_CAP_8BIT);
+        if (!p) break;
+        memcpy(p, s_v.wd.mip[l], bytes);
+        s_v.sram_mip[l] = p;
+        s_v.wd.mip[l] = p;
+        used += bytes;
+        n++;
+    }
+    s_v.sram_levels = n;
+    NV_LOGI(TAG, "sram tier: block maxima %u KB in %s, %d mip level(s) %u KB in internal RAM, %u KB left",
+            (unsigned)(mb >> 10), s_v.maxb ? (mb_sram ? "internal RAM" : "PSRAM") : "nowhere (no skipping)", n,
+            (unsigned)(used >> 10), (unsigned)(heap_caps_get_free_size(MALLOC_CAP_INTERNAL) >> 10));
+}
+
 int voxel_open(const char *world_path, const char *sky_path)
 {
-    size_t wl = 0, sl = 0;
-    uint32_t hd[4];
+    size_t wl = 0, sl = 0, cells;
+    uint32_t hd[7];
     uint16_t sh[6];
-    int64_t t0 = esp_timer_get_time();
+    int64_t t0 = esp_timer_get_time(), t1;
     if (!world_path || !sky_path) return -1;
     if (!s_vp && !(s_vp = (voxel_state *)heap_caps_calloc(1, sizeof *s_vp, MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT)))
         return -4;
@@ -174,36 +232,43 @@ int voxel_open(const char *world_path, const char *sky_path)
     s_v.world_file = load_psram(world_path, &wl);
     s_v.sky_file = load_psram(sky_path, &sl);
     if (!s_v.world_file || !s_v.sky_file) { voxel_close(); return -2; }
-    if (wl < 20 || memcmp(s_v.world_file, "VSW2", 4) || sl < 16 || memcmp(s_v.sky_file, "VSS2", 4)) {
+    t1 = esp_timer_get_time();
+    if (wl < 32 + VS_PAL_N * 2 || memcmp(s_v.world_file, "VSW3", 4) || sl < 16 || memcmp(s_v.sky_file, "VSS2", 4)) {
         voxel_close();
         return -3;
     }
-    memcpy(hd, s_v.world_file + 4, 16);
-    if (hd[0] < 4 || hd[0] > 12 || wl < 20 + ((size_t)4 << (2 * hd[0])) + (size_t)hd[3] * 4096) {
-        voxel_close();
-        return -3;
-    }
+    memcpy(hd, s_v.world_file + 4, 28);
+    cells = hd[0] >= 4 && hd[0] <= 12 ? (size_t)1 << (2 * hd[0]) : 0;
+    if (!cells || wl < 32 + VS_PAL_N * 2 + cells * 2 + (size_t)hd[5] * 4096) { voxel_close(); return -3; }
     s_v.wd.log2size = (int)hd[0];
     s_v.wd.water = (int)hd[1];
     s_v.wd.maxh = (int)hd[2];
-    s_v.wd.mip[0] = (const uint32_t *)(s_v.world_file + 20);
-    s_v.wd.detail = hd[3] >= 16 ? (const int8_t *)(s_v.world_file + 20 + ((size_t)4 << (2 * hd[0]))) : NULL;
+    s_v.wd.vscale_q8 = (int)hd[3];
+    s_v.wd.zfar = (int)hd[4];
+    s_v.wd.pal = (const uint16_t *)(s_v.world_file + 32);
+    s_v.wd.mip[0] = (const uint16_t *)(s_v.world_file + 32 + VS_PAL_N * 2);
+    s_v.wd.detail = hd[5] >= VS_DETAIL_MATS ? (const int8_t *)(s_v.world_file + 32 + VS_PAL_N * 2 + cells * 2) : NULL;
     memcpy(sh, s_v.sky_file + 4, 12);
     if (sl < 16 + (size_t)sh[0] * sh[1] * 2 || !sh[0] || !sh[1]) { voxel_close(); return -3; }
     s_v.sky.w = sh[0]; s_v.sky.h = sh[1]; s_v.sky.top = sh[2]; s_v.sky.fog = sh[3]; s_v.sky.focal = sh[4];
     s_v.sky.px = (const uint16_t *)(s_v.sky_file + 16);
 
-    s_v.mips = (uint32_t *)heap_caps_aligned_alloc(64, (size_t)vs_mip_cells(s_v.wd.log2size) * 4,
+    s_v.mips = (uint16_t *)heap_caps_aligned_alloc(64, (size_t)vs_mip_cells(s_v.wd.log2size) * 2,
                                                    MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
     s_v.view = (vs_view *)heap_caps_calloc(1, sizeof(vs_view), MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
     if (!s_v.mips || !s_v.view) { voxel_close(); return -4; }
     vs_build_mips(&s_v.wd, s_v.mips);
+    sram_tier();
+    /* the world sets the view's scale: distance, height unit, near zone (in its own cells) */
+    s_v.view->zfar = s_v.wd.zfar > 0 ? s_v.wd.zfar : 1100;
+    s_v.view->vscale_q8 = s_v.wd.vscale_q8 > 0 ? s_v.wd.vscale_q8 : 205;
+    s_v.view->near_z = 48 << s_v.wd.log2size >> 10;
     s_v.fov = 80;
     s_v.cores = 2;
     s_v.open = true;
-    NV_LOGI(TAG, "open: world %d^2, water %d, maxh %d, %u KB + mips %u KB, %d ms", 1 << s_v.wd.log2size,
-            s_v.wd.water, s_v.wd.maxh, (unsigned)(wl >> 10), (unsigned)(vs_mip_cells(s_v.wd.log2size) >> 8),
-            (int)((esp_timer_get_time() - t0) / 1000));
+    NV_LOGI(TAG, "open: world %d^2, water %d, maxh %d, %u KB (read %d ms) + mips %u KB, %d ms in all",
+            1 << s_v.wd.log2size, s_v.wd.water, s_v.wd.maxh, (unsigned)(wl >> 10), (int)((t1 - t0) / 1000),
+            (unsigned)(vs_mip_cells(s_v.wd.log2size) >> 9), (int)((esp_timer_get_time() - t0) / 1000));
     return 0;
 }
 
@@ -345,6 +410,7 @@ int32_t voxel_info(int32_t key)
     case VOXEL_INFO_QUALITY: return s_v.view ? s_v.view->quality : 0;
     case VOXEL_INFO_FAST: return s_v.fast;
     case VOXEL_INFO_XSCALE: return s_v.xscale;
+    case VOXEL_INFO_SRAM_LEVELS: return s_v.sram_levels;
     default: return -1;
     }
 }

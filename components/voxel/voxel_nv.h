@@ -38,9 +38,10 @@ enum {                                   /* voxel_info keys */
     VOXEL_INFO_QUALITY = 6,              /* now (the governor moves it) */
     VOXEL_INFO_FAST = 7,                 /* 1 = SRAM strips + DMA, 0 = straight into the canvas */
     VOXEL_INFO_XSCALE = 8,               /* traced columns in use, 1 or 2 */
+    VOXEL_INFO_SRAM_LEVELS = 9,          /* mip levels copied into internal RAM */
 };
 
-/* Load a world (.vsw) and a sky (.vss) from the SD card into PSRAM. 0, or <0: -1 busy/args,
+/* Load a world (.vsw, VSW3: 16-bit palette cells) and a sky (.vss) from the SD card into PSRAM. 0, or <0: -1 busy/args,
  * -2 file, -3 format, -4 memory. Must run on the thread that renders. */
 int voxel_open(const char *world_path, const char *sky_path);
 void voxel_close(void);
