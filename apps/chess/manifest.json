@@ -1,6 +1,7 @@
 {
   "id": "chess",
   "name": "Scacchi",
+  "names": {"en": "Chess", "it": "Scacchi", "es": "Ajedrez", "fr": "Échecs", "de": "Schach"},
   "version": "1.0.0",
   "entry": "run",
   "abi": 6,

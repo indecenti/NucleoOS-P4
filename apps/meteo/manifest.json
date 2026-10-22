@@ -1,6 +1,7 @@
 {
   "id": "meteo",
   "name": "Meteo",
+  "names": {"en": "Weather", "it": "Meteo", "es": "El tiempo", "fr": "Météo", "de": "Wetter"},
   "version": "1.0",
   "entry": "run",
   "abi": 7,

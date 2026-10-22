@@ -1,6 +1,7 @@
 {
   "id": "devices",
   "name": "Dispositivi",
+  "names": {"en": "Devices", "it": "Dispositivi", "es": "Dispositivos", "fr": "Appareils", "de": "Geräte"},
   "version": "1.0",
   "entry": "run",
   "abi": 13,

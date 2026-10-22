@@ -1,6 +1,7 @@
 {
   "id": "casa",
   "name": "Casa",
+  "names": {"en": "Home", "it": "Casa", "es": "Casa", "fr": "Maison", "de": "Zuhause"},
   "version": "1.0",
   "entry": "run",
   "abi": 12,

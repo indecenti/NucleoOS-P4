@@ -1,6 +1,7 @@
 {
   "id": "pianino",
   "name": "Pianino",
+  "names": {"en": "Pianino", "it": "Pianino", "es": "Pianino", "fr": "Pianino", "de": "Pianino"},
   "version": "1.1",
   "entry": "run",
   "abi": 3,

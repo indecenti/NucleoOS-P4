@@ -2716,6 +2716,13 @@ bool read_manifest(const char *dir, const char *id, nv_wasm_app_t *out) {
 
     memset(out, 0, sizeof(*out));
     const cJSON *jn = cJSON_GetObjectItem(root, "name");
+    {   // "names": {"en": ..., "it": ...}: the UI language's name on the tile, else "name"
+        static const char *const kCode[NV_LANG_COUNT] = {"en", "it", "es", "fr", "de"};
+        const int l = (int)nv_i18n_get_lang();
+        const cJSON *jns = cJSON_GetObjectItem(root, "names");
+        const cJSON *jl = cJSON_IsObject(jns) && l >= 0 && l < (int)NV_LANG_COUNT ? cJSON_GetObjectItem(jns, kCode[l]) : nullptr;
+        if (cJSON_IsString(jl) && jl->valuestring && jl->valuestring[0]) jn = jl;
+    }
     const cJSON *jv = cJSON_GetObjectItem(root, "version");
     const cJSON *je = cJSON_GetObjectItem(root, "entry");
     snprintf(out->id, sizeof out->id, "%s", id);
