@@ -45,6 +45,8 @@ typedef struct {
     const vs_sky *sky;
     const vs_cam *cam;
     uint16_t *fb;
+    int xscale;                          /* 2 = half-rate columns, the others interpolated (set before a frame) */
+    int cols;                            /* frame columns = view columns * xscale */
     int nstrips;
     volatile int next;                   /* strip counter (atomic add) */
     vs_stats st[VS_MT_MAX_CORES];
@@ -57,7 +59,9 @@ typedef struct {
  * frame is rendered straight into fb, still on all cores). */
 int vs_mt_init(vs_mt *mt, const vs_mt_platform *p, int max_h);
 void vs_mt_free(vs_mt *mt);
-/* Render a whole frame into fb (column-major, v->w * v->h, 64-byte aligned, v->h even). */
+/* Render a whole frame into fb (column-major, (v->w * xscale) * v->h, 64-byte aligned, v->h even). With
+ * mt->xscale = 2 the view is half as wide as the frame: every other column is traced, the ones in
+ * between are the average of their neighbours (~1.8x faster, full vertical resolution). */
 void vs_mt_frame(vs_mt *mt, const vs_view *v, const vs_world *wd, const vs_sky *sky, const vs_cam *cam,
                  uint16_t *fb, vs_stats *total);
 

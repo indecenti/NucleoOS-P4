@@ -182,10 +182,13 @@
 //   nv.vs_render() -> i32                   ()i        whole frame into the canvas; render time in us
 //   nv.vs_height(x,y) -> i32                (ii)i      ground height at Q16 cells, Q4 (bilinear)
 //   nv.vs_config(key, value) -> i32         (ii)i      0 fov, 1 zfar, 2 quality, 3 near, 4 smooth,
-//                                                       5 detail, 6 target ms (adaptive), 7 cores, 8 fog;
+//                                                       5 detail, 6 target ms (adaptive), 7 cores, 8 fog,
+//                                                       9 direct (1 = no SRAM strips + DMA), 10 xscale
+//                                                       (0 auto, 1 every column, 2 every other, interpolated);
 //                                                       returns the value in effect (out of range: kept)
 //   nv.vs_info(key) -> i32                  (i)i       0 log2 size, 1 water, 2 max height, 3 samples,
-//                                                       4 textured px, 5 render us, 6 quality, 7 SRAM+DMA
+//                                                       4 textured px, 5 render us, 6 quality, 7 SRAM+DMA,
+//                                                       8 xscale in use
 //
 // ---- ABI v19: turned canvas (permission "gfx"; manifest "canvas_scale" fit/stretch/zoom) ---------
 // The PPA turns the canvas while it scales it to the panel, so a portrait app draws upright and pays

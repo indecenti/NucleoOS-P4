@@ -24,6 +24,8 @@ enum {                                   /* voxel_config keys */
     VOXEL_CFG_TARGET_MS = 6,             /* adaptive quality frame budget (0 = off) */
     VOXEL_CFG_CORES = 7,                 /* 1 or 2 */
     VOXEL_CFG_FOG = 8,                   /* fog start, cells */
+    VOXEL_CFG_DIRECT = 9,                /* 1 = render straight into the canvas (no SRAM strips + DMA) */
+    VOXEL_CFG_XSCALE = 10,               /* traced columns: 0 auto, 1 every column, 2 every other (interpolated) */
 };
 
 enum {                                   /* voxel_info keys */
@@ -35,6 +37,7 @@ enum {                                   /* voxel_info keys */
     VOXEL_INFO_RENDER_US = 5,            /* last frame */
     VOXEL_INFO_QUALITY = 6,              /* now (the governor moves it) */
     VOXEL_INFO_FAST = 7,                 /* 1 = SRAM strips + DMA, 0 = straight into the canvas */
+    VOXEL_INFO_XSCALE = 8,               /* traced columns in use, 1 or 2 */
 };
 
 /* Load a world (.vsw) and a sky (.vss) from the SD card into PSRAM. 0, or <0: -1 busy/args,

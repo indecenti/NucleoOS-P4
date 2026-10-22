@@ -131,8 +131,46 @@ void run(void)
             fr++;
         }
 
+#ifdef VSNG_BENCH
+        /* profile build: a fixed view, one engine setting changed at a time, 30 frames each, logged */
+        {
+            static const struct { const char *name; int cores, smooth, nearz, quality, detail, direct; } B[] = {
+                { "warm", 2, -1, -1, 256, 256, 0 }, { "base", 2, -1, -1, 256, 256, 0 },
+                { "1core", 1, -1, -1, 256, 256, 0 }, { "nosmooth", 2, 0, -1, 256, 256, 0 },
+                { "nonear", 2, -1, 0, 256, 256, 0 }, { "q128", 2, -1, -1, 128, 256, 0 },
+                { "direct", 2, -1, -1, 256, 256, 1 }, { "direct1core", 1, -1, -1, 256, 256, 1 },
+            };
+            static int stage = -1, frames = 0, sum = 0, smooth0 = 0, near0 = 0;
+            if (stage < 0) {
+                demo_cam(&cam, 40, size, water, &eye);
+                smooth0 = vs_config(VS_CFG_SMOOTH, -1);
+                near0 = vs_config(VS_CFG_NEAR, -1);
+                stage = 0;
+            }
+            demo = 0;
+            if (frames == 0 && stage < (int)(sizeof B / sizeof B[0])) {
+                vs_config(VS_CFG_CORES, B[stage].cores);
+                vs_config(VS_CFG_SMOOTH, B[stage].smooth < 0 ? smooth0 : B[stage].smooth);
+                vs_config(VS_CFG_NEAR, B[stage].nearz < 0 ? near0 : B[stage].nearz);
+                vs_config(VS_CFG_QUALITY, B[stage].quality);
+                vs_config(VS_CFG_DETAIL, B[stage].detail);
+                vs_config(VS_CFG_DIRECT, B[stage].direct);
+            }
+            vs_camera(cam.x, cam.y, cam.h, cam.yaw, cam.pitch, cam.roll, t0);
+            us = vs_render();
+            if (frames >= 5) sum += us;                                    /* skip the warm-up frames */
+            if (++frames == 35 && stage < (int)(sizeof B / sizeof B[0])) {
+                const char *k[] = { "stage", "render_us", "samples", "near_px" };
+                int v[4];
+                v[0] = stage; v[1] = sum / 30; v[2] = vs_info(VS_INFO_SAMPLES); v[3] = vs_info(VS_INFO_NEAR_PX);
+                log_kv(B[stage].name, k, v, 4);
+                stage++; frames = 0; sum = 0;
+            }
+        }
+#else
         vs_camera(cam.x, cam.y, cam.h, cam.yaw, cam.pitch, cam.roll, t0);
         us = vs_render();
+#endif
         hud_int(12, 12, fps10 / 10, 3, gov ? C565(120, 230, 140) : 0xFFFF);
         if (in.last == IN_TOUCH) hud_stick(in.stick_on, in.stick_x0, in.stick_y0, in.stick_x, in.stick_y);
         if (paused) hud_pause();
@@ -143,13 +181,13 @@ void run(void)
         n_perf++;
         if (nv_millis() - t_last >= 2000) {
             int now = nv_millis();
-            const char *k[] = { "fps10", "render_us", "frame_ms", "samples", "near_px", "quality", "fast", "gov", "input" };
-            int v[9];
+            const char *k[] = { "fps10", "render_us", "frame_ms", "samples", "near_px", "quality", "fast", "gov", "input", "xs" };
+            int v[10];
             fps10 = n_perf * 10000 / (now - t_last);
             v[0] = fps10; v[1] = sum_render / n_perf; v[2] = sum_frame / n_perf;
             v[3] = vs_info(VS_INFO_SAMPLES); v[4] = vs_info(VS_INFO_NEAR_PX); v[5] = vs_info(VS_INFO_QUALITY);
-            v[6] = vs_info(VS_INFO_FAST); v[7] = gov; v[8] = in.last;
-            log_kv("vsng: perf", k, v, 9);
+            v[6] = vs_info(VS_INFO_FAST); v[7] = gov; v[8] = in.last; v[9] = vs_info(VS_INFO_XSCALE);
+            log_kv("vsng: perf", k, v, 10);
             n_perf = sum_render = sum_frame = 0;
             t_last = now;
         }

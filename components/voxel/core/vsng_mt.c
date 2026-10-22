@@ -39,27 +39,44 @@ void vs_mt_free(vs_mt *mt)
             }
 }
 
+/* Half-rate columns: the strip holds n rendered columns at its start; spread them to 2n - 1 in place,
+ * the odd ones the average of their neighbours (the last one repeats), from the end backwards so
+ * no source column is overwritten before it is read. */
+static void widen(uint16_t *b, int n, int out, int H)
+{
+    int k, y;
+    for (k = n - 1; k >= 0; k--) {
+        const uint16_t *a = b + (size_t)k * H, *c = k + 1 < n ? a + H : a;
+        uint16_t *e = b + (size_t)(2 * k) * H, *o = e + H;
+        if (2 * k + 1 < out)
+            for (y = 0; y < H; y++) o[y] = (uint16_t)(((a[y] & 0xF7DEu) >> 1) + ((c[y] & 0xF7DEu) >> 1));
+        if (k) for (y = 0; y < H; y++) e[y] = a[y];
+    }
+}
+
 static void worker(void *arg, int core)
 {
     vs_mt *mt = (vs_mt *)arg;
     const vs_view *v = mt->v;
-    const int H = v->h, sw = mt->p.strip_w;
+    const int H = v->h, sw = mt->p.strip_w, xs = mt->xscale;
     const int fast = mt->buf[core][0] && mt->buf[core][1] && H <= mt->buf_h;
     int slot = 0, pending[2] = { 0, 0 }, s;
     vs_stats acc = { 0, 0, 0 }, st;
     uint32_t n = 0;
 
     while ((s = take_strip(mt)) < mt->nstrips) {
-        const int x0 = s * sw, x1 = x0 + sw < v->w ? x0 + sw : v->w;
-        uint16_t *dst = mt->fb + (size_t)x0 * H;
+        /* output columns [o0, o1) of the frame; rendered view columns [x0, x1) */
+        const int o0 = s * sw, o1 = o0 + sw < mt->cols ? o0 + sw : mt->cols;
+        const int x0 = o0 / xs, x1 = (o1 + xs - 1) / xs < v->w ? (o1 + xs - 1) / xs : v->w;
+        uint16_t *dst = mt->fb + (size_t)o0 * H;
+        uint16_t *b = fast ? mt->buf[core][slot] : dst;
+        if (fast && pending[slot]) mt->p.copy_wait(mt->p.ctx, core, slot);
+        vs_render_strip(v, mt->wd, mt->sky, mt->cam, b, x0, x1, &st);
+        if (xs == 2) widen(b, x1 - x0, o1 - o0, H);
         if (fast) {
-            if (pending[slot]) mt->p.copy_wait(mt->p.ctx, core, slot);
-            vs_render_strip(v, mt->wd, mt->sky, mt->cam, mt->buf[core][slot], x0, x1, &st);
-            mt->p.copy_start(mt->p.ctx, dst, mt->buf[core][slot], (size_t)(x1 - x0) * H * 2, core, slot);
+            mt->p.copy_start(mt->p.ctx, dst, b, (size_t)(o1 - o0) * H * 2, core, slot);
             pending[slot] = 1;
             slot ^= 1;
-        } else {
-            vs_render_strip(v, mt->wd, mt->sky, mt->cam, dst, x0, x1, &st);
         }
         acc.samples += st.samples;
         acc.pixels_near += st.pixels_near;
@@ -77,7 +94,10 @@ void vs_mt_frame(vs_mt *mt, const vs_view *v, const vs_world *wd, const vs_sky *
 {
     int c;
     mt->v = v; mt->wd = wd; mt->sky = sky; mt->cam = cam; mt->fb = fb;
-    mt->nstrips = (v->w + mt->p.strip_w - 1) / mt->p.strip_w;
+    if (mt->xscale != 2) mt->xscale = 1;
+    if (mt->xscale == 2 && (mt->p.strip_w & 1)) mt->xscale = 1;     /* strips must hold whole pairs */
+    mt->cols = v->w * mt->xscale;
+    mt->nstrips = (mt->cols + mt->p.strip_w - 1) / mt->p.strip_w;
     __atomic_store_n(&mt->next, 0, __ATOMIC_RELAXED);
     if (mt->p.run_parallel && mt->p.ncores > 1) mt->p.run_parallel(mt->p.ctx, worker, mt);
     else worker(mt, 0);

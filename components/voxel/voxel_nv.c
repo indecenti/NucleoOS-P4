@@ -41,13 +41,15 @@ typedef struct {
     vs_view *view;                       /* PSRAM: ~25 KB of tables */
     vs_cam cam;
     vs_governor gov;
-    int fov, cores, target_ms;
+    int fov, cores, target_ms, direct;
+    int xscale, xscale_cfg;              /* traced columns: in use / forced (0 = auto) */
     int view_cols, view_rows;
     int fast;
     vs_stats last;
     int32_t last_us;
     uint32_t frames;
     int64_t prof_us;
+    int64_t wait_us[VS_MT_MAX_CORES];    /* time the cores spent waiting for their DMA copies */
     bool open;
 } voxel_state;
 
@@ -122,7 +124,11 @@ static void nv_copy_start(void *ctx, void *dst, const void *src, size_t n, int c
 static void nv_copy_wait(void *ctx, int core, int slot)
 {
     (void)ctx;
-    if (s_copy_dma[core][slot]) nv_2d_copy_wait(s_copy_done[core][slot], 100);
+    if (s_copy_dma[core][slot]) {
+        const int64_t t0 = esp_timer_get_time();
+        nv_2d_copy_wait(s_copy_done[core][slot], 100);
+        s_v.wait_us[core] += esp_timer_get_time() - t0;   /* s_vp is set while rendering */
+    }
     s_copy_dma[core][slot] = false;
 }
 
@@ -208,10 +214,12 @@ static void mt_setup(int rows)
     p.ncores = s_v.cores;
     p.strip_w = STRIP_W;
     p.run_parallel = nv_run_parallel;
-    p.alloc_fast = nv_alloc_fast;
-    p.free_fast = nv_free_fast;
-    p.copy_start = nv_copy_start;
-    p.copy_wait = nv_copy_wait;
+    if (!s_v.direct) {                       /* VOXEL_CFG_DIRECT: strips straight into the canvas */
+        p.alloc_fast = nv_alloc_fast;
+        p.free_fast = nv_free_fast;
+        p.copy_start = nv_copy_start;
+        p.copy_wait = nv_copy_wait;
+    }
     vs_mt_free(&s_mt);
     s_v.fast = vs_mt_init(&s_mt, &p, rows) == 0 && s_mt.buf[0][0];
 }
@@ -228,12 +236,21 @@ int32_t voxel_render(uint16_t *fb, int cols, int rows)
     int64_t t0;
     if (!s_vp || !s_v.open || !fb || cols < 16 || rows < 16 || cols > VS_MAX_W || rows > VS_MAX_H || (rows & 1))
         return -1;
-    if (cols != s_v.view_cols || rows != s_v.view_rows) {
-        vs_view_fit(s_v.view, cols, rows, s_v.fov);
-        s_v.view_cols = cols;
-        s_v.view_rows = rows;
-        mt_setup(rows);
-        if (s_v.target_ms) vs_governor_init(&s_v.gov, s_v.target_ms, 256);
+    {
+        /* traced columns: forced by VOXEL_CFG_XSCALE, else the governor's render scale, else half rate on
+         * wide screens (the in-between columns are interpolated: ~1.8x faster, hard to tell apart) */
+        int xs = s_v.xscale_cfg ? s_v.xscale_cfg : s_v.target_ms ? (s_v.gov.scale_q8 <= 192 ? 2 : 1)
+                                                 : cols >= 800 ? 2 : 1;
+        if (cols != s_v.view_cols || rows != s_v.view_rows || xs != s_v.xscale) {
+            const int resized = cols != s_v.view_cols || rows != s_v.view_rows;
+            vs_view_fit(s_v.view, cols, rows, s_v.fov, xs);
+            s_v.view_cols = cols;
+            s_v.view_rows = rows;
+            s_v.xscale = xs;
+            if (resized) mt_setup(rows);
+            if (resized && s_v.target_ms) vs_governor_init(&s_v.gov, s_v.target_ms, 128);
+        }
+        s_mt.xscale = xs;
     }
     t0 = esp_timer_get_time();
     vs_mt_frame(&s_mt, s_v.view, &s_v.wd, &s_v.sky, &s_v.cam, fb, &s_v.last);
@@ -241,11 +258,13 @@ int32_t voxel_render(uint16_t *fb, int cols, int rows)
     if (s_v.target_ms) vs_tune(&s_v.gov, s_v.view, s_v.last_us / 1000);
     s_v.prof_us += s_v.last_us;
     if (++s_v.frames % 60 == 0) {
-        NV_LOGI(TAG, "prof %dx%d cores %d fast %d: render %d us avg, samples %u, near px %u, q %d, strips %u/%u",
-                cols, rows, s_v.cores, s_v.fast, (int)(s_v.prof_us / 60), (unsigned)s_v.last.samples,
+        NV_LOGI(TAG, "prof %dx%d cores %d fast %d xs %d: render %d us avg, dma wait %d/%d us, samples %u, near px %u, "
+                "q %d, strips %u/%u", cols, rows, s_v.cores, s_v.fast, s_v.xscale, (int)(s_v.prof_us / 60),
+                (int)(s_v.wait_us[0] / 60), (int)(s_v.wait_us[1] / 60), (unsigned)s_v.last.samples,
                 (unsigned)s_v.last.pixels_near, s_v.view->quality, (unsigned)s_mt.strips_done[0],
                 (unsigned)s_mt.strips_done[1]);
         s_v.prof_us = 0;
+        s_v.wait_us[0] = s_v.wait_us[1] = 0;
     }
     return s_v.last_us;
 }
@@ -281,12 +300,24 @@ int32_t voxel_config(int32_t key, int32_t value)
     case VOXEL_CFG_TARGET_MS:
         if (value >= 0 && value <= 1000) {
             s_v.target_ms = value;
-            if (value) vs_governor_init(&s_v.gov, value, 256);
+            if (value) vs_governor_init(&s_v.gov, value, 128);
         }
         return s_v.target_ms;
     case VOXEL_CFG_CORES:
-        if (value == 1 || value == 2) { s_v.cores = value; s_v.view_cols = 0; }
+        if ((value == 1 || value == 2) && value != s_v.cores) {
+            s_v.cores = value;                       /* only the scheduler changes, the view stays */
+            if (s_v.view_rows) mt_setup(s_v.view_rows);
+        }
         return s_v.cores;
+    case VOXEL_CFG_DIRECT:
+        if ((value == 0 || value == 1) && value != s_v.direct) {
+            s_v.direct = value;
+            if (s_v.view_rows) mt_setup(s_v.view_rows);
+        }
+        return s_v.direct;
+    case VOXEL_CFG_XSCALE:
+        if (value >= 0 && value <= 2) s_v.xscale_cfg = value;
+        return s_v.xscale_cfg;
     case VOXEL_CFG_FOG:
         if (value >= 0 && value < v->zfar) { v->fog_start = value; vs_setup(v); }
         return v->fog_start;
@@ -307,6 +338,7 @@ int32_t voxel_info(int32_t key)
     case VOXEL_INFO_RENDER_US: return s_v.last_us;
     case VOXEL_INFO_QUALITY: return s_v.view ? s_v.view->quality : 0;
     case VOXEL_INFO_FAST: return s_v.fast;
+    case VOXEL_INFO_XSCALE: return s_v.xscale;
     default: return -1;
     }
 }

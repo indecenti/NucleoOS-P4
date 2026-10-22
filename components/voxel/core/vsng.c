@@ -13,6 +13,13 @@
  */
 #include "vsng.h"
 
+#ifdef VS_PROFILE                        /* host profiling: what the frame spends its work on */
+unsigned long long vs_prof[8];
+#define VS_PROF(k, n) (vs_prof[k] += (unsigned long long)(n))
+#else
+#define VS_PROF(k, n) ((void)0)
+#endif
+
 /* Float only at init, without libm (the device build may be freestanding). */
 static double sin_poly(double x)         /* x in [-pi, pi] */
 {
@@ -72,7 +79,7 @@ void vs_setup(vs_view *v)
         int32_t f = 0, fp;
         z += dz;
         v->dz_q8[n] = dz;
-        v->kz[n] = (int32_t)(((int64_t)v->focal * v->vscale_q8 << 8) / z);
+        v->kz[n] = (int32_t)(((int64_t)(v->focal_y ? v->focal_y : v->focal) * v->vscale_q8 << 8) / z);
         if (z > fog0) {
             int32_t t = (int32_t)(((int64_t)(z - fog0) << 8) / (zfar - fog0));   /* Q8 0..256 */
             if (t > 256) t = 256;
@@ -100,19 +107,22 @@ void vs_setup(vs_view *v)
     for (x = 1; x <= VS_MAX_H; x++) v->recip[x] = (uint16_t)(65535 / x);
 }
 
-void vs_view_fit(vs_view *v, int w, int h, int fov_deg)
+void vs_view_fit(vs_view *v, int w, int h, int fov_deg, int xscale)
 {
     const double pi = 3.14159265358979323846;
     double half = fov_deg * pi / 360.0;
-    v->w = w > VS_MAX_W ? VS_MAX_W : w;
+    v->xscale = xscale == 2 ? 2 : 1;
+    if (w > VS_MAX_W) w = VS_MAX_W;
+    v->w = w / v->xscale;
     v->h = h > VS_MAX_H ? VS_MAX_H : h;
-    v->focal = (int)(v->w * 0.5 * sin_poly(pi / 2 - half) / sin_poly(half) + 0.5);   /* w/2 / tan */
-    if (v->focal < 16) v->focal = 16;
+    v->focal_y = (int)(w * 0.5 * sin_poly(pi / 2 - half) / sin_poly(half) + 0.5);    /* screen w/2 / tan */
+    if (v->focal_y < 16) v->focal_y = 16;
+    v->focal = v->focal_y / v->xscale;                                             /* per traced column */
     if (!v->zfar) v->zfar = 1100;
     if (!v->vscale_q8) v->vscale_q8 = 205;
     if (!v->fog_start) v->fog_start = v->zfar / 4;
     if (!v->near_z) v->near_z = 48;
-    if (!v->smooth_z) v->smooth_z = v->focal * 2 / 3;   /* where a cell shrinks under ~1.5 px */
+    if (!v->smooth_z) v->smooth_z = v->focal_y * 2 / 3; /* where a cell shrinks under ~1.5 px */
     if (!v->lod_q8) v->lod_q8 = 256;
     if (!v->detail_q8) v->detail_q8 = 256;
     if (!v->quality) v->quality = 256;
@@ -228,22 +238,32 @@ static inline uint16_t half565(uint32_t a, uint32_t b)
 
 static inline uint32_t spread(uint32_t c) { c &= 0xFFFF; return (c | (c << 16)) & 0x07E0F81Fu; }
 
-/* Bilinear colour (and height, if hq) at Q16 (x, y) on the full-resolution map; flags of the
- * nearest corner. */
-static inline uint32_t bilerp(const uint32_t *m, int log2, uint32_t mask, int32_t x, int32_t y, int32_t *hq)
+#if defined(__GNUC__)
+#define VS_HOT static inline __attribute__((always_inline))
+#else
+#define VS_HOT static inline
+#endif
+
+/* Bilinear colour (and height, if hq) at Q16 (x, y) on a tiled map; flags of the nearest corner.
+ * The tile index is computed once: inside a 4x4 tile the neighbours are +1 / +4, across a tile edge
+ * +13 / +(4 << log2) - 12, and only on the map's own edge (the wrap) the full index. vs_tidx is
+ * separable (x and y bits are disjoint), so the diagonal is the sum of the two offsets. */
+VS_HOT uint32_t bilerp(const uint32_t *m, int log2, uint32_t mask, int32_t x, int32_t y, int32_t *hq)
 {
-    uint32_t x0 = ((uint32_t)x >> 16) & mask, y0 = ((uint32_t)y >> 16) & mask;
-    uint32_t x1 = (x0 + 1) & mask, y1 = (y0 + 1) & mask;
-    uint32_t c00 = m[vs_tidx(x0, y0, log2)], c10 = m[vs_tidx(x1, y0, log2)];
-    uint32_t c01 = m[vs_tidx(x0, y1, log2)], c11 = m[vs_tidx(x1, y1, log2)];
-    uint32_t wx = ((uint32_t)x >> 11) & 31, wy = ((uint32_t)y >> 11) & 31, top, bot, r;
+    const uint32_t x0 = ((uint32_t)x >> 16) & mask, y0 = ((uint32_t)y >> 16) & mask;
+    const uint32_t i00 = vs_tidx(x0, y0, log2);
+    const uint32_t ox = (x0 & 3) != 3 ? 1u : x0 != mask ? 13u : vs_tidx(0, y0, log2) - i00;
+    const uint32_t oy = (y0 & 3) != 3 ? 4u : y0 != mask ? (4u << log2) - 12u : vs_tidx(x0, 0, log2) - i00;
+    const uint32_t c00 = m[i00], c10 = m[i00 + ox], c01 = m[i00 + oy], c11 = m[i00 + ox + oy];
+    const uint32_t wx = ((uint32_t)x >> 11) & 31, wy = ((uint32_t)y >> 11) & 31;
+    uint32_t top, bot, r;
     top = ((spread(c00) * (32 - wx) + spread(c10) * wx) >> 5) & 0x07E0F81Fu;
     bot = ((spread(c01) * (32 - wx) + spread(c11) * wx) >> 5) & 0x07E0F81Fu;
     r = ((top * (32 - wy) + bot * wy) >> 5) & 0x07E0F81Fu;
     if (hq) {
-        int32_t fx = (x >> 8) & 255, fy = (y >> 8) & 255;
-        int32_t a = (int32_t)((c00 >> 16) & 255) * (256 - fx) + (int32_t)((c10 >> 16) & 255) * fx;
-        int32_t b = (int32_t)((c01 >> 16) & 255) * (256 - fx) + (int32_t)((c11 >> 16) & 255) * fx;
+        const int32_t fx = (x >> 8) & 255, fy = (y >> 8) & 255;
+        const int32_t a = (int32_t)((c00 >> 16) & 255) * (256 - fx) + (int32_t)((c10 >> 16) & 255) * fx;
+        const int32_t b = (int32_t)((c01 >> 16) & 255) * (256 - fx) + (int32_t)((c11 >> 16) & 255) * fx;
         *hq = (a * (256 - fy) + b * fy) >> 12;
     }
     return (c00 & 0xFF000000u) | (uint16_t)(r | (r >> 16));
@@ -258,6 +278,20 @@ int32_t vs_height_at(const vs_world *wd, int32_t x, int32_t y)
 
 /* ---- the march ---------------------------------------------------------------------------------- */
 
+/* Columns march in groups of VS_GROUP, step by step: at each distance the group's rays read cells a
+ * few apart, so a fetched cache line serves the whole group before it is evicted (one column at a
+ * time walked ~300 lines across the map and threw them away before its neighbour came back for
+ * them), and the step's tables (length, 1/z, fog, mip level) are read once for the group. */
+#define VS_GROUP 8
+
+typedef struct {
+    int32_t px, py, dx, dy, jh, yb;
+    uint16_t *col;
+    const uint16_t *sc;
+    uint32_t pc;                         /* colour of the previous sample (span start) */
+    int live;
+} vs_ray;
+
 void vs_render_strip(const vs_view *v, const vs_world *wd, const vs_sky *sky, const vs_cam *cam,
                      uint16_t *out, int x0, int x1, vs_stats *st)
 {
@@ -270,94 +304,136 @@ void vs_render_strip(const vs_view *v, const vs_world *wd, const vs_sky *sky, co
     const int32_t rx = -fy, ry = fx;
     const int32_t camh = cam->h, hmax = wd->maxh << 4;
     const int32_t ys0 = H / 2 - cam->pitch;
-    const int32_t sky_scale = sky->focal > 0 ? (int32_t)(((int64_t)sky->focal << 16) / v->focal) : 65536;
+    const int32_t fy_ = v->focal_y ? v->focal_y : v->focal, xsc = v->xscale ? v->xscale : 1;
+    const int32_t sky_scale = sky->focal > 0 ? (int32_t)(((int64_t)sky->focal << 16) / fy_) : 65536;
     const uint16_t fogc = sky->fog;
     const int nnear = v->nnear, nsmooth = v->nsmooth, nsteps = v->nsteps;
     uint32_t samples = 0, psky = 0, pnear = 0;
-    int x;
+    vs_ray rays[VS_GROUP];
+    int g;
 
     if (x1 > W) x1 = W;
-    for (x = x0; x < x1; x++) {
-        uint16_t *col = out + (uint32_t)(x - x0) * H;
-        const int32_t cdx = v->col_dx_q16[x];
-        const int32_t dx = fx + (int32_t)(((int64_t)rx * cdx) >> 16);
-        const int32_t dy = fy + (int32_t)(((int64_t)ry * cdx) >> 16);
-        const int32_t ys = ys0 + (int32_t)(((int64_t)cam->roll * (2 * x + 1 - W)) >> 17);
-        const int32_t jh = H - 1 - ys;               /* horizon row, bottom-up */
-        const uint16_t *sc = sky->px + (uint32_t)((((cam->yaw + v->col_ang[x]) & VS_ANG_MASK)
-                                         * sky->w) >> VS_ANG_BITS) * sky->h;
-        int32_t px = cam->x, py = cam->y, yb = 0, i;
+    for (g = x0; g < x1; g += VS_GROUP) {
+        const int n = x1 - g < VS_GROUP ? x1 - g : VS_GROUP;
+        int k, i, live = n;
 
-        for (i = 0; i < nsteps; i++) {
-            const int32_t ppx = px, ppy = py;
-            uint32_t c;
-            int32_t hq, j;
-            px += (dx * v->dz_q8[i]) >> 8;
-            py += (dy * v->dz_q8[i]) >> 8;
-            if (i < nnear) {
-                c = bilerp(map0, log2, mask, px, py, &hq);
-            } else if (i < nsmooth) {
-                const int l = v->lod[i] < wd->nmips ? v->lod[i] : wd->nmips - 1;
-                c = bilerp(wd->mip[l], log2 - l, mask >> l, px >> l, py >> l, &hq);
-            } else {
-                const int l = v->lod[i] < wd->nmips ? v->lod[i] : wd->nmips - 1;
-                const int ll = log2 - l;
-                const uint32_t m = mask >> l;
-                c = wd->mip[l][vs_tidx(((uint32_t)px >> (16 + l)) & m, ((uint32_t)py >> (16 + l)) & m, ll)];
-                hq = (int32_t)((c >> 12) & 0xFF0);
-            }
-            j = jh + (((hq - camh) * v->kz[i]) >> 12);
-            if (j > yb) {
-                const uint32_t f = v->fog[i];
-                const int32_t jj = j;                 /* unclamped: the span's true length */
-                if (j > H) j = H;
-                if (c & (VS_CELL_WATER << 24)) {
-                    /* water: the sky mirrored about the horizon, rippled, half and half */
-                    int32_t wob = vs_sin((i << 7) + cam->time_ms) >> 15;     /* -2..2 rows */
-                    for (; yb < j; yb++) {
-                        int32_t d = (int32_t)(((int64_t)(jh - yb + wob) * sky_scale) >> 16);
-                        uint32_t s = d < 0 ? sc[0] : d < sky->h ? sc[d] : sky->top;
-                        col[yb] = mix565(half565(c & 0xFFFF, s), fogc, f);
-                    }
-                } else if (i < nnear) {
-                    /* per pixel: walk the ground from the previous sample to this one down the span */
-                    const int32_t n = jj - yb < VS_MAX_H ? jj - yb : VS_MAX_H;
-                    const int32_t r = v->recip[n];
-                    const int32_t sx = (int32_t)(((int64_t)(px - ppx) * r) >> 16);
-                    const int32_t sy = (int32_t)(((int64_t)(py - ppy) * r) >> 16);
-                    int32_t qx = ppx + (sx >> 1), qy = ppy + (sy >> 1);
-                    pnear += (uint32_t)(j - yb);
-                    for (; yb < j; yb++, qx += sx, qy += sy) {
-                        uint32_t p = bilerp(map0, log2, mask, qx, qy, 0);
-                        uint16_t o = (uint16_t)p;
-                        if (detail) {
-                            const int8_t *t = detail + (((p >> 24) >> VS_MAT_SHIFT) << 12);
-                            int32_t d = t[(((uint32_t)qy >> 12) & 63) << 6 | (((uint32_t)qx >> 12) & 63)];
-                            o = d >= 0 ? mix565(o, 0xFFFF, (uint32_t)d >> det_shift)
-                                       : mix565(o, 0x0000, (uint32_t)(-d) >> det_shift);
-                        }
-                        col[yb] = f ? mix565(o, fogc, f) : o;
-                    }
+        for (k = 0; k < n; k++) {
+            const int x = g + k;
+            const int32_t cdx = v->col_dx_q16[x];
+            const int32_t ys = ys0 + (int32_t)(((int64_t)cam->roll * xsc * (2 * x + 1 - W)) >> 17);
+            vs_ray *r = &rays[k];
+            r->dx = fx + (int32_t)(((int64_t)rx * cdx) >> 16);
+            r->dy = fy + (int32_t)(((int64_t)ry * cdx) >> 16);
+            r->jh = H - 1 - ys;                     /* horizon row, bottom-up */
+            r->px = cam->x;
+            r->py = cam->y;
+            r->yb = 0;
+            r->col = out + (uint32_t)(x - x0) * H;
+            r->sc = sky->px + (uint32_t)((((cam->yaw + v->col_ang[x]) & VS_ANG_MASK) * sky->w) >> VS_ANG_BITS) * sky->h;
+            r->pc = 0xFFFFFFFFu;
+            r->live = 1;
+        }
+
+        for (i = 0; i < nsteps && live; i++) {
+            const int32_t dz = v->dz_q8[i], kz = v->kz[i];
+            const uint32_t f = v->fog[i];
+            const int l = v->lod[i] < wd->nmips ? v->lod[i] : wd->nmips - 1;
+            const uint32_t *mp = wd->mip[l];
+            const int ll = log2 - l;
+            const uint32_t ml = mask >> l;
+            /* the farthest any cell can reach on screen from here on, for the early exit */
+            const int32_t jtop = hmax <= camh ? 0x7FFFFFFF : (((hmax - camh) * kz) >> 12);
+            for (k = 0; k < n; k++) {
+                vs_ray *r = &rays[k];
+                const int32_t ppx = r->px, ppy = r->py, jh = r->jh;
+                uint16_t *col = r->col;
+                int32_t yb = r->yb, hq, j;
+                uint32_t c;
+                if (!r->live) continue;
+                r->px += (r->dx * dz) >> 8;
+                r->py += (r->dy * dz) >> 8;
+                if (i < nnear) {
+                    VS_PROF(0, 1);
+                    c = bilerp(map0, log2, mask, r->px, r->py, &hq);
+                } else if (i < nsmooth) {
+                    VS_PROF(1, 1);
+                    c = bilerp(mp, ll, ml, r->px >> l, r->py >> l, &hq);
                 } else {
-                    const uint16_t o = f ? mix565(c & 0xFFFF, fogc, f) : (uint16_t)c;
-                    for (; yb < j; yb++) col[yb] = o;
+                    VS_PROF(2, 1);
+                    c = mp[vs_tidx(((uint32_t)r->px >> (16 + l)) & ml, ((uint32_t)r->py >> (16 + l)) & ml, ll)];
+                    hq = (int32_t)((c >> 12) & 0xFF0);
                 }
-                if (yb >= H) break;
-            }
-            /* nothing farther can rise above what is painted: stop this column */
-            if ((i & 7) == 7) {
-                if (hmax <= camh) { if (yb >= jh) break; }
-                else if (jh + (((hmax - camh) * v->kz[i]) >> 12) <= yb) break;
+                j = jh + (((hq - camh) * kz) >> 12);
+                if (j > yb) {
+                    const int32_t jj = j;             /* unclamped: the span's true length */
+                    if (j > H) j = H;
+                    VS_PROF(3, 1);
+                    if (c & (VS_CELL_WATER << 24)) {
+                        VS_PROF(4, j - yb);
+                        /* water: the sky mirrored about the horizon, rippled, half and half */
+                        const int32_t tw = ((i << 7) + cam->time_ms) & 4095;          /* ripple: triangle wave */
+                        const int32_t wob = ((tw < 2048 ? tw : 4095 - tw) >> 9) - 2;   /* -2..1 rows */
+                        const uint16_t *sc = r->sc;
+                        for (; yb < j; yb++) {
+                            int32_t d = (int32_t)(((int64_t)(jh - yb + wob) * sky_scale) >> 16);
+                            uint32_t s = d < 0 ? sc[0] : d < sky->h ? sc[d] : sky->top;
+                            col[yb] = mix565(half565(c & 0xFFFF, s), fogc, f);
+                        }
+                    } else if (i < nnear) {
+                        /* per pixel, cheaply: the colour runs from the previous sample to this one down
+                         * the span (both already bilinear), the ground position walks with it and picks
+                         * the material's detail grain - one table read, no map reads per pixel */
+                        const int32_t m = jj - yb < VS_MAX_H ? jj - yb : VS_MAX_H;
+                        const int32_t rc = v->recip[m];
+                        const int32_t sx = (int32_t)(((int64_t)(r->px - ppx) * rc) >> 16);
+                        const int32_t sy = (int32_t)(((int64_t)(r->py - ppy) * rc) >> 16);
+                        const uint32_t A = spread(r->pc == 0xFFFFFFFFu ? c : r->pc), B = spread(c);
+                        const int8_t *t = detail ? detail + (((c >> 24) >> VS_MAT_SHIFT) << 12) : 0;
+                        const uint32_t ws = (uint32_t)rc << 5;                  /* 32 / n, Q16 */
+                        uint32_t wq = ws >> 1;
+                        int32_t qx = ppx + (sx >> 1), qy = ppy + (sy >> 1);
+                        pnear += (uint32_t)(j - yb);
+                        VS_PROF(5, j - yb);
+                        for (; yb < j; yb++, qx += sx, qy += sy, wq += ws) {
+                            const uint32_t w = wq >> 16 > 32 ? 32 : wq >> 16;
+                            const uint32_t sp = ((A * (32 - w) + B * w) >> 5) & 0x07E0F81Fu;
+                            uint16_t o = (uint16_t)(sp | (sp >> 16));
+                            if (t) {
+                                int32_t d = t[(((uint32_t)qy >> 12) & 63) << 6 | (((uint32_t)qx >> 12) & 63)];
+                                o = d >= 0 ? mix565(o, 0xFFFF, (uint32_t)d >> det_shift)
+                                           : mix565(o, 0x0000, (uint32_t)(-d) >> det_shift);
+                            }
+                            col[yb] = f ? mix565(o, fogc, f) : o;
+                        }
+                    } else {
+                        const uint16_t o = f ? mix565(c & 0xFFFF, fogc, f) : (uint16_t)c;
+                        VS_PROF(6, j - yb);
+                        for (; yb < j; yb++) col[yb] = o;
+                    }
+                    r->yb = yb;
+                }
+                r->pc = c;
+                /* the top reached, or nothing farther can rise above what is painted */
+                if (yb >= H || ((i & 3) == 3 && (jtop == 0x7FFFFFFF ? yb >= jh : jh + jtop <= yb))) {
+                    r->live = 0;
+                    live--;
+                    samples += (uint32_t)(i + 1);
+                }
             }
         }
-        samples += (uint32_t)i;
-
-        if (yb < H) {
-            psky += (uint32_t)(H - yb);
-            for (; yb < H && yb <= jh; yb++) col[yb] = fogc;      /* haze below the horizon */
-            for (; yb < H; yb++) {
-                int32_t r = (int32_t)(((int64_t)(yb - jh) * sky_scale) >> 16);
-                col[yb] = r < sky->h ? sc[r] : sky->top;
+        for (k = 0; k < n; k++) {
+            vs_ray *r = &rays[k];
+            int32_t yb = r->yb;
+            const int32_t jh = r->jh;
+            if (r->live) samples += (uint32_t)nsteps;
+            if (yb < H) {
+                psky += (uint32_t)(H - yb);
+                VS_PROF(7, H - yb);
+                for (; yb < H && yb <= jh; yb++) r->col[yb] = fogc;      /* haze below the horizon */
+                for (; yb < H; yb++) {
+                    int32_t q = (int32_t)(((int64_t)(yb - jh) * sky_scale) >> 16);
+                    r->col[yb] = q < sky->h ? r->sc[q] : sky->top;
+                }
             }
         }
     }
