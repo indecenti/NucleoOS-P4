@@ -1,78 +1,84 @@
-# Il workspace di ANIMA (idee prese da OpenClaw e OpenCode)
+# ANIMA's workspace (ideas taken from OpenClaw and OpenCode)
 
-File di testo sulla SD, in `/data/anima/`, che modifichi a mano (o dalle Impostazioni web ▸ IA ▸
-Workspace). Nessuna ricompilazione: ANIMA li rilegge a ogni uso.
+Text files on the SD card, in `/data/anima/`, that you edit by hand (or from web Settings ▸ AI ▸
+Workspace). No recompiling: ANIMA rereads them every time it uses them.
 
-| File | A cosa serve |
+| File | What it is for |
 |---|---|
-| `SOUL.md` | Chi è ANIMA: tono, valori, limiti. Entra nel prompt del modello a ogni risposta. |
-| `USER.md` | Chi sei tu: nome, città, preferenze. Entra nel prompt del modello. |
-| `memory.jsonl` | Cosa ANIMA ha imparato di te (al massimo 48 fatti): lo aggiorna da sola (`ACT remember`, "ricordati che…") ed entra nel prompt di ogni chat (dispositivo, web, Telegram). Si gestisce dalla pagina Memoria della chat web. Un vecchio `MEMORY.md` viene importato da solo e rinominato `MEMORY.md.migrated`. |
-| `HEARTBEAT.md` | Checklist dei controlli proattivi (vedi sotto). |
-| `telegram.json` | Token del bot e chat collegata (sigillato al chip, non modificarlo a mano). |
-| `permissions.json` | Cosa può fare un modello da solo: `allow` / `ask` / `deny` per azione. |
-| `skills/*.md` | Skill: istruzioni attivate da parole chiave (vedi `skills/README.md.txt`). |
+| `SOUL.md` | Who ANIMA is: tone, values, limits. Goes into the model's prompt on every answer. |
+| `USER.md` | Who you are: name, city, preferences. Goes into the model's prompt. |
+| `memory.jsonl` | What ANIMA has learned about you (at most 48 facts): it updates it by itself (`ACT remember`, "ricordati che…" ("remember that…")) and it goes into the prompt of every chat (device, web, Telegram). You manage it from the Memory page of the web chat. An old `MEMORY.md` is imported automatically and renamed `MEMORY.md.migrated`. |
+| `HEARTBEAT.md` | Checklist of the proactive checks (see below). |
+| `telegram.json` | The bot's token and the linked chat (sealed to the chip, do not edit it by hand). |
+| `permissions.json` | What a model may do on its own: `allow` / `ask` / `deny` per action. |
+| `skills/*.md` | Skills: instructions activated by keywords (see `skills/README.md.txt`). |
 
-## Permessi (come OpenCode)
-Vale per le azioni che **un modello** decide con una riga `ACT …`; i comandi che dai tu restano
-diretti. Default: aprire app, volume, luminosità, fermare la musica → `allow`; promemoria e creare
-file → `ask` (ANIMA propone e aspetta "sì"/"no", la proposta scade dopo 2 minuti).
+## Permissions (like OpenCode)
+This applies to the actions that **a model** decides with an `ACT …` line; the commands you give
+yourself stay direct. Defaults: opening apps, volume, brightness, stopping the music → `allow`;
+reminders and creating files → `ask` (ANIMA proposes and waits for "sì"/"no" ("yes"/"no"); the
+proposal expires after 2 minutes).
 
     {"create_file": "allow", "add_event": "ask", "set_volume": "deny", "*": "ask"}
 
-`"*"` vale per ogni azione non elencata.
+`"*"` applies to every action not listed.
 
-## Heartbeat (come OpenClaw)
-Ogni `anima.hb` minuti (15/30/60, oppure spento: Impostazioni ▸ Anima sul dispositivo o
-Impostazioni web ▸ IA) ANIMA passa al modello la checklist, l'ora e gli impegni di oggi e domani.
-Se niente richiede attenzione il modello risponde `HEARTBEAT_OK` e non succede nulla; altrimenti
-arriva **una** notifica (con suono, salvo "non disturbare"). Senza `HEARTBEAT.md`, in modalità
-Offline o senza un modello configurato non parte nessuna chiamata.
+## Heartbeat (like OpenClaw)
+Every `anima.hb` minutes (15/30/60, or off: Settings ▸ Anima AI on the device or web Settings ▸ AI)
+ANIMA passes the model the checklist, the time and today's and tomorrow's appointments.
+If nothing needs attention the model answers `HEARTBEAT_OK` and nothing happens; otherwise
+**one** notification arrives (with sound, unless Do Not Disturb is on). Without `HEARTBEAT.md`, in Offline mode or with no
+model configured, no call is made.
 
-Esempio di `HEARTBEAT.md`:
+Example `HEARTBEAT.md`:
 
     - C'è un impegno nelle prossime 2 ore? Ricordami cosa e quando.
     - Domani mattina è piena? Dimmelo stasera dopo le 20.
 
-## Telegram (i "canali" di OpenClaw)
-Parli con ANIMA da ovunque, comandi compresi ("abbassa il volume" agisce sul dispositivo).
+(In English: "Is there an appointment in the next 2 hours? Remind me what and when." / "Is tomorrow
+morning full? Tell me this evening after 8 pm.")
 
-1. Su Telegram scrivi a **@BotFather** → `/newbot` → copia il token.
-2. Impostazioni web ▸ IA ▸ Telegram: incolla il token e premi *Collega bot* (il dispositivo lo
-   verifica con Telegram).
-3. Invia al tuo bot il comando mostrato (`/pair 123456`, visibile anche in Impostazioni ▸ Anima sul
-   dispositivo). Il codice vale una volta sola; da quel momento risponde solo alla tua chat.
+## Telegram (OpenClaw's "channels")
+You talk to ANIMA from anywhere, commands included ("abbassa il volume" ("lower the volume") acts
+on the device).
 
-Le notifiche dei controlli proattivi arrivano anche lì. Il dispositivo controlla i messaggi ogni 15 s
-(ogni 3 s per due minuti dopo uno scambio); in modalità Offline o Locale il canale resta fermo.
+1. On Telegram write to **@BotFather** → `/newbot` → copy the token.
+2. Web Settings ▸ AI ▸ Telegram: paste the token and press *Connect bot* (the device verifies it
+   with Telegram).
+3. Send your bot the command shown (`/pair 123456`, also visible in Settings ▸ Anima AI on the
+   device). The code is valid only once; from then on the bot answers only your chat.
 
-## La shell (agente in stile OpenCode / Claude Code)
-Il modello lavora a passi con la shell Linux-like del dispositivo (la stessa del Terminale, eseguita
-senza schermo): scrive `ACT sh <comando>`, riceve l'output, ne può eseguire altri (massimo 5), poi
-risponde. Esempio: "quanto spazio mi resta?" → `df -h` → "Hai 17 GB liberi su 29".
+Notifications from the proactive checks arrive there too. The device checks for messages every 15 s
+(every 3 s for two minutes after an exchange); in Offline or Local mode the channel stays idle.
 
-- **Sola lettura** (`ls cat grep find df du free date ps ip sensors store search|info …`, niente `>`):
-  parte sempre, senza chiedere.
-- **Modifica qualcosa** (`rm cp mv mkdir touch sed -i curl -o store install …`): segue il permesso
-  `sh` (default `ask`: ANIMA propone, tu dici "sì").
-- **Schermo intero** (`edit less top watch …`): mai, servono il Terminale.
-- **Modalità autonoma**: `"mode": "auto"` in `permissions.json` (Impostazioni web ▸ IA, o `/auto on`
-  nell'app ANIMA): ciò che chiederebbe parte subito; un `deny` esplicito resta valido.
+## The shell (an agent in the style of OpenCode / Claude Code)
+The model works in steps with the device's Linux-like shell (the same one as the Terminal, run
+without a screen): it writes `ACT sh <command>`, receives the output, can run others (at most 5), then
+answers. Example: "quanto spazio mi resta?" ("how much space do I have left?") → `df -h` → "Hai 17 GB
+liberi su 29" ("You have 17 GB free out of 29").
 
-**File (come OpenCode)**: `ACT write <percorso>` con il contenuto tra `<<<` e `>>>` scrive un file
-intero; `ACT edit <percorso>` con `<<< vecchio === nuovo >>>` cambia un passaggio esatto (deve
-comparire una volta sola). Solo sotto `~/` (= `/sdcard/home`), `/sdcard/data`, `/sdcard/apps`.
-Permesso `write` (default `ask`; automatico in modalità autonoma). Il ciclo arriva a 12 passi.
+- **Read-only** (`ls cat grep find df du free date ps ip sensors store search|info …`, no `>`):
+  always runs, without asking.
+- **Changes something** (`rm cp mv mkdir touch sed -i curl -o store install …`): follows the `sh`
+  permission (default `ask`: ANIMA proposes, you say "sì" ("yes")).
+- **Full screen** (`edit less top watch …`): never, they need the Terminal.
+- **Autonomous mode**: `"mode": "auto"` in `permissions.json` (web Settings ▸ AI, or `/auto on`
+  in the ANIMA app): whatever would ask runs right away; an explicit `deny` still holds.
 
-**Programmi**: `lua` e `js` girano anche senza la schermata del Terminale, così il modello vede
-output ed errori (`lua -e "assert(loadfile('/lua/x.lua'))"` per il controllo di sintassi: il `lua`
-del terminale vede `/sdcard/home` come `/`).
+**Files (like OpenCode)**: `ACT write <path>` with the content between `<<<` and `>>>` writes a whole
+file; `ACT edit <path>` with `<<< old === new >>>` changes one exact passage (it must appear only
+once). Only under `~/` (= `/sdcard/home`), `/sdcard/data`, `/sdcard/apps`.
+`write` permission (default `ask`; automatic in autonomous mode). The loop goes up to 12 steps.
 
-**Creare app**: la skill `skills/crea-app.md` insegna il motore Lua App (gfx / ui / nv, app minima,
-ciclo scrivi → controlla → correggi). Uno script in `~/lua/<nome>.lua` compare nella tile Lua App.
+**Programs**: `lua` and `js` also run without the Terminal screen, so the model sees
+output and errors (`lua -e "assert(loadfile('/lua/x.lua'))"` for the syntax check: the Terminal's
+`lua` sees `/sdcard/home` as `/`).
 
-Lo store dalla shell: `store search scacchi`, `store info chess`, `store install chess` (l'icona
-compare subito nel launcher).
+**Creating apps**: the skill `skills/crea-app.md` teaches the Lua App engine (gfx / ui / nv, minimal app,
+write → check → fix loop). A script in `~/lua/<name>.lua` appears in the Lua App tile.
+
+The store from the shell: `store search scacchi`, `store info chess`, `store install chess` (the icon
+appears in the launcher right away).
 
 ## Python on the device
 The skill `skills/python.md` teaches ANIMA to write `~/py/<name>.py` (`ACT write`), run it with
@@ -99,7 +105,7 @@ store package `python` (MicroPython 1.26, `ports/micropython`); `store install p
   which then always goes to the model (never the offline tiers): a model that sees gets it with
   the first request, otherwise the vision helper's description joins the text. Telegram uses it:
   a photo (the largest size under 1.9 MB) or an image sent as a file is saved to `~/inbox/` and
-  the caption is the question ("Cosa c'e' in questa foto?" without one).
+  the caption is the question ("Cosa c'e' in questa foto?" ("What is in this photo?") without one).
 - Skill `skills/schermo.md`; `crea-app.md` uses it to check an app's look.
 
 ## The shell for models
@@ -124,10 +130,12 @@ in `nucleo_anima_online.c`.
 
 ## Timers and alarms (offline)
 `nucleo_anima_time.c` understands spoken durations and clock times in Italian and English, with
-the rules Duckling / chrono use: "timer di 10 minuti per la pasta", "timer 1h30", "un'ora e mezza",
-"un quarto d'ora", "half an hour", "svegliami alle 7 e mezza", "alle 8 meno un quarto di sera",
-"a mezzogiorno", "set an alarm for 7pm", "sveglia domani alle 6:45"; "che timer ho?", "annulla le
-sveglie". It is the first offline tool, so it works with no network and no model; models use
+the rules Duckling / chrono use: "timer di 10 minuti per la pasta" ("10-minute timer for the pasta"), "timer 1h30", "un'ora e mezza"
+("an hour and a half"), "un quarto d'ora" ("a quarter of an hour"), "half an hour", "svegliami alle
+7 e mezza" ("wake me at 7:30"), "alle 8 meno un quarto di sera" ("at a quarter to 8 in the
+evening"), "a mezzogiorno" ("at noon"), "set an alarm for 7pm", "sveglia domani alle 6:45" ("alarm
+tomorrow at 6:45"); "che timer ho?" ("what timers do I have?"), "annulla le sveglie" ("cancel the
+alarms"). It is the first offline tool, so it works with no network and no model; models use
 `ACT timer|alarm ...` (or the `device` tool). The store is `/data/anima/timers.json`; the OS checks
 it once a second (cached, no SD read unless it changed) and rings with a notification and an alert
 tone, also in Do Not Disturb (alarms ring longer).
@@ -168,7 +176,7 @@ its words (any age), the 5 most recent and the catalog of `#labels` with counts 
 ESP-Claw), plus a hint to search the rest with `rg`; without a request, the most recent part as
 before. `ACT remember <fact> #label` adds a label; `ACT forget <words>` removes the facts containing
 all those words (permission `remember`). Code: `memory_block`, `nucleo_anima_memory_forget` in
-`nucleo_anima_skills.c`. memory.jsonl (the "ricordati che" capture) is unchanged.
+`nucleo_anima_skills.c`. memory.jsonl (the "ricordati che…" ("remember that…") capture) is unchanged.
 
 ## Conversations (sessions, grouped by workspace)
 
@@ -197,7 +205,7 @@ small local model with a short context keeps the task instead of silently losing
 Code: `compact_steps` in `nucleo_anima_online.c`, before every request of the loop.
 
 ## Smart home from the shell: `ha` and `dev`
-- `ha` uses the Home Assistant URL + token saved in Settings > Casa (never printed):
+- `ha` uses the Home Assistant URL + token saved in Settings > Home (never printed):
   `ha say TEXT` hands the sentence to Assist (`/api/conversation/process`, the board's language):
   Home Assistant resolves names, rooms and Italian itself, one call for the model. `ha ls [room|
   name|domain]`, `ha find TEXT`: one line per entity (`light.cucina on 80% "Luce cucina" @Cucina`),
@@ -217,7 +225,7 @@ The Jinja templates were checked with jinja2 (Home Assistant's engine) on sample
   rules exist, the automations task sends one `/api/template` request returning `entity=state` for the
   watched entities (a few lines); the engine diffs them (`nucleo_anima_rules_ha_watch/_ha_states`),
   primes on the first answer and ignores `unavailable`/`unknown` flapping. It uses the token from
-  Settings > Casa directly, so it works in ANIMA's offline mode too.
+  Settings > Home directly, so it works in ANIMA's offline mode too.
 
 ## The dev loop: write -> check -> run -> fix
 - After every `ACT write`/`edit` of a .lua/.py/.json, ANIMA runs `app check` and the result carries
@@ -265,7 +273,7 @@ right: Stop | attach | mic | settings.
 - **model**: tap -> the server's model list (`nucleo_anima_teacher_models`, worker job), the
   current one marked; picking writes teacher.json like `/model NAME`.
 - **context**: `used/window` + a slim meter (green, amber >= 60%, red >= 85%) and, from 50%, the
-  countdown to auto-compact (`auto 18%`, `compatta`, `auto off`); tap for details, long-press to
+  countdown to auto-compact (`auto 18%`, `compacts`, `auto off`); tap for details, long-press to
   compact now. Used = the server's `usage` or ~chars/4; window = Ollama `context_length` when
   detected, else the model family (Ollama's effective `num_ctx` may be smaller).
 - **permissions**: tap cycles Ask -> Auto -> Plan (`nucleo_anima_set_agent_mode`). Auto = Claude
@@ -297,12 +305,12 @@ gesture closes the app. Tapping the "Thinking..." row also stops.
   CONVERSATION". Same rolling-summary scheme as the web conversations (nucleo_anima_conv.c).
 - **Auto** (default on, `anima.acomp`): before a turn, when the last request used >= 80% of the
   model's window (keeps only the last turn verbatim), or when the fold buffer passes ~1.6 KB.
-  **Manual**: `/compact [focus]` (e.g. `/compact il gioco`) or a long press on the context chip;
+  **Manual**: `/compact [focus]` (e.g. `/compact il gioco` ("the game")) or a long press on the context chip;
   `/compact auto on|off`.
-- **Indicator** (agent bar): the context chip's caption reads "auto-compatta tra N%" from 50%,
-  "compatta al prossimo" at 80%, "auto off" when disabled; the value shows "compatto…" while it
-  runs, the spinner says "Compatto il contesto", and a "■ Contesto compattato: N scambi riassunti,
-  ~Xk token liberati" line follows. `/clear` drops the summary too.
+- **Indicator** (agent bar): the context chip's caption reads "auto N%" from 50%,
+  "compacts" at 80%, "auto off" when disabled; the value shows "compacting…" while it
+  runs, the spinner says "Compacting the context", and a "■ Context compacted: N turns summarised,
+  ~Xk tokens freed (the summary stays in context)" line follows. `/clear` drops the summary too.
 - Sized to the model: summary up to 800 chars (window < 16k or unknown), 1400 (16k+), 2400 (64k+);
   the backlog compacts at 1.6 / 3 / 4.8 KB. Cloud models with room compact less and keep more.
 - Persistent: summary, fold buffer and the verbatim window live in `/sdcard/data/anima/context.json`
