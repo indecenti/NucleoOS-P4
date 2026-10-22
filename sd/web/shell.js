@@ -439,7 +439,7 @@ function saveUiState() {
 
 // Build the default desktop (one shortcut per installed app) used to seed a fresh device.
 function seedDesktop() {
-  return state.apps.map((a, i) => ({ uid: 'app-' + a.id, type: 'app', target: a.id, label: a.name }));
+  return state.apps.map((a, i) => ({ uid: 'app-' + a.id, type: 'app', target: a.id, label: undefined }));
 }
 // Add a desktop shortcut for any installed app that doesn't have one yet (so newly
 // installed apps — e.g. ANIMA — appear on an existing desktop, not only in Start).
@@ -448,7 +448,7 @@ function addMissingAppIcons() {
   const have = new Set(state.desktop.filter((it) => it.type === 'app').map((it) => it.target));
   let added = 0;
   for (const a of state.apps) if (!have.has(a.id)) {
-    state.desktop.push({ uid: 'app-' + a.id, type: 'app', target: a.id, label: a.name }); added++;
+    state.desktop.push({ uid: 'app-' + a.id, type: 'app', target: a.id }); added++;
   }
   return added;
 }
@@ -550,17 +550,17 @@ async function boot() {
   // is shown — including the pairing overlay. Re-render the imperatively-built surfaces (Start menu,
   // taskbar, tray) whenever the OS language changes live (from Settings, any window).
   await I18N.init('shell');
-  I18N.onChange(() => { try { renderStartMenu(); renderTaskbar(); setWsBadge(wsState); if (searchActive()) refreshSearchView(); } catch {} });
+  I18N.onChange(() => { try { state.apps = state.apps.map(withName); renderDesktop(); renderStartMenu(); renderTaskbar(); setWsBadge(wsState); if (searchActive()) refreshSearchView(); } catch {} });
   bootLog('boot start — checking pairing…');
   await ensurePaired();                          // block until this browser is paired with the device
   bootLog('pairing ok — loading /api/apps…');
   try {
     const d = await fetchJSON('/api/apps');
-    state.apps = d.apps.filter((a) => a.enabled).map((a) => ({ ...a, glyph: glyph(a) }));
+    state.apps = d.apps.filter((a) => a.enabled).map(withName);
     bootLog('apps loaded:', state.apps.length);
   } catch (e) {
     bootLog('apps FAILED after retries → using mock set', e && (e.message || e));
-    state.apps = MOCK.map((a) => ({ ...a, glyph: glyph(a) }));
+    state.apps = MOCK.map(withName);
   }
   try {
     const loadedAssoc = await fetchJSON('/api/associations');
@@ -632,7 +632,7 @@ async function refreshApps() {
   try {
     const d = await fetchJSON('/api/apps');
     if (!d || !Array.isArray(d.apps)) return;
-    state.apps = d.apps.filter((a) => a.enabled).map((a) => ({ ...a, glyph: glyph(a) }));
+    state.apps = d.apps.filter((a) => a.enabled).map(withName);
     // Surface any newly installed app in the Start grid (Windows-11 pins new apps automatically).
     let added = false;
     for (const a of state.apps) if (!state.startPins.includes(a.id)) { state.startPins.push(a.id); added = true; }
@@ -1138,8 +1138,18 @@ function itemGlyph(item) {
   const a = byId(state.assoc.default_open[ext]);
   return a ? a.glyph : '📄';
 }
+// An app's name in the UI language: apps.json "names" {en, it, ...}, else its "name".
+function appName(a) { const n = a.names || {}; return n[I18N.lang] || n.en || a.name; }
+function withName(a) { return { ...a, name: appName(a), glyph: glyph(a) }; }
+// A desktop shortcut keeps a label only when the user renamed it: a label that is one of the
+// app's own names was seeded, and follows the language.
+function seededLabel(item) {
+  if (item.type !== 'app' || !item.label) return false;
+  const a = byId(item.target);
+  return !!a && (item.label === a.name || Object.values(a.names || {}).includes(item.label));
+}
 function itemLabel(item) {
-  if (item.label) return item.label;
+  if (item.label && !seededLabel(item)) return item.label;
   if (item.type === 'app') { const a = byId(item.target); return a ? a.name : item.target; }
   // a .lnk shows its name WITHOUT the extension (Windows shows the shortcut's display name).
   if (item.type === 'file') return item.target.split('/').pop().replace(/\.lnk$/i, '');
