@@ -1,313 +1,313 @@
-# Piano: domotica, rete per le app, store per terzi
+# Plan: home automation, networking for apps, store for third parties
 
-Stato (2026-09-30): piano basato su 7c0485e (1.1.127). **F1 implementato** (non ancora verificato su HW):
-`components/nv_mqtt` (servizio + `nv_ha_proto` puro con unit test e fuzzer `tests/host` `ha`),
-Impostazioni > Casa, `nv_ui_screen_sleep/wake/is_asleep`, `LWIP_MAX_SOCKETS` 24. Discovery per-entità
-(non device-discovery: payload piccoli, buffer MQTT 1 KB interno). Eventi rete = polling come keydeck
-(niente `NV_EV_NET_STATE` per ora). TLS rimandato (F0.1).
-Decisioni §10: prese le 4 raccomandazioni.
+Status (2026-09-30): plan based on 7c0485e (1.1.127). **F1 implemented** (not yet verified on HW):
+`components/nv_mqtt` (service + pure `nv_ha_proto` with unit test and `tests/host` fuzzer `ha`),
+Settings > Home, `nv_ui_screen_sleep/wake/is_asleep`, `LWIP_MAX_SOCKETS` 24. Per-entity discovery
+(not device-discovery: small payloads, 1 KB internal MQTT buffer). Network events = polling like keydeck
+(no `NV_EV_NET_STATE` for now). TLS postponed (F0.1).
+Decisions §10: the 4 recommendations were taken.
 
-**F2 + F3 implementati** (firmware 1.1.132, da verificare su HW con `apps/net12`):
-- Store: `package.sig` per app (`nv_store_pkg` puro + test/fuzz `pkg`), chiave store separata,
-  download in `.tmp` + commit finale, dev switch `store_unsigned`; limiti asset 96→256 (chess ne ha 142).
-- Permessi: bit `lan ws mqtt ha camera mic` (`nv_wasm_perms.cpp`), `perms` nel catalogo, consenso a
-  doppio tocco nello Store, revoca in Sicurezza (`/sdcard/nucleos/perms.json`), run = manifest − revocati.
+**F2 + F3 implemented** (firmware 1.1.132, to be verified on HW with `apps/net12`):
+- Store: per-app `package.sig` (pure `nv_store_pkg` + test/fuzz `pkg`), separate store key,
+  download to `.tmp` + final commit, dev switch `store_unsigned`; asset limits 96→256 (chess has 142).
+- Permissions: bits `lan ws mqtt ha camera mic` (`nv_wasm_perms.cpp`), `perms` in the catalog, double-tap
+  consent in the Store, revocation in Security (`/sdcard/nucleos/perms.json`), run = manifest − revoked.
 - ABI v12 (`nv_wasm_net.cpp`): `http_req/state/status/read/close`, `ws_open/state/send/recv/close`
-  (su `esp_transport_ws`, niente dipendenze nuove), `mqtt_sub/pub/recv` via `nv_mqtt` (coda PSRAM,
-  il thread app non tocca mai il client), `ha_available/ha_req/ha_ws` (token solo lato host).
-  Policy pura `nv_net_policy.c` + `nv_mqtt_topic.c` (test/fuzz `netpol`).
-- Impostazioni > Casa: URL + token HA; `/api/home` GET/POST per incollarli da PC. `ha_token` e
-  `mqtt_pass` esclusi dal backup SD.
-- Non fatto: allowlist `hosts` nel manifest, TLS in PSRAM (F0.1), `mdns_browse` per le app.
+  (on `esp_transport_ws`, no new dependencies), `mqtt_sub/pub/recv` via `nv_mqtt` (PSRAM queue,
+  the app thread never touches the client), `ha_available/ha_req/ha_ws` (token host-side only).
+  Pure policy `nv_net_policy.c` + `nv_mqtt_topic.c` (test/fuzz `netpol`).
+- Settings > Home: HA URL + token; `/api/home` GET/POST to paste them from a PC. `ha_token` and
+  `mqtt_pass` excluded from the SD backup.
+- Not done: `hosts` allowlist in the manifest, TLS in PSRAM (F0.1), `mdns_browse` for apps.
 
-**ANIMA + shell (2026-10)**: comandi `ha` (Assist, liste filtrate con /api/template, servizi) e `dev`
-(Shelly Gen2/Gen1, Tasmota, WLED, scoperta mDNS) in `nv_apps/term_sh.cpp`; skill `casa.md`; le
-automazioni di ANIMA possono chiamarli; eventi `ha_state` nelle automazioni (polling 5 s con
-/api/template, solo delle entità osservate). **App Casa** (F4, `apps/casa`, ABI v12 + `ha`): tessere per
-stanza da un solo /api/template, toggle, luminosità, termostato, scene; catalogo `smarthome/ha`.
-Da verificare su HW.
+**ANIMA + shell (2026-10)**: commands `ha` (Assist, lists filtered with /api/template, services) and `dev`
+(Shelly Gen2/Gen1, Tasmota, WLED, mDNS discovery) in `nv_apps/term_sh.cpp`; skill `casa.md`; ANIMA's
+automations can call them; `ha_state` events in the automations (5 s polling with
+/api/template, only of the watched entities). **Home app** (F4, `apps/casa`, ABI v12 + `ha`): per-room
+tiles from a single /api/template, toggle, brightness, thermostat, scenes; catalog `smarthome/ha`.
+To be verified on HW.
 
-Obiettivo: rendere NucleoOS "il pannello per Home Assistant" e aprire lo store ad app di terzi
-senza rompere le regole di memoria/sicurezza di `ENGINEERING_RULES.md`.
+Goal: make NucleoOS "the panel for Home Assistant" and open the store to third-party apps
+without breaking the memory/security rules of `ENGINEERING_RULES.md`.
 
 ---
 
-## 0. Situazione attuale (fatti, con riferimenti)
+## 0. Current situation (facts, with references)
 
-| Area | Oggi | Limite |
+| Area | Today | Limit |
 |---|---|---|
-| HTTP per app | `nv.http_get` (`nv_wasm.cpp:1070-1110`): solo GET, niente header, HTTPS con cert bundle, sincrono fino a 10 s sul worker | niente POST/PUT/header → non si parla con HA, Shelly, Tasmota. L'abort non lo interrompe (`nv_wasm.h:295`) |
-| Rete per app | UDP `net_*`, 1 socket globale (`s_exec.net_fd`), chiuso in collect | niente TCP, WebSocket, MQTT |
-| Permessi | bit `LOG/UI/NET/FS/GFX/HOME` (`nv_wasm.h:140`), letti dal manifest; `NET` copre tutto; `FS` non protegge niente (BACKLOG 108) | nessun consenso utente, nessuna restrizione di destinazione |
-| ABI | `NV_WASM_ABI 10`; SDK `NUCLEO_SDK_ABI 9` + commento "v7" **stantii** (`sdk/include/nucleo_sdk.h:21`) | — |
-| Background | nessuno: un modulo non sopravvive alla sua UI (`apps_app.cpp:80`) | niente widget/servizi app |
-| Store | nessun sha256 né firma sui file (BACKLOG 32-34), solo magic+size | inaccettabile per app di terzi |
-| Firma | `manifest_verify` ECDSA P-256 in `nv_ota.cpp:84-115` (namespace anonimo) | riusabile se estratto |
-| MQTT/WS client | assenti (`esp-mqtt` c'è in IDF, non linkato) | — |
-| TLS | mbedTLS in SRAM interna, IN 16 KB + OUT 4 KB, ~40 KB per handshake (BACKLOG 43-46); SRAM libera ~200-240 KB | ogni connessione TLS persistente costa caro |
-| Socket | `LWIP_MAX_SOCKETS 20`, httpd ne usa 8 | budget da rifare |
-| Servizi | `nv_service_mgr` esiste ma nessuno lo usa; pattern reale = keydeck (task + toggle `nv_config` + `NV_EV_SETTINGS_CHANGED`) | — |
-| Eventi rete | nessun evento bus per Wi-Fi/Eth; si fa polling `nv_wifi_get_state()` | — |
-| Stato esponibile | backlight, volume/mute, DND, lock, TTS, notifiche (ring 8, solo thread LVGL), sysmon (temp/heap/uptime/cpu), Wi-Fi link, screenshot, camera JPEG | `screen_sleep_now/screen_wake` interni a `nv_ui.cpp:4040`, non pubblici |
+| HTTP for apps | `nv.http_get` (`nv_wasm.cpp:1070-1110`): GET only, no headers, HTTPS with cert bundle, synchronous up to 10 s on the worker | no POST/PUT/headers → cannot talk to HA, Shelly, Tasmota. Abort does not interrupt it (`nv_wasm.h:295`) |
+| Network for apps | UDP `net_*`, 1 global socket (`s_exec.net_fd`), closed in collect | no TCP, WebSocket, MQTT |
+| Permissions | bits `LOG/UI/NET/FS/GFX/HOME` (`nv_wasm.h:140`), read from the manifest; `NET` covers everything; `FS` protects nothing (BACKLOG 108) | no user consent, no destination restriction |
+| ABI | `NV_WASM_ABI 10`; SDK `NUCLEO_SDK_ABI 9` + comment "v7" **stale** (`sdk/include/nucleo_sdk.h:21`) | — |
+| Background | none: a module does not outlive its UI (`apps_app.cpp:80`) | no app widgets/services |
+| Store | no sha256 or signature on files (BACKLOG 32-34), only magic+size | unacceptable for third-party apps |
+| Signature | `manifest_verify` ECDSA P-256 in `nv_ota.cpp:84-115` (anonymous namespace) | reusable if extracted |
+| MQTT/WS client | absent (`esp-mqtt` is in IDF, not linked) | — |
+| TLS | mbedTLS in internal SRAM, IN 16 KB + OUT 4 KB, ~40 KB per handshake (BACKLOG 43-46); free SRAM ~200-240 KB | every persistent TLS connection is expensive |
+| Sockets | `LWIP_MAX_SOCKETS 20`, httpd uses 8 | budget to be redone |
+| Services | `nv_service_mgr` exists but nobody uses it; real pattern = keydeck (task + `nv_config` toggle + `NV_EV_SETTINGS_CHANGED`) | — |
+| Network events | no bus event for Wi-Fi/Eth; `nv_wifi_get_state()` is polled | — |
+| Exposable state | backlight, volume/mute, DND, lock, TTS, notifications (ring 8, LVGL thread only), sysmon (temp/heap/uptime/cpu), Wi-Fi link, screenshot, camera JPEG | `screen_sleep_now/screen_wake` are internal to `nv_ui.cpp:4040`, not public |
 
-**Conflitto numerazione:** il lavoro gamepad (`nv_pad`, BLE HOGP) ha prenotato **ABI v11**.
-Le import di rete di questo piano sono quindi **ABI v12**, salvo accordo diverso.
+**Numbering conflict:** the gamepad work (`nv_pad`, BLE HOGP) has reserved **ABI v11**.
+The network imports of this plan are therefore **ABI v12**, unless agreed otherwise.
 
 ---
 
-## 1. Architettura in due livelli
+## 1. Two-level architecture
 
 ```
                     ┌──────────────────────────────┐
-  Home Assistant ◄──┤ nv_mqtt  (servizio firmware) │◄── Impostazioni > Casa / web companion
-  (broker MQTT)     │  - HA discovery (device)     │
-                    │  - comandi → OS              │
-                    │  - bridge per le app (v12)   │
+  Home Assistant ◄──┤ nv_mqtt  (firmware service)  │◄── Settings > Home / web companion
+  (MQTT broker)     │  - HA discovery (device)     │
+                    │  - commands → OS             │
+                    │  - bridge for apps (v12)     │
                     └──────────────┬───────────────┘
-                                   │ coda PSRAM
-  App WASM (store) ── nv.mqtt_* ───┘
-                  ── nv.http_*  ──► nv_netreq (worker host, abortibile)
+                                   │ PSRAM queue
+  WASM app (store) ── nv.mqtt_* ───┘
+                  ── nv.http_*  ──► nv_netreq (host worker, abortable)
                   ── nv.ws_*    ──► esp_websocket_client
-                  ── nv.ha_*    ──► proxy HA con token di sistema (l'app non vede il token)
+                  ── nv.ha_*    ──► HA proxy with system token (the app does not see the token)
 ```
 
-Motivo: la domotica "utile" deve funzionare **sempre**, anche con un gioco aperto o schermo spento.
-Le app WASM non possono girare in background (solo mode), quindi l'integrazione HA di base è
-firmware; le app aggiungono dashboard e UI ricche solo mentre sono aperte.
+Reason: "useful" home automation must work **always**, even with a game open or the screen off.
+WASM apps cannot run in the background (solo mode), so the basic HA integration is
+firmware; apps add dashboards and rich UI only while they are open.
 
 ---
 
-## 2. Fase F0 — prerequisiti (piccoli, da fare prima)
+## 2. Phase F0 — prerequisites (small, to do first)
 
-1. **mbedTLS fuori dalla SRAM interna.** Provare `CONFIG_MBEDTLS_EXTERNAL_MEM_ALLOC=y`
-   (oppure `MBEDTLS_CUSTOM_MEM_ALLOC` con soglia: blocchi ≥ 4 KB in PSRAM, piccoli interni)
+1. **mbedTLS out of internal SRAM.** Try `CONFIG_MBEDTLS_EXTERNAL_MEM_ALLOC=y`
+   (or `MBEDTLS_CUSTOM_MEM_ALLOC` with a threshold: blocks ≥ 4 KB in PSRAM, small ones internal)
    + `CONFIG_MBEDTLS_DYNAMIC_BUFFER=y`.
-   Verifica HW: SRAM interna libera prima/dopo (`/api/heap`), Anima online, OTA, store, tempo
-   handshake. Se regge, sblocca TLS persistenti (MQTT su 8883, HA via https, ws). Va in
-   `sdkconfig.defaults` (§8). Senza questo: MQTT/WS **solo in chiaro su LAN** e massimo 1 sessione
-   TLS alla volta tramite `nucleo_arb`.
-2. **Evento `NV_EV_NET_STATE`** sul bus (up/down, Wi-Fi o Eth). Attenzione: `wifi_evt` ha stack
-   2304 e il publish è sincrono → l'handler IDF fa solo `xTaskNotify`/flag verso un piccolo task
-   che pubblica sul bus. Utile anche a nv_web (oggi aspetta solo il Wi-Fi, non l'Eth).
-3. **API pubblica schermo:** `nv_ui_screen_sleep_async()`, `nv_ui_screen_wake_async()`,
-   `nv_ui_screen_is_on()` in `nv_ui.h` (wrapper di `screen_sleep_now/screen_wake` via `lv_async_call`).
-4. **`nv_sig`**: estrarre `manifest_verify` da `nv_ota.cpp` in un modulo puro
-   (`nv_sig_verify(prefix, fields…, sig_b64)`), host-testato. Lo usano OTA e store.
-5. **Budget socket:** `LWIP_MAX_SOCKETS` 20 → 24 (httpd 8, mDNS/keydeck/cast ~4, mqtt 1,
-   app max 4, OTA/store/anima 2-3, margine). In `sdkconfig.defaults.esp32p4`.
-6. Correggere `NUCLEO_SDK_ABI` e commento nell'header SDK.
+   HW verification: free internal SRAM before/after (`/api/heap`), Anima online, OTA, store, handshake
+   time. If it holds, it unlocks persistent TLS (MQTT on 8883, HA via https, ws). Goes into
+   `sdkconfig.defaults` (§8). Without this: MQTT/WS **plaintext on LAN only** and at most 1 TLS
+   session at a time via `nucleo_arb`.
+2. **`NV_EV_NET_STATE` event** on the bus (up/down, Wi-Fi or Eth). Caution: `wifi_evt` has a 2304
+   stack and the publish is synchronous → the IDF handler only does `xTaskNotify`/flag toward a small task
+   that publishes on the bus. Useful also to nv_web (today it only waits for Wi-Fi, not Eth).
+3. **Public screen API:** `nv_ui_screen_sleep_async()`, `nv_ui_screen_wake_async()`,
+   `nv_ui_screen_is_on()` in `nv_ui.h` (wrappers of `screen_sleep_now/screen_wake` via `lv_async_call`).
+4. **`nv_sig`**: extract `manifest_verify` from `nv_ota.cpp` into a pure module
+   (`nv_sig_verify(prefix, fields…, sig_b64)`), host-tested. Used by OTA and store.
+5. **Socket budget:** `LWIP_MAX_SOCKETS` 20 → 24 (httpd 8, mDNS/keydeck/cast ~4, mqtt 1,
+   apps max 4, OTA/store/anima 2-3, margin). In `sdkconfig.defaults.esp32p4`.
+6. Fix `NUCLEO_SDK_ABI` and the comment in the SDK header.
 
 ---
 
-## 3. Fase F1 — `nv_mqtt` + Home Assistant MQTT Discovery (firmware)
+## 3. Phase F1 — `nv_mqtt` + Home Assistant MQTT Discovery (firmware)
 
-È la funzione più visibile: l'utente inserisce l'host del broker e il pannello compare in HA con
-tutte le entità, senza YAML.
+This is the most visible feature: the user enters the broker host and the panel appears in HA with
+all the entities, without YAML.
 
-### 3.1 Componente
-- `components/nv_mqtt` su `esp-mqtt` di IDF (`REQUIRES mqtt`), pattern keydeck:
-  `nv_mqtt_init()` legge `mqtt_en`, si abbona a `NV_EV_SETTINGS_CHANGED` e `NV_EV_NET_STATE`,
-  avvia/ferma il client. La riconnessione la fa esp-mqtt.
-- Task esp-mqtt: stack 6 KB **interno** (tocca `nv_config` e ha vita non infinita → regola §2).
-  Buffer RX/TX 2 KB; messaggi oltre 4 KB scartati.
-- Chiavi NVS (≤15 caratteri): `mqtt_en`, `mqtt_host`, `mqtt_port`, `mqtt_user`, `mqtt_pass`,
+### 3.1 Component
+- `components/nv_mqtt` on IDF's `esp-mqtt` (`REQUIRES mqtt`), keydeck pattern:
+  `nv_mqtt_init()` reads `mqtt_en`, subscribes to `NV_EV_SETTINGS_CHANGED` and `NV_EV_NET_STATE`,
+  starts/stops the client. Reconnection is done by esp-mqtt.
+- esp-mqtt task: 6 KB **internal** stack (touches `nv_config` and is not infinite-lived → rule §2).
+  RX/TX buffers 2 KB; messages over 4 KB discarded.
+- NVS keys (≤15 characters): `mqtt_en`, `mqtt_host`, `mqtt_port`, `mqtt_user`, `mqtt_pass`,
   `mqtt_tls`, `mqtt_pfx` (default `homeassistant`), `mqtt_node` (default `nucleo_<mac6>`).
-- Password: mai in `NV_LOG*` (§6: il log è servito da `/api/logs`), mai in `/api/mqtt` in risposta.
-  Resta in NVS in chiaro come la password Wi-Fi (stesso livello di esposizione). Nel backup SD
-  (`nv_backup`) **escluderla** o accettarlo esplicitamente.
-- Broker auto: browse mDNS `_mqtt._tcp` e, se trovato un host HA (`_home-assistant._tcp`),
-  proporre lo stesso IP porta 1883.
+- Password: never in `NV_LOG*` (§6: the log is served by `/api/logs`), never in `/api/mqtt` in the response.
+  Stays in NVS in plaintext like the Wi-Fi password (same exposure level). In the SD backup
+  (`nv_backup`) **exclude it** or explicitly accept it.
+- Auto broker: mDNS browse `_mqtt._tcp` and, if an HA host is found (`_home-assistant._tcp`),
+  propose the same IP port 1883.
 
-### 3.2 Topic
-- Stato/comandi: `nucleo/<node>/<entità>/state|set`, disponibilità `nucleo/<node>/status`
-  (LWT `offline`, retained; `online` alla connessione).
-- Discovery: **device discovery** (una sola config retained)
-  `homeassistant/device/<node>/config` con `dev`, `o` (origine NucleoOS + versione) e `cmps`.
-  Richiede HA ≥ 2024.11; fallback per-entità (`homeassistant/<comp>/<node>/<obj>/config`) dietro
-  un flag, se serve compatibilità vecchia.
-- Abbonarsi a `homeassistant/status`: su `online` ripubblicare discovery + stati.
+### 3.2 Topics
+- State/commands: `nucleo/<node>/<entity>/state|set`, availability `nucleo/<node>/status`
+  (LWT `offline`, retained; `online` on connection).
+- Discovery: **device discovery** (a single retained config)
+  `homeassistant/device/<node>/config` with `dev`, `o` (origin NucleoOS + version) and `cmps`.
+  Requires HA ≥ 2024.11; per-entity fallback (`homeassistant/<comp>/<node>/<obj>/config`) behind
+  a flag, if old compatibility is needed.
+- Subscribe to `homeassistant/status`: on `online` republish discovery + states.
 
-### 3.3 Entità (v1)
-| Entità HA | Tipo | Lato OS |
+### 3.3 Entities (v1)
+| HA entity | Type | OS side |
 |---|---|---|
-| Schermo | `light` (on/off + brightness 0-100) | on/off = sleep/wake (F0.3), brightness = `nv_hal_backlight_set` + `nv_config "brightness"` |
+| Screen | `light` (on/off + brightness 0-100) | on/off = sleep/wake (F0.3), brightness = `nv_hal_backlight_set` + `nv_config "brightness"` |
 | Volume | `number` 0-100 | `nv_audio_set_volume` + persist |
-| Muto | `switch` | `nv_audio_set_mute` |
-| Non disturbare | `switch` | config `qs_dnd` |
-| Blocco | `switch` (solo ON remoto; lo sblocco resta a schermo) | `nv_ui_lock` |
-| Notifica | `notify` | `nv_notify_post` via `lv_async_call` |
-| Parla | `notify` (seconda) o `text` | `nv_tts_say` |
-| App aperta | `select` (opzioni = app installate) + `sensor` app corrente | `nv_ui_open_app_id_async`, `nv_ui_current_app_id` |
+| Mute | `switch` | `nv_audio_set_mute` |
+| Do not disturb | `switch` | config `qs_dnd` |
+| Lock | `switch` (remote ON only; unlocking stays on screen) | `nv_ui_lock` |
+| Notification | `notify` | `nv_notify_post` via `lv_async_call` |
+| Speak | `notify` (second one) or `text` | `nv_tts_say` |
+| Open app | `select` (options = installed apps) + current app `sensor` | `nv_ui_open_app_id_async`, `nv_ui_current_app_id` |
 | Home | `button` | `nv_ui_go_home_async` |
-| Riavvia | `button` (categoria config) | riavvio |
-| Aggiornamento | `update` (installed/latest da manifest OTA) | `nv_ota` — installazione da HA solo se l'utente lo abilita |
-| Temperatura chip, RSSI, uptime, RAM interna/PSRAM libera, IP | `sensor` diagnostici | `nv_sysmon_perf/mem`, `nv_wifi_get_link` |
-| Tocco recente | `binary_sensor` (presenza) — tocco negli ultimi N s | timestamp ultimo touch in nv_hal |
-| Istantanea | `camera` (immagine su topic) — **v2**, a richiesta | `nv_camera_save_jpeg` / `nv_hal_screenshot` |
+| Restart | `button` (config category) | reboot |
+| Update | `update` (installed/latest from the OTA manifest) | `nv_ota` — installation from HA only if the user enables it |
+| Chip temperature, RSSI, uptime, free internal RAM/PSRAM, IP | diagnostic `sensor` | `nv_sysmon_perf/mem`, `nv_wifi_get_link` |
+| Recent touch | `binary_sensor` (presence) — touch in the last N s | last touch timestamp in nv_hal |
+| Snapshot | `camera` (image on topic) — **v2**, on request | `nv_camera_save_jpeg` / `nv_hal_screenshot` |
 
-Pubblicazione stato: evento `NV_EV_SETTINGS_CHANGED` sulle chiavi rilevanti → bit "dirty"
-(il callback è sincrono sul task di chi scrive: niente I/O lì) → il task mqtt pubblica.
-Sensori diagnostici ogni 60 s.
+State publishing: `NV_EV_SETTINGS_CHANGED` event on the relevant keys → "dirty" bit
+(the callback is synchronous on the writer's task: no I/O there) → the mqtt task publishes.
+Diagnostic sensors every 60 s.
 
-### 3.4 Sicurezza comandi
-- Superficie comandi fissa e piccola: niente fs, niente install, niente `/api/ui/*` via MQTT.
-- Parser payload in un modulo puro (`nv_mqtt_cmd.c`) + test e fuzzer in `tests/host` (§6).
-- Rate limit su notify/TTS (es. 1/s, burst 5); testi troncati a 96/200 caratteri.
-- Nuove route web: `GET/POST /api/mqtt` (config, stato connessione) — autenticate di default;
-  alzare `max_uri_handlers` (oggi 72, ~62 usati).
+### 3.4 Command security
+- Fixed and small command surface: no fs, no install, no `/api/ui/*` via MQTT.
+- Payload parser in a pure module (`nv_mqtt_cmd.c`) + tests and fuzzer in `tests/host` (§6).
+- Rate limit on notify/TTS (e.g. 1/s, burst 5); texts truncated to 96/200 characters.
+- New web routes: `GET/POST /api/mqtt` (config, connection state) — authenticated by default;
+  raise `max_uri_handlers` (today 72, ~62 used).
 
 ### 3.5 UI
-- Nuova categoria Impostazioni **"Casa"** (`kCats[]` + `cat_home()` in `settings_app.cpp`):
-  toggle, host/porta, utente/password, stato ("Connesso a 192.168.x.x · 23 entità"),
-  pulsante "Ripubblica in HA". Stringhe `NV_STR_*` IT/EN.
-- Pagina equivalente nella PWA (`/sdcard/web`): digitare host e password da PC è più comodo.
+- New Settings category **"Home"** (`kCats[]` + `cat_home()` in `settings_app.cpp`):
+  toggle, host/port, user/password, status ("Connected to 192.168.x.x · 23 entities"),
+  "Publish again to Home Assistant" button. `NV_STR_*` strings IT/EN.
+- Equivalent page in the PWA (`/sdcard/web`): typing host and password from a PC is more convenient.
 
-Rilascio: OTA 1.1.12x. Verifica: HA reale + `mosquitto_sub -v -t 'nucleo/#'`.
-
----
-
-## 4. Fase F2 — store pronto per terzi (integrità + permessi)
-
-Da fare **prima** di accettare app non nostre.
-
-### 4.1 Integrità
-- `store.json` porta per ogni app `files: [{path, size, sha256}]`.
-- Firma catalogo: `store.sig` = ECDSA P-256 su `"nucleoos-store-v1\n<sha256(store.json)>\n"`,
-  stessa chiave OTA (privata solo sul PC di rilascio) o, meglio, **seconda chiave dedicata** allo
-  store (una compromissione dello store non deve permettere firmware).
-- `install_package`: sha256 in streaming mentre scrive su SD; mismatch → cancella la cartella
-  temporanea e rifiuta. Scrittura in `/sdcard/apps/.tmp-<id>` + rename finale (oggi il manifest
-  è scritto per ultimo ma i file vecchi vengono sovrascritti sul posto).
-- Firma generata da `tools/dist.py store` (già scrive sha256 a `:256`).
-- Sideload dev (`push_app.ps1`, `/api/fs/write`) resta possibile: app marcate "sviluppatore"
-  nella UI.
-
-### 4.2 Permessi con consenso
-- Nuovi permessi nel manifest: `net` (resta, HTTP/UDP verso Internet), `lan` (indirizzi privati),
-  `ws`, `mqtt`, `ha`, `camera`, `mic`. Più `hosts: ["api.open-meteo.com", …]`: se presente,
-  `http_*`/`ws_*` rifiutano altri host (controllo sull'host risolto dall'URL, non sulla stringa).
-- Scheda store: elenco permessi in chiaro **prima** di Installa; aggiornamento che aggiunge
-  permessi → richiede nuovo consenso.
-- Concessioni in `/sdcard/apps/<id>/.grants` (aggiungere a lista nera di `nv_save`, `nv_wasm.cpp:877`)
-  oppure in NVS per app; `RunReq.perms = manifest ∩ grants`.
-- Impostazioni > Sicurezza > **Permessi app**: lista app, revoca per permesso.
-- Applicare davvero `NV_WPERM_FS` (BACKLOG 108).
-
-### 4.3 Pubblicazione da terzi
-- Modello proposto: repo pubblico `nucleoos-apps` con cartella per app (sorgente + manifest +
-  GUIDE.md + licenza); PR → CI compila con l'SDK (build riproducibile, niente binari forniti
-  dall'autore) → noi firmiamo e pubblichiamo. Licenza dichiarata obbligatoria nel manifest.
-- SDK + documentazione ABI pubblici su Pages (oggi `docs/WASM_APPS.md` è interno).
+Release: OTA 1.1.12x. Verification: real HA + `mosquitto_sub -v -t 'nucleo/#'`.
 
 ---
 
-## 5. Fase F3 — ABI v12: rete per le app
+## 4. Phase F2 — store ready for third parties (integrity + permissions)
 
-Principi: niente chiamate che bloccano il guest per secondi (l'abort oggi non le interrompe);
-tutto a **handle** con polling non bloccante, lavoro fatto da un worker host; tutte le risorse
-registrate per-run e chiuse in `nv_wasm_exec_collect` (aggiungere un piccolo registro cleanup
-invece di un'altra chiusura a mano).
+To be done **before** accepting apps that are not ours.
 
-### 5.1 HTTP completo
+### 4.1 Integrity
+- `store.json` carries for each app `files: [{path, size, sha256}]`.
+- Catalog signature: `store.sig` = ECDSA P-256 over `"nucleoos-store-v1\n<sha256(store.json)>\n"`,
+  same OTA key (private only on the release PC) or, better, a **second key dedicated** to the
+  store (a store compromise must not allow firmware).
+- `install_package`: streaming sha256 while writing to SD; mismatch → delete the temporary
+  folder and refuse. Write to `/sdcard/apps/.tmp-<id>` + final rename (today the manifest
+  is written last but old files are overwritten in place).
+- Signature generated by `tools/dist.py store` (already writes sha256 at `:256`).
+- Dev sideload (`push_app.ps1`, `/api/fs/write`) remains possible: apps marked "developer"
+  in the UI.
+
+### 4.2 Permissions with consent
+- New permissions in the manifest: `net` (stays, HTTP/UDP to the Internet), `lan` (private addresses),
+  `ws`, `mqtt`, `ha`, `camera`, `mic`. Plus `hosts: ["api.open-meteo.com", …]`: if present,
+  `http_*`/`ws_*` refuse other hosts (check on the host resolved from the URL, not on the string).
+- Store card: list of permissions in plain language **before** Install; an update that adds
+  permissions → requires new consent.
+- Grants in `/sdcard/apps/<id>/.grants` (add to the `nv_save` blacklist, `nv_wasm.cpp:877`)
+  or in NVS per app; `RunReq.perms = manifest ∩ grants`.
+- Settings > Security > **App permissions**: app list, revocation per permission.
+- Actually enforce `NV_WPERM_FS` (BACKLOG 108).
+
+### 4.3 Publication by third parties
+- Proposed model: public repo `nucleoos-apps` with a folder per app (source + manifest +
+  GUIDE.md + license); PR → CI builds with the SDK (reproducible build, no binaries supplied
+  by the author) → we sign and publish. License declaration mandatory in the manifest.
+- Public SDK + ABI documentation on Pages (today `docs/WASM_APPS.md` is internal).
+
+---
+
+## 5. Phase F3 — ABI v12: networking for apps
+
+Principles: no calls that block the guest for seconds (abort does not interrupt them today);
+everything via **handles** with non-blocking polling, work done by a host worker; all resources
+registered per-run and closed in `nv_wasm_exec_collect` (add a small cleanup registry
+instead of another manual closure).
+
+### 5.1 Full HTTP
 ```c
 int  nv_http_req(const char *spec_json, const void *body, int body_len); // → handle ≥0 | <0 err
-int  nv_http_state(int h);            // 0 in corso, 1 fatto, <0 errore; status HTTP in nv_http_status
+int  nv_http_state(int h);            // 0 in progress, 1 done, <0 error; HTTP status in nv_http_status
 int  nv_http_status(int h);
-int  nv_http_read(int h, void *buf, int cap);  // copia progressiva dalla risposta bufferizzata
+int  nv_http_read(int h, void *buf, int cap);  // progressive copy from the buffered response
 void nv_http_close(int h);
 ```
 - `spec_json`: `{"method":"POST","url":"…","headers":{"Content-Type":"application/json"},"timeout":8000}`
-  parsato da modulo puro con limiti (≤ 16 header, ≤ 2 KB), fuzzato.
-- Worker `nv_netreq` (1 task, stack interno 6 KB — TLS; coda 4): max **2 handle per app**,
-  risposta in PSRAM fino a `min(256 KB, ram_budget/4)`.
-- Abort: `esp_http_client` ha timeout; al collect si marca l'handle "orfano" e il worker lo libera
-  alla fine. L'app esce subito.
-- `http_get` resta (compatibilità) ma implementato sopra lo stesso worker.
+  parsed by a pure module with limits (≤ 16 headers, ≤ 2 KB), fuzzed.
+- `nv_netreq` worker (1 task, internal stack 6 KB — TLS; queue 4): max **2 handles per app**,
+  response in PSRAM up to `min(256 KB, ram_budget/4)`.
+- Abort: `esp_http_client` has a timeout; at collect the handle is marked "orphan" and the worker frees it
+  at the end. The app exits immediately.
+- `http_get` stays (compatibility) but implemented on top of the same worker.
 
 ### 5.2 WebSocket client
-- `espressif/esp_websocket_client` pinnato `==` (regola build: componenti pinnati).
+- `espressif/esp_websocket_client` pinned `==` (build rule: pinned components).
 - `nv_ws_open(url$, headers_json$) → h`, `nv_ws_send(h, *~, text)`, `nv_ws_recv(h, *~) → n|0`,
-  `nv_ws_state(h)`, `nv_ws_close(h)`. Max 1 per app, coda RX in PSRAM (ring 64 KB, messaggio max
-  = coda; frammenti riassemblati dal client).
+  `nv_ws_state(h)`, `nv_ws_close(h)`. Max 1 per app, RX queue in PSRAM (64 KB ring, max message
+  = queue; fragments reassembled by the client).
 
-### 5.3 MQTT per le app (tramite la connessione di sistema)
+### 5.3 MQTT for apps (through the system connection)
 - `nv_mqtt_sub(filter$)` (max 8), `nv_mqtt_pub(topic$, *~, retain)`, `nv_mqtt_recv(topic_buf*~, payload*~) → n`.
-- Nessun socket in più: passa da `nv_mqtt`. Vietato pubblicare su `homeassistant/#`,
-  `nucleo/<node>/#`, `$SYS/#`. Iscrizioni rimosse al collect.
+- No extra socket: goes through `nv_mqtt`. Publishing on `homeassistant/#`,
+  `nucleo/<node>/#`, `$SYS/#` is forbidden. Subscriptions removed at collect.
 
-### 5.4 Proxy Home Assistant (`ha`)
-- Config sistema (Impostazioni > Casa): URL HA + **token long-lived**, salvati una volta.
-- `nv_ha_call(method$, path$, body*~, resp*~)` handle-based come http, `path` solo sotto `/api/`;
-  `nv_ha_ws_open()` apre il WebSocket HA con auth già fatta dall'host.
-- L'app **non vede mai il token**: un'app dello store può fare una dashboard HA senza chiedere
-  segreti all'utente. È il motivo per preferire il proxy a "chiedi il token nell'app".
-- Avviso: `get_states` su installazioni grandi supera il MB → la dashboard usa
-  `subscribe_entities` filtrato o `/api/states/<id>`.
+### 5.4 Home Assistant proxy (`ha`)
+- System config (Settings > Home): HA URL + **long-lived token**, saved once.
+- `nv_ha_call(method$, path$, body*~, resp*~)` handle-based like http, `path` only under `/api/`;
+  `nv_ha_ws_open()` opens the HA WebSocket with auth already done by the host.
+- The app **never sees the token**: a store app can make an HA dashboard without asking the user
+  for secrets. This is the reason to prefer the proxy over "ask for the token in the app".
+- Warning: `get_states` on large installations exceeds 1 MB → the dashboard uses
+  filtered `subscribe_entities` or `/api/states/<id>`.
 
-### 5.5 Non in v12 (volutamente)
-TCP grezzo (superficie grande, pochi casi d'uso che HTTP/WS/MQTT non coprano), server in ascolto
-per app, background. Rivalutare dopo.
+### 5.5 Not in v12 (deliberately)
+Raw TCP (large surface, few use cases that HTTP/WS/MQTT do not cover), per-app listening
+server, background. Reevaluate later.
 
-SDK: `nucleo_sdk.h` + wrapper comodi (`nv_http_post_json`, JSON minimale già in `cjson` port).
-Test: app `nettest` estesa a tutte le import; fuzz sui parser spec/topic.
+SDK: `nucleo_sdk.h` + convenient wrappers (`nv_http_post_json`, minimal JSON already in the `cjson` port).
+Tests: `nettest` app extended to all imports; fuzz on spec/topic parsers.
 
 ---
 
-## 6. Fase F4 — app per lo store
+## 6. Phase F4 — apps for the store
 
-| App | Base | Note |
+| App | Base | Notes |
 |---|---|---|
-| **Casa** (dashboard HA) | `ha` proxy + ws | stanze/aree, luci (dimmer), clima, cover, scene, sensori; layout a tessere 1024×600. App di punta |
-| **Dispositivi locali** | `http_*` + `lan` | Shelly (Gen2 RPC), Tasmota (`/cm?cmnd=`), ESPHome (web server REST), WLED (`/json`). Scansione mDNS lato host? → serve import `mdns_browse` (piccola, da valutare in v12) |
-| **Telecamere** | `http_*` | snapshot JPEG periodici (Frigate `/api/<cam>/latest.jpg`, HA `camera_proxy`); verificare che `gfx_image` decodifichi JPEG da memoria con JPEG HW; MJPEG continuo = v2 |
-| **Radio web** | host | lo stream audio va fatto dal player nativo (MP3/AAC ci sono) → `/api/media/play` con URL http + import `open_url` nel player. Più firmware che WASM |
-| **Emulatore Game Boy** | Peanut-GB (MIT) | gfx+audio+pad già esistenti; ROM homebrew libere di esempio |
-| **NES** | agnes (MIT) | idem |
-| **Calendario** | `http_*` | ICS da URL (Google/Nextcloud "indirizzo segreto"), vista giorno/settimana |
-| **Utilità** | — | calcolatrice, sveglia, TOTP, convertitore, note: da fare comunque, "OS completo" |
+| **Home** (HA dashboard) | `ha` proxy + ws | rooms/areas, lights (dimmer), climate, covers, scenes, sensors; 1024×600 tile layout. Flagship app |
+| **Local devices** | `http_*` + `lan` | Shelly (Gen2 RPC), Tasmota (`/cm?cmnd=`), ESPHome (REST web server), WLED (`/json`). mDNS scan host-side? → needs a `mdns_browse` import (small, to be evaluated in v12) |
+| **Cameras** | `http_*` | periodic JPEG snapshots (Frigate `/api/<cam>/latest.jpg`, HA `camera_proxy`); verify that `gfx_image` decodes JPEG from memory with HW JPEG; continuous MJPEG = v2 |
+| **Web radio** | host | the audio stream must be handled by the native player (MP3/AAC exist) → `/api/media/play` with http URL + `open_url` import in the player. More firmware than WASM |
+| **Game Boy emulator** | Peanut-GB (MIT) | gfx+audio+pad already existing; free homebrew example ROMs |
+| **NES** | agnes (MIT) | same |
+| **Calendar** | `http_*` | ICS from URL (Google/Nextcloud "secret address"), day/week view |
+| **Utilities** | — | calculator, alarm, TOTP, converter, notes: to be done anyway, "complete OS" |
 
 ---
 
-## 7. Fase F5 — da prodotto
+## 7. Phase F5 — product polish
 
-- **Widget dichiarativi sulla home** (nessun WASM in background): il manifest dichiara
-  `{"widget": {"type":"entity","source":"ha|mqtt","id":"sensor.soggiorno_temp"}}`, reso nativo da
-  LVGL e aggiornato da `nv_mqtt`/proxy HA.
-- **Modalità pannello a muro**: salvaschermo orologio/meteo, luminosità notturna programmata,
-  risveglio da tocco o MQTT (`light` on), avvio fisso di un'app.
-- Notifiche: ring da 8 → 32 + persistenza su SD; azioni sulle notifiche (es. "Apri telecamera").
-- Setup iniziale guidato (lingua → Wi-Fi → Casa/MQTT → fatto).
-- Compatibilità openHASP (pagine JSON via MQTT) solo se c'è domanda: protocollo reimplementato,
-  non codice GPL.
+- **Declarative widgets on the home** (no WASM in the background): the manifest declares
+  `{"widget": {"type":"entity","source":"ha|mqtt","id":"sensor.soggiorno_temp"}}`, rendered natively by
+  LVGL and updated by `nv_mqtt`/HA proxy.
+- **Wall panel mode**: clock/weather screensaver, scheduled night brightness,
+  wake on touch or MQTT (`light` on), fixed launch of an app.
+- Notifications: ring from 8 → 32 + persistence on SD; actions on notifications (e.g. "Open camera").
+- Guided initial setup (language → Wi-Fi → Home/MQTT → done).
+- openHASP compatibility (JSON pages via MQTT) only if there is demand: protocol reimplemented,
+  not GPL code.
 
 ---
 
-## 8. Ordine, stime, verifica
+## 8. Order, estimates, verification
 
-| Fase | Contenuto | Stima | Rilascio |
+| Phase | Content | Estimate | Release |
 |---|---|---|---|
-| F0 | TLS PSRAM (test), NV_EV_NET_STATE, API schermo, nv_sig, socket, SDK fix | 1-2 sessioni | OTA |
-| F1 | nv_mqtt + discovery + Impostazioni Casa + pagina web | 2-3 sessioni | OTA, verifica con HA reale |
-| F2 | store firmato + sha256 + consenso permessi | 2 sessioni | OTA + store |
-| F3 | ABI v12 http/ws/mqtt/ha + SDK + fuzz | 3 sessioni | OTA |
-| F4 | Casa, Dispositivi, Telecamere, emulatori… | 1 sessione per app | store |
-| F5 | widget, kiosk, notifiche, setup | a seguire | OTA |
+| F0 | PSRAM TLS (test), NV_EV_NET_STATE, screen API, nv_sig, sockets, SDK fix | 1-2 sessions | OTA |
+| F1 | nv_mqtt + discovery + Settings Home + web page | 2-3 sessions | OTA, verification with real HA |
+| F2 | signed store + sha256 + permission consent | 2 sessions | OTA + store |
+| F3 | ABI v12 http/ws/mqtt/ha + SDK + fuzz | 3 sessions | OTA |
+| F4 | Home, Devices, Cameras, emulators… | 1 session per app | store |
+| F5 | widgets, kiosk, notifications, setup | to follow | OTA |
 
-F1 non dipende da F2/F3: si può rilasciare subito dopo F0 e dà già il valore principale.
+F1 does not depend on F2/F3: it can be released right after F0 and already gives the main value.
 
-## 9. Rischi
+## 9. Risks
 
-- **SRAM interna**: principale. Ogni client (mqtt task 6 KB, netreq 6 KB, ws task ~4 KB,
-  TLS ~40 KB se non in PSRAM) va misurato su HW con Wi-Fi+LVGL+web attivi. Soglia minima libera
-  da fissare (es. 100 KB) e controllata da `tools/hil/smoke.py`.
-- Contesa con altre sessioni: ABI v11 (gamepad), `nv_web.cpp` modificato ora da un'altra sessione.
-- Comandi remoti = superficie d'attacco LAN: broker con utente/password obbligatori consigliati;
-  in UI avviso se il broker è anonimo.
-- HA cambia schema discovery raramente ma succede: tenere il generatore in un modulo puro testato.
+- **Internal SRAM**: the main one. Every client (mqtt task 6 KB, netreq 6 KB, ws task ~4 KB,
+  TLS ~40 KB if not in PSRAM) must be measured on HW with Wi-Fi+LVGL+web active. Minimum free
+  threshold to be set (e.g. 100 KB) and checked by `tools/hil/smoke.py`.
+- Contention with other sessions: ABI v11 (gamepad), `nv_web.cpp` currently modified by another session.
+- Remote commands = LAN attack surface: broker with mandatory user/password recommended;
+  warning in the UI if the broker is anonymous.
+- HA rarely changes the discovery schema but it happens: keep the generator in a tested pure module.
 
-## 10. Decisioni aperte (per Nicola)
+## 10. Open decisions (for Nicola)
 
-1. Chiave firma store separata da quella OTA? (consigliato sì)
-2. Password MQTT/token HA nel backup SD: escluderli? (consigliato sì)
-3. Modello di pubblicazione terzi: solo sorgenti compilati dalla nostra CI (consigliato) o binari firmati dall'autore?
-4. Installazione OTA comandabile da HA (`update.install`): abilitata di default o no? (consigliato no)
+1. Store signing key separate from the OTA one? (recommended yes)
+2. MQTT password/HA token in the SD backup: exclude them? (recommended yes)
+3. Third-party publication model: only sources compiled by our CI (recommended) or binaries signed by the author?
+4. OTA installation commandable from HA (`update.install`): enabled by default or not? (recommended no)

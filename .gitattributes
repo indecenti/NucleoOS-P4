@@ -26,3 +26,8 @@ sd/web/**/*.wasm              binary linguist-generated
 # tests/host runs under Linux/WSL make even from a Windows checkout: CRLF breaks Makefile recipes.
 tests/host/**           text eol=lf
 tests/host/corpus/**    binary
+
+# Scripts that bash runs (WSL, CI) keep LF even in a Windows checkout (core.autocrlf would add CR)
+*.sh                          text eol=lf
+ports/books/test/*.books      text eol=lf
+ports/books/test/*.script     text eol=lf

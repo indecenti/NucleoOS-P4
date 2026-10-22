@@ -1,47 +1,48 @@
-# Store: app da portare con il minimo sforzo
+# Store: apps to port with minimal effort
 
-Ricerca del 2026-09-30 (4 filoni: software per JC1060P470C/ESP32-P4, C/WASI portabile, emulatori +
-homebrew, app da pannello). Solo cose ridistribuibili nello Store pubblico. GPL = OK pubblicando il
-sorgente dell'app (il repo è pubblico: basta tenerlo in `apps/<id>/` o `ports/`). NC (CC BY-NC-*) =
-OK finché lo Store è gratuito, come le cart WASM-4.
+Research from 2026-09-30 (4 tracks: software for JC1060P470C/ESP32-P4, portable C/WASI, emulators +
+homebrew, panel apps). Only things that can be redistributed in the public Store. GPL = OK if the app's
+source is published (the repo is public: just keep it in `apps/<id>/` or `ports/`). NC (CC BY-NC-*) =
+OK as long as the Store is free, like the WASM-4 carts.
 
-Nota tecnica: un'app compilata con `-Wasi` (wasi-libc: malloc, stdio, file) può usare anche il canvas
-`nv.gfx_*` (manifest `canvas_w/h` + permesso `gfx`, entry reactor `run`). È il "ponte" che rende
-portabile quasi tutto il C qui sotto.
+Technical note: an app compiled with `-Wasi` (wasi-libc: malloc, stdio, files) can also use the
+`nv.gfx_*` canvas (manifest `canvas_w/h` + `gfx` permission, reactor entry `run`). This is the "bridge"
+that makes almost all the C code below portable.
 
-## Onda 1 — ore / 1-2 giorni, catalogo grande
+## Wave 1 — hours / 1-2 days, large catalog
 
-| App | Sorgente | Licenza | Modello | Contenuto incluso |
+| App | Source | License | Model | Included content |
 |---|---|---|---|---|
-| **Avventure testuali** (Z-machine) | Bocfel (garglk/terps/bocfel) o MojoZork | MIT / zlib | WASI Terminale | **Zork I, II, III** (`COMPILED/zorkN.z3`, MIT Microsoft 2025) |
-| **Glulx** (Inform 7) | glulxe + cheapglk (erkyrath) | MIT | WASI Terminale | storie IF Archive con licenza libera (per titolo) |
-| **Rompicapi** (~40 giochi) | Simon Tatham's Puzzles | MIT | WASI + canvas (drawing_api -> gfx) | tutti inclusi |
+| **Text adventures** (Z-machine) | Bocfel (garglk/terps/bocfel) or MojoZork | MIT / zlib | WASI Terminal | **Zork I, II, III** (`COMPILED/zorkN.z3`, MIT Microsoft 2025) |
+| **Glulx** (Inform 7) | glulxe + cheapglk (erkyrath) | MIT | WASI Terminal | IF Archive stories with a free license (per title) |
+| **Puzzles** (~40 games) | Simon Tatham's Puzzles | MIT | WASI + canvas (drawing_api -> gfx) | all included |
 | **Game Boy** | Peanut-GB (single header) | MIT | WASI + canvas + pad + PCM | Tobu Tobu Girl (MIT/CC BY), µCity (GPLv3/CC BY-SA), Libbet (zlib) |
-| **CHIP-8/XO-CHIP** | da scrivere (poche centinaia di righe) | nostra | canvas | chip8Archive (licenza da verificare, probabilmente CC0) |
-| Terminale extra | bc (Gavin Howard), 2048-cli, cowsay, sl, robotfindskitten, kilo | BSD/MIT/GPL | WASI | — |
+| **CHIP-8/XO-CHIP** | to be written (a few hundred lines) | ours | canvas | chip8Archive (license to be verified, probably CC0) |
+| Extra terminal tools | bc (Gavin Howard), 2048-cli, cowsay, sl, robotfindskitten, kilo | BSD/MIT/GPL | WASI | — |
 
-## Onda 2 — pochi giorni
+## Wave 2 — a few days
 
-| App | Sorgente | Licenza | Note |
+| App | Source | License | Notes |
 |---|---|---|---|
-| **Casa** (Home Assistant) | nostra; UX ispirata a openHASP (MIT) — NON espcontrol (PolyForm NC) | nostra | `/api/template` per la lista, `subscribe_entities` per gli aggiornamenti, `call_service` |
-| **Dispositivi locali** | nostra | nostra | Shelly `/rpc/…`, Tasmota `/cm?cmnd=`, WLED `/json/state`, ESPHome `web_server`, Zigbee2MQTT via mqtt |
-| **Orologio / sveglia / Pomodoro / fusi** | nostra | — | offline |
-| **Meteo+**: qualità aria, pollini, alba/luna | Open-Meteo AQ + calcolo SunCalc offline | CC BY 4.0, gratis solo non commerciale | estensione dell'app Meteo |
-| **Cornice Immich** | API Immich (`search/random` + thumbnail JPEG) | — | anche come salvaschermo |
-| **Doom** | doomgeneric (5 funzioni) | GPLv2 | con **Freedoom** (BSD); prestazioni da verificare in AOT |
-| **NES** | core nofrendo di retro-go | GPLv2 | homebrew: Super Tilt Bro. (WTFPL), Thwaite (GPLv3) |
-| **Gume/Braino!** 40 giochi educativi | shim TFT_eSPI -> gfx | GPLv3 | 320x240 scalato |
+| **Home** (Home Assistant; app `casa`) | ours; UX inspired by openHASP (MIT) — NOT espcontrol (PolyForm NC) | ours | `/api/template` for the list, `subscribe_entities` for updates, `call_service` |
+| **Local devices** | ours | ours | Shelly `/rpc/…`, Tasmota `/cm?cmnd=`, WLED `/json/state`, ESPHome `web_server`, Zigbee2MQTT via mqtt |
+| **Clock / alarm / Pomodoro / time zones** | ours | — | offline |
+| **Weather+**: air quality, pollen, sunrise/moon | Open-Meteo AQ + offline SunCalc computation | CC BY 4.0, free for non-commercial use only | extension of the Weather app |
+| **Immich frame** | Immich API (`search/random` + JPEG thumbnail) | — | also as a screensaver |
+| **Doom** | doomgeneric (5 functions) | GPLv2 | with **Freedoom** (BSD); performance to be verified in AOT |
+| **NES** | nofrendo core from retro-go | GPLv2 | homebrew: Super Tilt Bro. (WTFPL), Thwaite (GPLv3) |
+| **Gume/Braino!** 40 educational games | TFT_eSPI shim -> gfx | GPLv3 | 320x240 scaled |
 
-## Onda 3 — più avanti
+## Wave 3 — later
 
-Frontend libretro minimo (smsplus-gx SMS/GG, gambatte), Genesis (gwenesis, fps a rischio), radio web
-(serve decoder MP3/AAC in streaming lato firmware), telecamere Frigate/go2rtc (snapshot JPEG), calendario
-ICS, RSS, Pi-hole/AdGuard, Moonraker/OctoPrint, nethack.
+Minimal libretro frontend (smsplus-gx SMS/GG, gambatte), Genesis (gwenesis, fps at risk), web radio
+(needs a streaming MP3/AAC decoder on the firmware side), Frigate/go2rtc cameras (JPEG snapshot), ICS
+calendar, RSS, Pi-hole/AdGuard, Moonraker/OctoPrint, nethack.
 
-## Da NON usare
+## NOT to be used
 
-fMSX e Snes9x (non commerciali), PicoDrive (licenza MAME NC), demo del produttore Guition (licenza non
-chiara), espcontrol/espframe (PolyForm Noncommercial), raccolte retrobrews/EmuDeck (redistribuzione
-solo sul loro sito), cart TIC-80/PICO-8 (licenze per autore), ROM/artwork Game & Watch, Spotify Web API
-(dal 2026 inutilizzabile per un device), ViaggiaTreno (ToS non chiari), Transitous e CoinGecko Demo (NC).
+fMSX and Snes9x (non-commercial), PicoDrive (MAME NC license), Guition manufacturer demos (unclear
+license), espcontrol/espframe (PolyForm Noncommercial), retrobrews/EmuDeck collections (redistribution
+only on their own site), TIC-80/PICO-8 carts (licenses per author), Game & Watch ROMs/artwork, Spotify
+Web API (unusable for a device since 2026), ViaggiaTreno (unclear ToS), Transitous and CoinGecko Demo
+(NC).

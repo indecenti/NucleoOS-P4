@@ -1,117 +1,117 @@
-# Waveshare ESP32-P4-WIFI6-Touch-LCD-10.1 — scheda per il porting
+# Waveshare ESP32-P4-WIFI6-Touch-LCD-10.1 — porting board sheet
 
-Candidata scelta per NucleoOS su schermo grande (decisione del 2026-10-16). Non ancora comprata.
+Candidate chosen for NucleoOS on a large screen (decision of 2026-10-16). Not bought yet.
 
-- Negozio: <https://www.waveshare.com/esp32-p4-wifi6-touch-lcd-7-8-10.1.htm?sku=33672> (SKU 33672, ~90 $; 33150 = variante "-EN")
-- Documentazione: <https://docs.waveshare.com/ESP32-P4-WIFI6-Touch-LCD-X>
-- Schema: <https://files.waveshare.com/wiki/ESP32-P4-WIFI6-Touch-LCD-X/ESP32-P4-WIFI6-Touch-LCD-X-Schematic.pdf>
-- Schema adattatore (USB, tasti, microfoni): <https://files.waveshare.com/wiki/ESP32-P4-WIFI6-Touch-LCD-X/ESP32-P4-Connect-Adapter-Schematic.pdf>
-- BSP ed esempi ESP-IDF: <https://github.com/waveshareteam/ESP32-P4-WIFI6-Touch-LCD-X>
+- Shop: <https://www.waveshare.com/esp32-p4-wifi6-touch-lcd-7-8-10.1.htm?sku=33672> (SKU 33672, ~$90; 33150 = "-EN" variant)
+- Documentation: <https://docs.waveshare.com/ESP32-P4-WIFI6-Touch-LCD-X>
+- Schematic: <https://files.waveshare.com/wiki/ESP32-P4-WIFI6-Touch-LCD-X/ESP32-P4-WIFI6-Touch-LCD-X-Schematic.pdf>
+- Adapter schematic (USB, buttons, microphones): <https://files.waveshare.com/wiki/ESP32-P4-WIFI6-Touch-LCD-X/ESP32-P4-Connect-Adapter-Schematic.pdf>
+- BSP and ESP-IDF examples: <https://github.com/waveshareteam/ESP32-P4-WIFI6-Touch-LCD-X>
   (BSP in `firmware/brookesia/components/esp32_p4_wifi6_touch_lcd_x/`, v2.0.3)
 
-Fonti: schema letto per intero e BSP ufficiale. Le voci con **⚠ da verificare** non sono ancora
-confermate sulla scheda vera.
+Sources: schematic read in full and the official BSP. Items marked **⚠ to verify** are not yet
+confirmed on the real board.
 
-## Riepilogo
+## Summary
 
-| | Guition JC1060P470C (attuale) | Waveshare 10,1" |
+| | Guition JC1060P470C (current) | Waveshare 10.1" |
 |---|---|---|
-| SoC | ESP32-P4 | ESP32-P4NRW32 (modulo ESP32-P4-Core), 32 MB PSRAM in package |
+| SoC | ESP32-P4 | ESP32-P4NRW32 (ESP32-P4-Core module), 32 MB PSRAM in package |
 | Flash | — | 32 MB NOR (GD25Q256) |
-| Schermo | 7", 1024×600, JD9165 | 10,1", **800×1280 verticale**, **JD9365**, IPS, 400 cd/m² |
+| Display | 7", 1024×600, JD9165 | 10.1", **800×1280 portrait**, **JD9365**, IPS, 400 cd/m² |
 | MIPI-DSI | 2 lane, 750 Mbps, DPI 50 MHz | 2 lane, **1500 Mbps**, timing `JD9365_800_1280_PANEL_60HZ_DPI_CONFIG` |
-| Touch | GT911 @ 0x5D | GT9271 (driver `esp_lcd_touch_gt911`), 10 punti, 0x5D o 0x14 |
-| Wi-Fi/BT | ESP32-C6 via SDIO | ESP32-C6-MINI-1U-H8 via SDIO (stessi pin) |
-| Audio | ES8311 + ES7210 | ES8311 + ES7210 + ampli NS4150B |
-| RTC esterno | RX8130 (I2C 0x14) | **assente** |
-| Ethernet | IP101 (RMII) | **assente** |
-| Batteria | — | connettore JST 1,2 mm, caricatore ETA6003, misura su GPIO20 |
-| Fotocamera | — | connettore MIPI-CSI 2 lane (OV5647 nel kit) |
+| Touch | GT911 @ 0x5D | GT9271 (driver `esp_lcd_touch_gt911`), 10 points, 0x5D or 0x14 |
+| Wi-Fi/BT | ESP32-C6 via SDIO | ESP32-C6-MINI-1U-H8 via SDIO (same pins) |
+| Audio | ES8311 + ES7210 | ES8311 + ES7210 + NS4150B amplifier |
+| External RTC | RX8130 (I2C 0x14) | **absent** |
+| Ethernet | IP101 (RMII) | **absent** |
+| Battery | — | 1.2 mm JST connector, ETA6003 charger, measurement on GPIO20 |
+| Camera | — | MIPI-CSI 2 lane connector (OV5647 in the kit) |
 
-## Mappa dei pin (dallo schema)
+## Pin map (from the schematic)
 
-| Funzione | GPIO Waveshare | GPIO Guition | Note |
+| Function | Waveshare GPIO | Guition GPIO | Notes |
 |---|---|---|---|
-| I2C SDA / SCL | 7 / 8 | 7 / 8 | uguale; bus condiviso da touch, ES8311, ES7210, fotocamera |
-| LCD reset | **27** | 5 | R76 10 kΩ verso GND |
-| Retroilluminazione PWM | **26** | 23 | `LCD_BL_PWM`, LEDC 10 bit nel BSP; duty più alto = più luminoso |
-| Touch INT | **33** | 21 | collegato via R32 0 Ω (il BSP non lo usa) |
-| Touch RST | **23** | 22 | collegato via R37 0 Ω (il BSP non lo usa) |
-| I2S MCLK | 13 | 13 | uguale |
-| I2S BCLK (SCLK) | 12 | 12 | uguale |
-| I2S WS (LRCK) | 10 | 10 | uguale |
-| I2S DOUT → ES8311 | 9 | 9 | uguale |
-| I2S DIN ← ES7210 | **11** | 48 | microfoni analogici via ES7210 |
-| Ampli altoparlante | **53** | 11 | `PA_CTRL` verso NS4150B, R106 10 kΩ verso GND (spento di default) |
-| SD CLK/CMD/D0–D3 | 43/44/39/40/41/42 | 43/44/39/40/41/42 | uguale; pull-up sull'LDO interno VO4 |
-| SD alimentazione | GPIO45 (R9 "NC/0R") | — | ⚠ da verificare: con R9 non montata la SD è sempre alimentata |
-| C6 SDIO CLK/CMD | 18 / 19 | 18 / 19 | uguale al nostro `sdkconfig` |
-| C6 SDIO D0–D3 | 14 / 15 / 16 / 17 | 14 / 15 / 16 / 17 | uguale |
+| I2C SDA / SCL | 7 / 8 | 7 / 8 | same; bus shared by touch, ES8311, ES7210, camera |
+| LCD reset | **27** | 5 | R76 10 kΩ to GND |
+| PWM backlight | **26** | 23 | `LCD_BL_PWM`, 10-bit LEDC in the BSP; higher duty = brighter |
+| Touch INT | **33** | 21 | connected via R32 0 Ω (the BSP does not use it) |
+| Touch RST | **23** | 22 | connected via R37 0 Ω (the BSP does not use it) |
+| I2S MCLK | 13 | 13 | same |
+| I2S BCLK (SCLK) | 12 | 12 | same |
+| I2S WS (LRCK) | 10 | 10 | same |
+| I2S DOUT → ES8311 | 9 | 9 | same |
+| I2S DIN ← ES7210 | **11** | 48 | analog microphones via ES7210 |
+| Speaker amplifier | **53** | 11 | `PA_CTRL` to NS4150B, R106 10 kΩ to GND (off by default) |
+| SD CLK/CMD/D0–D3 | 43/44/39/40/41/42 | 43/44/39/40/41/42 | same; pull-ups on the internal LDO VO4 |
+| SD power | GPIO45 (R9 "NC/0R") | — | ⚠ to verify: with R9 not fitted the SD is always powered |
+| C6 SDIO CLK/CMD | 18 / 19 | 18 / 19 | same as our `sdkconfig` |
+| C6 SDIO D0–D3 | 14 / 15 / 16 / 17 | 14 / 15 / 16 / 17 | same |
 | C6 reset (CHIP_PU) | 54 | — | R54 0 Ω |
 | C6 IO2 | 6 | — | R52 0 Ω |
-| Batteria (ADC) | **20** | — | partitore 200 k/100 k: V_bat = V_pin × 3 |
-| BOOT | 35 | 35 | tasto sull'adattatore |
-| UART0 TX / RX | 37 / 38 | 37 / 38 | bridge CH343P con auto-reset DTR/RTS |
-| USB full-speed | 24 / 25 | — | solo sul connettore a 40 pin |
-| USB high-speed OTG | DP/DM dedicati | — | Type-C "USB-OTG" sull'adattatore |
+| Battery (ADC) | **20** | — | 200 k/100 k divider: V_bat = V_pin × 3 |
+| BOOT | 35 | 35 | button on the adapter |
+| UART0 TX / RX | 37 / 38 | 37 / 38 | CH343P bridge with DTR/RTS auto-reset |
+| USB full-speed | 24 / 25 | — | only on the 40-pin connector |
+| USB high-speed OTG | dedicated DP/DM | — | "USB-OTG" Type-C on the adapter |
 
-**Connettore a 40 pin (J8)**, pin liberi: 2, 3, 4, 5, 21, 22, 28, 29, 30, 31, 32, 34, 36, 46, 47,
-48, 49, 50, 51, 52 (più 7/8 I2C, 37/38 UART, 24/25 USB-FS, 35 BOOT). TP6 = GPIO36, TP7 = GPIO45.
+**40-pin connector (J8)**, free pins: 2, 3, 4, 5, 21, 22, 28, 29, 30, 31, 32, 34, 36, 46, 47,
+48, 49, 50, 51, 52 (plus 7/8 I2C, 37/38 UART, 24/25 USB-FS, 35 BOOT). TP6 = GPIO36, TP7 = GPIO45.
 
-**Indirizzi I2C:** ES8311 0x18 (CE a massa), ES7210 0x40, touch 0x5D o 0x14 (il BSP prova
-entrambi). Senza RX8130 lo 0x14 non è più in conflitto.
+**I2C addresses:** ES8311 0x18 (CE to ground), ES7210 0x40, touch 0x5D or 0x14 (the BSP tries
+both). Without the RX8130, 0x14 no longer conflicts.
 
-## Alimentazione
+## Power
 
-- **MIPI D-PHY** sull'LDO interno **VO3 a 2500 mV**: uguale a `NV_MIPI_LDO_CHAN` / `NV_MIPI_LDO_MV`.
-- **Flash** su LDO VO1 (R43 0 Ω). **SD** su LDO VO4, come nel BSP (`ldo_chan_id = 4`).
-- **3V3** da buck-boost TPS63020; **1,2 V** del core da MP1605.
-- **IOVCC del pannello** a 1,8 V da un LDO RT9193-18 sempre acceso.
-- **Retroilluminazione**: AP3032 boost, 3 serie da 7 LED, circa 153 mA sul 10,1". `BL_EN` ha un
-  pull-up fisso, quindi la luminosità si regola solo col PWM su GPIO26.
-- **Interruttore SYS_EN** sull'adattatore. Con batteria la scheda resta accesa senza USB.
+- **MIPI D-PHY** on the internal LDO **VO3 at 2500 mV**: same as `NV_MIPI_LDO_CHAN` / `NV_MIPI_LDO_MV`.
+- **Flash** on LDO VO1 (R43 0 Ω). **SD** on LDO VO4, as in the BSP (`ldo_chan_id = 4`).
+- **3V3** from the TPS63020 buck-boost; core **1.2 V** from the MP1605.
+- **Panel IOVCC** at 1.8 V from an always-on RT9193-18 LDO.
+- **Backlight**: AP3032 boost, 3 strings of 7 LEDs, about 153 mA on the 10.1". `BL_EN` has a
+  fixed pull-up, so brightness is adjusted only with the PWM on GPIO26.
+- **SYS_EN switch** on the adapter. With a battery the board stays on without USB.
 
-## Revisione del chip
+## Chip revision
 
-Waveshare compila diversamente per **P4 v1.x** e **v3.x**:
-- `CONFIG_ESP32P4_SELECTS_REV_LESS_V3` oppure `CONFIG_ESP32P4_REV_MIN_300`;
-- clock PHY DSI: `MIPI_DSI_PHY_CLK_SRC_DEFAULT` (< v3) oppure `MIPI_DSI_PHY_PLLREF_CLK_SRC_DEFAULT` (v3).
+Waveshare builds differently for **P4 v1.x** and **v3.x**:
+- `CONFIG_ESP32P4_SELECTS_REV_LESS_V3` or `CONFIG_ESP32P4_REV_MIN_300`;
+- DSI PHY clock: `MIPI_DSI_PHY_CLK_SRC_DEFAULT` (< v3) or `MIPI_DSI_PHY_PLLREF_CLK_SRC_DEFAULT` (v3).
 
-All'arrivo bisogna leggere la revisione (`esptool chip_id`) prima del primo flash.
+When the board arrives, the revision must be read (`esptool chip_id`) before the first flash.
 
-## Lavoro di porting
+## Porting work
 
-1. **Selezione della scheda in fase di compilazione.** Serve un `nv_pins_waveshare10.h` scelto da
-   Kconfig, con i GPIO della tabella sopra.
-2. **Pannello.** Aggiungere la dipendenza `espressif/esp_lcd_jd9365` (^2.0.2) e copiare dal BSP
-   (`esp32_p4_wifi6_touch_lcd_x.c`, ramo `#else` del 10,1", righe ~238–461) la tabella di comandi
-   iniziali. 1500 Mbps per lane, timing 60 Hz del driver.
-3. **Orientamento.** Il pannello è verticale (800×1280); NucleoOS è pensato in orizzontale.
-   `nv_disp` sa già ruotare con il PPA nel buffer posteriore (`nv_hal.cpp`, vicino a
-   `nv_disp_create`), ma qui la rotazione sarebbe **sempre** attiva, non solo su richiesta.
-   ⚠ Da misurare: costo di PPA e banda PSRAM a 1280×800, e il blit video diretto
-   (`nv_hal_video_blit`) che oggi scrive senza rotazione.
-4. **Touch.** Stesso driver GT911. Con INT/RST collegati (33/23) si può tenere la logica attuale.
-   Le coordinate vanno ruotate come lo schermo.
-5. **Audio.** `nv_audio` cambia DIN (11) e PA (53). Gli altri pin I2S restano uguali.
-6. **Servizi senza hardware.** `nv_rtc` (niente RX8130) e `nv_eth` (niente IP101) devono restare
-   spenti. `nv_eth` gestisce già l'assenza; per `nv_rtc` va controllato.
-7. **Novità da sfruttare.** Livello batteria (GPIO20, ×3), fotocamera CSI, USB-OTG su Type-C dedicato.
-8. **Risoluzione nelle app.** 38 punti usano `NV_LCD_H_RES`/`NV_LCD_V_RES` e si adattano da soli.
-   Ci sono però circa 130 file con 1024/600 scritti a mano (conteggio grezzo: molti sono dimensioni
-   di buffer). Vanno passati in rassegna.
-9. **Memoria.** Un framebuffer RGB565 passa da 1,2 MB a 2 MB, quindi 4 MB con doppio buffer più
-   il buffer di rotazione. Bisogna ricontrollare il budget PSRAM.
+1. **Board selection at compile time.** A `nv_pins_waveshare10.h` chosen via Kconfig is needed, with
+   the GPIOs from the table above.
+2. **Panel.** Add the dependency `espressif/esp_lcd_jd9365` (^2.0.2) and copy from the BSP
+   (`esp32_p4_wifi6_touch_lcd_x.c`, `#else` branch of the 10.1", lines ~238–461) the initial
+   command table. 1500 Mbps per lane, 60 Hz timing from the driver.
+3. **Orientation.** The panel is portrait (800×1280); NucleoOS is designed for landscape.
+   `nv_disp` can already rotate with the PPA into the back buffer (`nv_hal.cpp`, near
+   `nv_disp_create`), but here the rotation would be **always** active, not only on request.
+   ⚠ To measure: PPA cost and PSRAM bandwidth at 1280×800, and the direct video blit
+   (`nv_hal_video_blit`) which today writes without rotation.
+4. **Touch.** Same GT911 driver. With INT/RST connected (33/23) the current logic can be kept.
+   The coordinates must be rotated like the screen.
+5. **Audio.** `nv_audio` changes DIN (11) and PA (53). The other I2S pins stay the same.
+6. **Services without hardware.** `nv_rtc` (no RX8130) and `nv_eth` (no IP101) must stay
+   off. `nv_eth` already handles the absence; for `nv_rtc` it needs to be checked.
+7. **New features to exploit.** Battery level (GPIO20, ×3), CSI camera, USB-OTG on a dedicated Type-C.
+8. **Resolution in apps.** 38 places use `NV_LCD_H_RES`/`NV_LCD_V_RES` and adapt by themselves.
+   However, there are about 130 files with 1024/600 hand-written (raw count: many are buffer
+   sizes). They need to be reviewed.
+9. **Memory.** An RGB565 framebuffer goes from 1.2 MB to 2 MB, so 4 MB with double buffering plus
+   the rotation buffer. The PSRAM budget must be rechecked.
 
-## Da verificare a scheda in mano
+## To verify with the board in hand
 
-- Revisione del chip P4.
-- Che la SD sia sempre alimentata (R9 / GPIO45).
-- Indirizzo reale del touch (0x5D o 0x14) e se l'INT funziona su GPIO33.
-- Che la polarità del PWM della retroilluminazione corrisponda al BSP (100% = massimo).
-- **Firmware esp_hosted sul C6: è il rischio maggiore.** Noi usiamo `esp_hosted` **2.12.9** lato
-  P4. Waveshare dichiara compatibilità con il firmware di fabbrica del C6 usando `esp_hosted` 1.4.*
-  su IDF 5.5 (2.12+ solo su IDF 6.0). Se il firmware di fabbrica non regge la 2.12.9, il C6 va
-  riflashato. Si può fare dai pad a 4 pin (2,54 mm) per la programmazione del C6, oppure via OTA
-  tramite esp_hosted.
-- Prestazioni della rotazione PPA a 60 Hz.
+- P4 chip revision.
+- That the SD is always powered (R9 / GPIO45).
+- Actual touch address (0x5D or 0x14) and whether INT works on GPIO33.
+- That the backlight PWM polarity matches the BSP (100% = maximum).
+- **esp_hosted firmware on the C6: this is the biggest risk.** We use `esp_hosted` **2.12.9** on the
+  P4 side. Waveshare declares compatibility with the C6 factory firmware using `esp_hosted` 1.4.*
+  on IDF 5.5 (2.12+ only on IDF 6.0). If the factory firmware does not work with 2.12.9, the C6 must be
+  reflashed. This can be done from the 4-pin (2.54 mm) pads for C6 programming, or via OTA
+  through esp_hosted.
+- PPA rotation performance at 60 Hz.

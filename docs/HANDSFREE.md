@@ -1,41 +1,41 @@
-# ANIMA a mani libere (parola di attivazione)
+# Hands-free ANIMA (wake word)
 
-Di' la parola di attivazione, poi la domanda: il dispositivo suona, apre ANIMA, registra finché
-smetti di parlare, trascrive, risponde e (se è installata una voce) legge la risposta ad alta voce.
+Say the wake word, then your question: the device chimes, opens ANIMA, records until you
+stop talking, transcribes, answers and (if a voice is installed) reads the answer aloud.
 
-## Come funziona
-- **Ascolto sempre attivo, offline**: ESP-SR WakeNet sul microfono di bordo (48 kHz → 16 kHz).
-  Niente esce dal dispositivo finché non senti il suono di conferma.
-- **Pausa automatica** mentre il dispositivo riproduce audio (musica, voce, video) o registra:
-  così non si attiva da solo.
-- **Fine della domanda**: si ferma dopo ~1 s di silenzio (massimo 12 s); se nessuno parla entro
-  5 s annulla.
-- **Trascrizione**: prima il server Whisper di casa (Impostazioni web ▸ IA ▸ Trascrizione voce in
-  casa), poi la chiave cloud; in modalità *Locale* mai il cloud.
+## How it works
+- **Always-on listening, offline**: ESP-SR WakeNet on the onboard microphone (48 kHz → 16 kHz).
+  Nothing leaves the device until you hear the confirmation sound.
+- **Automatic pause** while the device plays audio (music, voice, video) or records:
+  this way it does not trigger itself.
+- **End of the question**: it stops after ~1 s of silence (12 s at most); if nobody speaks within
+  5 s it cancels.
+- **Transcription**: first the home Whisper server (web Settings ▸ AI ▸ Voice transcription at home (Whisper)),
+  then the cloud key; in *Local* mode never the cloud.
 
-## Attivarlo nel firmware (una volta)
-La funzione è opzionale nella build (`CONFIG_NV_WAKE_ESP_SR`, spenta di default):
+## Enabling it in the firmware (once)
+The feature is optional in the build (`CONFIG_NV_WAKE_ESP_SR`, off by default):
 
     cd components/nv_wake && idf.py add-dependency "espressif/esp-sr^2.1" && cd ../..
     idf.py menuconfig    # NucleoOS wake word ▸ Hands-free ANIMA: ON
-                         # ESP Speech Recognition ▸ Load Multiple Wake Words: scegli le parole
-    idf.py build flash   # ESP-SR scrive i modelli nella partizione "model"
+                         # ESP Speech Recognition ▸ Load Multiple Wake Words: pick the words
+    idf.py build flash   # ESP-SR writes the models to the "model" partition
 
-ESP-SR legge i modelli da una partizione `model` (data, spiffs). Il layout v2 di `partitions.csv` non la
-prevede: quando attivi l'opzione, ricavala dall'area `assets` riservata (es. i primi 2 MB:
-`model, data, spiffs, 0xB20000, 0x200000` e `assets` che parte da `0xD20000` con `0x2A0000`), d'accordo
-con chi usa `assets`. Senza l'opzione non serve nulla.
+ESP-SR reads the models from a `model` partition (data, spiffs). The v2 layout of `partitions.csv` does not
+have one: when you enable the option, carve it out of the reserved `assets` area (e.g. the first 2 MB:
+`model, data, spiffs, 0xB20000, 0x200000` and `assets` starting at `0xD20000` with `0x2A0000`), in agreement
+with whoever uses `assets`. Without the option nothing is needed.
 
-Senza l'opzione tutto compila come prima e le Impostazioni spiegano che la funzione non è nella build.
+Without the option everything builds as before and Settings explains that the feature is not in the build.
 
-## Dove si configura
-- **Dispositivo**: Impostazioni ▸ Anima ▸ Voce a mani libere (interruttore, parola, sensibilità,
-  stato in tempo reale, dove va la voce). Nell'app ANIMA: `/wake`, `/wake on|off|low|normal|high`.
-- **Web**: Impostazioni ▸ IA ▸ Voce a mani libere (stessa cosa, aggiornata ogni 3 s).
-- **API**: `GET/POST /api/anima/wake` `{on, word, sens}`; lo stato è anche in `device_status` del
-  server MCP (`tools/anima_mcp.py`).
+## Where to configure it
+- **Device**: Settings ▸ Anima AI ▸ Hands-free voice (switch, word, sensitivity,
+  live status, where the voice goes). In the ANIMA app: `/wake`, `/wake on|off|low|normal|high`.
+- **Web**: Settings ▸ AI ▸ Hands-free voice (same thing, refreshed every 3 s).
+- **API**: `GET/POST /api/anima/wake` `{on, word, sens}`; the status is also in `device_status` of the
+  MCP server (`tools/anima_mcp.py`).
 
-## Da verificare sulla scheda
-Il nucleo (decimatore, stati, fine domanda) è testato su PC (`tests/host`, unit `wake`); l'aggancio
-a ESP-SR (`wake_esp_sr.c`) va provato sul dispositivo: nomi dei modelli, sensibilità reale e
-consumo di CPU con WakeNet9 su P4.
+## To verify on the board
+The core (decimator, states, end of question) is tested on the PC (`tests/host`, unit `wake`); the hook
+into ESP-SR (`wake_esp_sr.c`) must be tried on the device: model names, real sensitivity and
+CPU use with WakeNet9 on the P4.

@@ -1,258 +1,258 @@
-# Contenuti di sistema scaricabili — piano
+# Downloadable system content — plan
 
-Stato (2026-10-06): **F0-F5 fatti**. Contenuti pubblicati (store `content/`, release `content-2026.10.1`); firmware 1.2.66 provato sulla scheda.
+Status (2026-10-06): **F0-F5 done**. Content published (store `content/`, release `content-2026.10.1`); firmware 1.2.66 tested on the board.
 
-- F0: `teacher.json` in chiaro tolto dal mirror `sd/` (spostato in `%USERPROFILE%\.nucleo\anima-teacher.json`);
-  `sync-sd.ps1` / `verify-sd.ps1` non toccano mai i file dell'utente; `tools/content/build.py` costruisce i
-  pacchetti da allowlist e si ferma su qualunque credenziale (anche il formato Gemini `AQ.`), senza mai
-  stamparla; licenze dentro ogni pacchetto. Test: `python tools/content/test_build.py`.
-- F1: formato `nucleoos-data-v2` (`nv_store_pkg`), indice/ustar/journal (`nv_store_tree`), installazione
-  con estrazione verificata file per file e scambio atomico, recupero all'avvio (`app_main`), riserva OTA
-  64 MB anche per i `wiki-*`, chiave di riserva dello store (`store_signing_backup_pub.pem`, privata da
-  spostare offline), mirror `url2`. I 5 difetti dello store corretti. Test: `tests/host` unit `content`
-  (190 controlli, 64/32 bit, incluso un archivio fatto da Python letto dal codice del dispositivo) +
-  fuzzer `content`; build firmware e budget di memoria OK.
-- F2: servizio `nv_content` (coda persistente, attesa di SD / safe mode / conferma OTA (`nv_ota_confirmed`)
-  / OTA in corso / store / rete, backoff 1-5-15-60 min, aggiornamento automatico SOLO dei pacchetti
-  installati più vecchi di `kRequired`, mai sopra un web modificato con `/api/web/put`), indice
-  `content/index-v1.json` (nomi in 5 lingue, scritto da `build.py`), verifica e riparazione con la firma
-  tenuta sulla SD, adozione di alberi già presenti senza scaricarli, pulizia dei `.part` vecchi di 24 h,
-  ANIMA rilascia e riapre i file attorno allo scambio, la cache web si ricostruisce dopo un aggiornamento,
-  `GET/POST /api/content`, comando shell `content`, G6 in `tools/dist.py` (rifiuta un firmware che richiede
-  una versione non pubblicata). Logica decisionale testata sul PC (`nv_content_plan`).
-- F3: passo "Contenuti offline" nel wizard (dopo il Wi-Fi, un tocco, "Personalizza"), Impostazioni >
-  Contenuti di sistema (scheda di stato + ogni pacchetto con la sua azione), nota quando manca qualcosa,
-  pagina di riserva al posto del 404 del web, lo Store non mostra due volte i `dict-*`, 32 stringhe in 5 lingue.
-- F4: `tools/dist.py content` (asset nella release + solo `content/` dello store), `build.py --reuse` (i file
-  già pubblicati dai pacchetti v1 `dict-*` non si ricaricano: stessi sha, v1 e v2 si adottano a vicenda),
-  `--only` (un pacchetto senza cambiare versione agli altri), `--index-only` (solo i testi dell'indice).
-  Pubblicati: 7 pacchetti 2026.10.1, `dict-it` 2026.10.2 (store `7220003`, `959ee81`.., `244553c`).
-- F5, verificato sulla scheda (build di prova 1.2.62-1.2.66, installate da SD):
-  - G4: durante la probation il servizio aspetta (`waiting=ota`), carica l'elenco subito dopo la conferma.
-  - set consigliato (web, ANIMA, dizionari it/en, 139 MB) installato in 6 min 45 s; adozione dei file già
-    presenti (`dict-fr` in 24 s, `akb5` "already matches its index, kept").
-  - G9: journal "swap" simulato prima del riavvio -> completato al boot (`0x4`), journal cancellato.
-  - verifica: un file del web modificato e uno shard AKB5 danneggiato trovati; riparazione con scambio vero
-    delle cartelle, ANIMA rilascia i file e ricarica ("offline data reloaded"), cache web ricostruita (305 file).
-  - G12: `/api/web/put` accende `web_local`; un'installazione esplicita lo spegne.
-  - ripresa dopo un riavvio a metà download ("resumes at 3145728/8579382 bytes").
-  - wizard: lingua per prima, passo Contenuti in italiano e spagnolo, raccomandazioni per lingua, primo
-    focus da tastiera su "Scarica", Invio avvia il download; cambio lingua a caldo dei nomi dei pacchetti.
-  - corretti durante i test: estrazione lenta (buffer SD non allineati: 83 MB da ~450 s a <=170 s), cache
-    web vuota dopo l'aggiornamento, ripresa persa dopo un riavvio (fsync), nomi nella lingua sbagliata,
-    plurali, accenti dell'indice.
-  - provati anche (1.2.67-1.2.69): pagina di riserva del web senza `web/` (e il suo pulsante da un browser
-    non associato), notifica "mancano contenuti" con apertura diretta della pagina, web installato da zero
-    dove la cartella non c'era, seme `skills` (la modifica dell'utente resta, un file cancellato torna),
-    "Personalizza" (selezione e totale dal vivo), SD piena con la leva `cfg cnt_reserve_mb 99999` (rifiuto
-    prima di scaricare, nessun file a metà, messaggio tradotto, ripartenza appena c'è spazio).
-  - corretti in questo giro: lista del wizard troppo alta con 4 pacchetti (ora una riga per pacchetto),
-    totale di "Personalizza" fermo, messaggio inglese doppio sotto quello tradotto, chiave NVS troppo lunga
-    (max 15 caratteri: `cnt_reserve_mb`).
-- Lasciato cadere: lo zip SD "completo" nella release. La scheda scarica da sola e adotta i file già presenti
-  (indice firmato), quindi non serve; il README ora descrive il passo del wizard. Rilascio: **1.2.66**
-  (HIL `ota_safety.py` retry/rescue/boot/ui/net/late 6/6 PASS prima della pubblicazione).
-- Escluso per ora: `drivers-win` (driver Windows di terzi, diritti di ridistribuzione da chiarire).
+- F0: plaintext `teacher.json` removed from the `sd/` mirror (moved to `%USERPROFILE%\.nucleo\anima-teacher.json`);
+  `sync-sd.ps1` / `verify-sd.ps1` never touch the user's files; `tools/content/build.py` builds the
+  packages from an allowlist and stops on any credential (even the Gemini `AQ.` format), without ever
+  printing it; licenses inside every package. Test: `python tools/content/test_build.py`.
+- F1: `nucleoos-data-v2` format (`nv_store_pkg`), index/ustar/journal (`nv_store_tree`), installation
+  with file-by-file verified extraction and atomic swap, recovery at startup (`app_main`), 64 MB OTA
+  reserve also for the `wiki-*`, store backup key (`store_signing_backup_pub.pem`, private one to be
+  moved offline), `url2` mirror. The 5 store defects fixed. Tests: `tests/host` unit `content`
+  (190 checks, 64/32 bit, including an archive made by Python read by the device code) +
+  `content` fuzzer; firmware build and memory budget OK.
+- F2: `nv_content` service (persistent queue, waits for SD / safe mode / OTA confirmation (`nv_ota_confirmed`)
+  / OTA in progress / store / network, backoff 1-5-15-60 min, automatic update ONLY of installed
+  packages older than `kRequired`, never over a web modified with `/api/web/put`), index
+  `content/index-v1.json` (names in 5 languages, written by `build.py`), verification and repair with the signature
+  kept on the SD, adoption of trees already present without downloading them, cleanup of `.part` files older than 24 h,
+  ANIMA releases and reopens the files around the swap, the web cache is rebuilt after an update,
+  `GET/POST /api/content`, shell command `content`, G6 in `tools/dist.py` (refuses a firmware that requires
+  an unpublished version). Decision logic tested on the PC (`nv_content_plan`).
+- F3: "Offline content" step in the wizard (after Wi-Fi, one tap, "Customize"), Settings >
+  System content (status card + each package with its action), note when something is missing,
+  fallback page in place of the web 404, the Store does not show the `dict-*` twice, 32 strings in 5 languages.
+- F4: `tools/dist.py content` (assets in the release + only `content/` of the store), `build.py --reuse` (files
+  already published by the v1 `dict-*` packages are not uploaded again: same sha, v1 and v2 adopt each other),
+  `--only` (one package without changing the version of the others), `--index-only` (only the index texts).
+  Published: 7 packages 2026.10.1, `dict-it` 2026.10.2 (store `7220003`, `959ee81`.., `244553c`).
+- F5, verified on the board (test builds 1.2.62-1.2.66, installed from SD):
+  - G4: during probation the service waits (`waiting=ota`), loads the list right after confirmation.
+  - recommended set (web, ANIMA, it/en dictionaries, 139 MB) installed in 6 min 45 s; adoption of files already
+    present (`dict-fr` in 24 s, `akb5` "already matches its index, kept").
+  - G9: "swap" journal simulated before the reboot -> completed at boot (`0x4`), journal deleted.
+  - verification: a modified web file and a damaged AKB5 shard found; repair with a real folder
+    swap, ANIMA releases the files and reloads ("offline data reloaded"), web cache rebuilt (305 files).
+  - G12: `/api/web/put` turns on `web_local`; an explicit installation turns it off.
+  - resume after a reboot in the middle of a download ("resumes at 3145728/8579382 bytes").
+  - wizard: language first, Content step in Italian and Spanish, recommendations per language, first
+    keyboard focus on "Download", Enter starts the download; live language change of the package names.
+  - fixed during the tests: slow extraction (unaligned SD buffers: 83 MB from ~450 s to <=170 s), empty web
+    cache after the update, resume lost after a reboot (fsync), names in the wrong language,
+    plurals, index accents.
+  - also tested (1.2.67-1.2.69): web fallback page without `web/` (and its button from an unpaired
+    browser), "content is missing" notification opening the page directly, web installed from scratch
+    where the folder did not exist, `skills` seed (the user's edit stays, a deleted file comes back),
+    "Customize" (live selection and total), full SD with the `cfg cnt_reserve_mb 99999` lever (refusal
+    before downloading, no half files, translated message, restart as soon as there is space).
+  - fixed in this round: wizard list too tall with 4 packages (now one row per package), "Customize"
+    total stuck, duplicated English message under the translated one, NVS key too long
+    (max 15 characters: `cnt_reserve_mb`).
+- Dropped: the "complete" SD zip in the release. The board downloads by itself and adopts files already present
+  (signed index), so it is not needed; the README now describes the wizard step. Release: **1.2.66**
+  (HIL `ota_safety.py` retry/rescue/boot/ui/net/late 6/6 PASS before publication).
+- Excluded for now: `drivers-win` (third-party Windows drivers, redistribution rights to be clarified).
 
-Decisioni dell'utente (2026-10-06):
-- Voce TTS **rimandata**: nessun pacchetto `voice-*` nella prima release (gli id restano riservati).
-- AKB5 ed encoder ANIMA **pubblicabili** su GitHub pubblico, con `LICENSES.txt`.
-- Wizard **a un tocco**: set consigliato preselezionato ("Scarica · ~140 MB") + "Personalizza".
-- Dopo un OTA si aggiornano **da soli solo i pacchetti richiesti** dalla versione del firmware (es. `sys-web`);
-  gli altri aggiornamenti vengono segnalati in Impostazioni > Contenuti.
+User decisions (2026-10-06):
+- TTS voice **postponed**: no `voice-*` package in the first release (the ids stay reserved).
+- AKB5 and ANIMA encoder **publishable** on public GitHub, with `LICENSES.txt`.
+- **One-tap** wizard: recommended set preselected ("Download · ~140 MB") + "Customize".
+- After an OTA, **only the packages required** by the firmware version (e.g. `sys-web`) are updated **automatically**;
+  other updates are reported in Settings > System content.
 
-## Il problema
+## The problem
 
-Chi flasha NucleoOS dal web flasher ottiene una scheda a metà e non lo sa:
+Whoever flashes NucleoOS from the web flasher gets a half-working board and does not know it:
 
-| Contenuto SD | Peso | Oggi come arriva | Senza |
+| SD content | Size | How it arrives today | Without it |
 |---|---|---|---|
-| `web/` (web companion) | 8 MB (3.7 MB zip) | zip nella release, da scompattare a mano dal PC | `/` risponde 404 |
-| `data/anima` L1: encoder + AKB5 (62 shard) + facets | ~87 MB | **mai** (solo da questo PC, gitignored) | ANIMA senza livello semantico |
-| `data/anima` dizionari it/en/es/fr/de | ~100 MB | **mai** | "parola non nel dizionario offline", niente traduzioni |
-| `data/tts/<lang>` | 3 MB a lingua | **mai** | nessuna voce, solo una riga di log |
-| `nucleos/drivers/windows/*.exe` | 2.3 MB | **mai** (exe gitignored) | Second Screen USB senza driver |
-| `data/anima/kb/*.akb6` (Wikipedia) | 23-50 MB a lingua | Store, ma solo se l'utente lo sa | ANIMA senza fatti enciclopedici |
+| `web/` (web companion) | 8 MB (3.7 MB zip) | zip in the release, to be unpacked by hand from the PC | `/` answers 404 |
+| `data/anima` L1: encoder + AKB5 (62 shards) + facets | ~87 MB | **never** (only from this PC, gitignored) | ANIMA without the semantic level |
+| `data/anima` it/en/es/fr/de dictionaries | ~100 MB | **never** | "word not in the offline dictionary", no translations |
+| `data/tts/<lang>` | 3 MB per language | **never** | no voice, only a log line |
+| `nucleos/drivers/windows/*.exe` | 2.3 MB | **never** (exe gitignored) | USB Second Screen without drivers |
+| `data/anima/kb/*.akb6` (Wikipedia) | 23-50 MB per language | Store, but only if the user knows | ANIMA without encyclopedic facts |
 
-Sul dispositivo non c'è nessun controllo e nessun messaggio: le funzioni spariscono in silenzio.
+On the device there is no check and no message: features disappear silently.
 
-## Decisioni
+## Decisions
 
-### Dove stanno i file
+### Where the files live
 
-- **Sorgenti** (web, skills, script di build, licenze): nella repo `NucleoOS-P4`, come oggi. I binari grandi
-  (AKB5, dizionari, voci) **non entrano in git**, ma il modo per ricostruirli sì (`tools/content/`).
-- **Distribuzione**: nello **store** (`nucleoos-p4-store`), con lo stesso meccanismo già usato e verificato
-  sui pacchetti Wikipedia:
-  - `data/<id>/pack.sig` su Pages: elenco dei file con sha256, dimensione e URL, firmato con la chiave dello store.
-  - payload come **asset di una release GitHub** (`content-2026.10`, …): fino a 2 GB per file, CDN,
-    gratis, nessun limite di Pages (1 GB per sito, 100 MB per file).
-- Niente server Oracle: ha poca RAM e qui non serve.
+- **Sources** (web, skills, build scripts, licenses): in the `NucleoOS-P4` repo, as today. The large binaries
+  (AKB5, dictionaries, voices) **do not go in git**, but the way to rebuild them does (`tools/content/`).
+- **Distribution**: in the **store** (`nucleoos-p4-store`), with the same mechanism already used and verified
+  on the Wikipedia packages:
+  - `data/<id>/pack.sig` on Pages: list of files with sha256, size and URL, signed with the store key.
+  - payload as **assets of a GitHub release** (`content-2026.10`, …): up to 2 GB per file, CDN,
+    free, none of the Pages limits (1 GB per site, 100 MB per file).
+- No Oracle server: it has little RAM and is not needed here.
 
-Perché lo store e non la release del firmware: la firma, il download con ripresa, il controllo sha e il
-controllo dello spazio esistono già lì (`nv_appstore.cpp` `install_data`). Inoltre i contenuti hanno una
-vita propria: un dizionario si aggiorna senza un nuovo firmware.
+Why the store and not the firmware release: signature, download with resume, sha check and
+space check already exist there (`nv_appstore.cpp` `install_data`). Moreover the contents have their own
+life: a dictionary is updated without a new firmware.
 
-### Garanzie di aggiornabilità (vincoli non negoziabili)
+### Updatability guarantees (non-negotiable constraints)
 
-Il principio: **i contenuti non devono mai poter impedire un aggiornamento del firmware**, e nessun
-dispositivo esistente deve accorgersi che esistono finché non ha il firmware che li conosce.
+The principle: **content must never be able to prevent a firmware update**, and no
+existing device must notice that it exists until it has the firmware that knows about it.
 
-| # | Rischio trovato nell'analisi | Vincolo |
+| # | Risk found in the analysis | Constraint |
 |---|---|---|
-| G1 | I firmware già sul campo leggono `store2-<lang>.json`; una riga con `kind` sconosciuto viene trattata come **app** (`nv_appstore.cpp:717`) e l'installazione fallisce. Le destinazioni nuove (`web`, `tts`) vengono rifiutate dal loro parser. | I pacchetti di sistema **non entrano** nei cataloghi `store*.json`. Indice separato `content/index-v1.json`, letto solo dal firmware nuovo. I `wiki-*` restano dove sono e nel formato v1. |
-| G2 | Un formato nuovo di `pack.sig` (righe `tar`) romperebbe i parser vecchi. | Dominio nuovo `nucleoos-data-v2`, usato solo dai pacchetti dell'indice nuovo. Il v1 resta invariato e supportato per sempre. |
-| G3 | **L'OTA scarica l'immagine sulla SD** e richiede immagine + metà slot + 4 MB liberi (`nv_ota.cpp:478`, circa 20 MB). Riempire la SD di contenuti bloccherebbe gli aggiornamenti. | Ogni installazione lascia libera una **riserva OTA** (64 MB, calcolata dalla stessa formula moltiplicata per 2). Se lo spazio manca, il contenuto non si installa, mai il contrario. Nessun file `.part` lasciato a occupare spazio oltre 24 h senza progressi. |
-| G4 | Durante la **probation** il firmware nuovo deve dimostrare di raggiungere il server degli update ("net"); un download pesante in parallelo può farla fallire e causare un rollback inutile. | `nv_content` parte solo a immagine confermata (`s_confirmed`, nuova API `nv_ota_confirmed()`), mai in safe mode, mai mentre `nv_ota_busy()`. |
-| G5 | Due connessioni TLS in parallelo hanno già causato fame di SRAM e crash di esp_hosted. | Un solo lavoro di rete pesante alla volta: i contenuti usano il worker dello store (già seriale) e cedono il passo all'OTA. |
-| G6 | Un firmware che richiede `sys-web >= X` pubblicato **prima** di X manderebbe ogni dispositivo in un ciclo di tentativi. | `dist.py firmware` si rifiuta di pubblicare se i pacchetti richiesti non sono già sullo store con la firma valida. Se comunque mancano: il dispositivo funziona, mostra la pagina di riserva e riprova con backoff. |
-| G7 | Rollback a un firmware più vecchio (LKG) con un web più nuovo sulla SD. | Il percorso di aggiornamento è **solo nativo** (Impostazioni + recovery) e non dipende mai da file sulla SD. Il web dichiara le API che usa e degrada se `/api/info` è più vecchio; mai un downgrade automatico dei contenuti. |
-| G8 | Un file di contenuto malformato letto all'avvio potrebbe mandare in crash ogni avvio. | Solo file con sha verificato vengono attivati; i consumatori (ANIMA L1, web cache) controllano già gli header; in safe mode non si leggono. Il caso viene provato apposta nei test HIL. |
-| G9 | Interruzione di corrente durante lo scambio di cartella (`web` → `web.old`). | Journal `/sdcard/nucleos/content.swap` scritto prima dello scambio; all'avvio si completa o si annulla. Mai una cartella mancante. |
-| G10 | ANIMA e la cache web tengono aperti i file mentre vengono sostituiti. | Hook prima e dopo lo scambio: ANIMA chiude e riapre L1 e i dizionari (come fa già per i `wiki-*`), nv_web ricostruisce la cache PSRAM. |
-| G11 | Schede preparate a mano (la tua, i tester): 140 MB scaricati di nuovo per niente, o file sovrascritti. | **Adozione**: file presenti con sha giusto → si scrive solo il record `.pack`. Sha diverso → "versione diversa", mai sovrascritto in automatico. |
-| G12 | Sulla scheda di sviluppo il web si aggiorna con `/api/web/put`: l'aggiornamento automatico cancellerebbe il lavoro in corso. | `/api/web/put` segna il web come "modificato localmente": l'aggiornamento automatico si mette in pausa e Impostazioni lo mostra. |
-| G13 | Le `skills/` sono modificabili dall'utente. | Distribuite come file "seme": copiate solo se assenti, mai sovrascritte. |
-| G14 | Dipendenza da un'unica chiave dello store e da un unico host. | Il firmware accetta la chiave dello store **e** una **chiave di riserva** (deciso 2026-10-06: la privata va tenuta offline dall'utente). `pack.sig` v2 ammette fino a 2 URL per file; per ora solo GitHub, il mirror si aggiunge senza OTA. |
+| G1 | Firmware already in the field reads `store2-<lang>.json`; a row with an unknown `kind` is treated as an **app** (`nv_appstore.cpp:717`) and the installation fails. The new destinations (`web`, `tts`) are rejected by their parser. | System packages **do not enter** the `store*.json` catalogs. Separate index `content/index-v1.json`, read only by the new firmware. The `wiki-*` stay where they are and in v1 format. |
+| G2 | A new `pack.sig` format (`tar` rows) would break the old parsers. | New domain `nucleoos-data-v2`, used only by the packages of the new index. v1 stays unchanged and supported forever. |
+| G3 | **The OTA downloads the image onto the SD** and requires image + half slot + 4 MB free (`nv_ota.cpp:478`, about 20 MB). Filling the SD with content would block updates. | Every installation leaves a free **OTA reserve** (64 MB, computed by the same formula multiplied by 2). If space is missing, the content is not installed, never the opposite. No `.part` file left occupying space for more than 24 h without progress. |
+| G4 | During **probation** the new firmware must prove it can reach the update server ("net"); a heavy parallel download can make it fail and cause a needless rollback. | `nv_content` starts only with the image confirmed (`s_confirmed`, new API `nv_ota_confirmed()`), never in safe mode, never while `nv_ota_busy()`. |
+| G5 | Two parallel TLS connections have already caused SRAM starvation and esp_hosted crashes. | Only one heavy network job at a time: contents use the store worker (already serial) and give way to the OTA. |
+| G6 | A firmware requiring `sys-web >= X` published **before** X would send every device into a retry loop. | `dist.py firmware` refuses to publish if the required packages are not already on the store with a valid signature. If they are missing anyway: the device works, shows the fallback page and retries with backoff. |
+| G7 | Rollback to an older firmware (LKG) with a newer web on the SD. | The update path is **native only** (Settings + recovery) and never depends on files on the SD. The web declares the APIs it uses and degrades if `/api/info` is older; never an automatic content downgrade. |
+| G8 | A malformed content file read at startup could crash every boot. | Only files with a verified sha are activated; the consumers (ANIMA L1, web cache) already check the headers; in safe mode they are not read. The case is tested on purpose in the HIL tests. |
+| G9 | Power loss during the folder swap (`web` → `web.old`). | Journal `/sdcard/nucleos/content.swap` written before the swap; at startup it is completed or cancelled. Never a missing folder. |
+| G10 | ANIMA and the web cache keep files open while they are replaced. | Hooks before and after the swap: ANIMA closes and reopens L1 and the dictionaries (as it already does for the `wiki-*`), nv_web rebuilds the PSRAM cache. |
+| G11 | Hand-prepared cards (the user's own, the testers'): 140 MB downloaded again for nothing, or files overwritten. | **Adoption**: files present with the right sha → only the `.pack` record is written. Different sha → "different version", never overwritten automatically. |
+| G12 | On the development board the web is updated with `/api/web/put`: the automatic update would erase work in progress. | `/api/web/put` marks the web as "locally modified": the automatic update pauses and Settings shows it. |
+| G13 | The `skills/` are editable by the user. | Distributed as "seed" files: copied only if absent, never overwritten. |
+| G14 | Dependence on a single store key and a single host. | The firmware accepts the store key **and** a **backup key** (decided 2026-10-06: the private one is to be kept offline by the user). `pack.sig` v2 allows up to 2 URLs per file; for now only GitHub, the mirror is added without OTA. |
 
-### Come si scarica
+### How it is downloaded
 
-Tre ingressi, un solo motore (`nv_content`):
+Three entry points, one engine (`nv_content`):
 
-1. **Wizard**: un passo "Contenuti" dopo il Wi-Fi.
-2. **Impostazioni > Contenuti**: per chi ha saltato il passo, per chi cambia lingua e per riparare.
-3. **Al momento del bisogno**: la funzione che non trova i suoi file lo dice e offre il download
-   ("Voce italiana non installata · Scarica 3 MB").
+1. **Wizard**: a "Content" step after Wi-Fi.
+2. **Settings > System content**: for those who skipped the step, for those who change language and for repair.
+3. **At the moment of need**: the feature that does not find its files says so and offers the download
+   ("Italian voice not installed · Download 3 MB").
 
-Il download **continua in background**: l'utente finisce il wizard e usa la scheda. L'avanzamento sta
-nella tendina e nell'icona di stato. Riprende da solo dopo un riavvio o una caduta del Wi-Fi.
+The download **continues in the background**: the user finishes the wizard and uses the board. Progress is in
+the shade and in the status icon. It resumes by itself after a reboot or a Wi-Fi drop.
 
-### "Lo proponiamo solo se lo store risponde?"
+### "Do we offer it only if the store responds?"
 
-Il passo compare sempre se il Wi-Fi è collegato, ma il contenuto cambia con lo stato:
+The step always appears if Wi-Fi is connected, but the content changes with the state:
 
-| Stato | Cosa vede l'utente |
+| State | What the user sees |
 |---|---|
-| Store raggiungibile, SD ok | pacchetti consigliati già spuntati, peso totale, spazio libero, **Scarica (consigliato)** / Più tardi |
-| Store non raggiungibile | "Il server dei contenuti non risponde ora. Li scarico da solo appena torna raggiungibile." + Riprova / Continua |
-| Nessuna SD o SD piena | "Inserisci una microSD (FAT32, almeno 1 GB liberi)" con il controllo in tempo reale |
-| Wi-Fi saltato | il passo non compare; promemoria in Impostazioni e notifica alla prima connessione |
+| Store reachable, SD ok | recommended packages already ticked, total size, free space, **Download the recommended** / Later |
+| Store not reachable | "The content server is not answering now. The board downloads everything by itself as soon as it is back." + Retry / Continue |
+| No SD or full SD | "Insert a microSD card (FAT32) with at least 1 GB free." with real-time checking |
+| Wi-Fi skipped | the step does not appear; reminder in Settings and notification on first connection |
 
-Mai una lista vuota o un errore tecnico. Se il download non parte nel wizard, il servizio riprova da solo
-e manda **una** notifica quando ha finito (o se ha bisogno di qualcosa dall'utente, ad esempio spazio).
+Never an empty list or a technical error. If the download does not start in the wizard, the service retries by itself
+and sends **one** notification when it has finished (or if it needs something from the user, for example space).
 
-## Pacchetti
+## Packages
 
-Pacchetti piccoli e per lingua, così si scarica solo ciò che serve. I nomi qui sotto sono provvisori.
+Small, per-language packages, so that only what is needed is downloaded. The names below are provisional.
 
-| id | Contenuto | Peso | Consigliato |
+| id | Content | Size | Recommended |
 |---|---|---|---|
-| `sys-web` | web companion | ~4 MB | sempre |
-| `anima-core-it` | encoder, AKB5 + shard, facets it/en, `commands.it.json` | ~87 MB | sempre (ANIMA usa l'encoder italiano per tutte le lingue) |
-| `dict-it` | lex-it, forms-it, dict-it-en, dict-en-it | ~31 MB | se lingua it |
-| `dict-en` | lex-en, forms-en | ~18 MB | sempre (inglese = lingua ponte) |
-| `dict-es` / `dict-fr` / `dict-de` | dict-xx-en, dict-en-xx, forms-xx | 12-26 MB | se quella lingua |
-| `voice-it` / `voice-en` | `tts/<lang>/{index.bin,clips.pcm}` | ~3 MB | **rimandato** |
-| `drivers-win` | driver Windows Second Screen | ~2 MB | no (solo da Impostazioni o dalla pagina Second Screen) |
-| `wiki-<lang>-top` | Wikipedia (esiste già) | 23-50 MB | proposto, non spuntato |
+| `sys-web` | web companion | ~4 MB | always |
+| `anima-core-it` | encoder, AKB5 + shards, it/en facets, `commands.it.json` | ~87 MB | always (ANIMA uses the Italian encoder for all languages) |
+| `dict-it` | lex-it, forms-it, dict-it-en, dict-en-it | ~31 MB | if language it |
+| `dict-en` | lex-en, forms-en | ~18 MB | always (English = bridge language) |
+| `dict-es` / `dict-fr` / `dict-de` | dict-xx-en, dict-en-xx, forms-xx | 12-26 MB | if that language |
+| `voice-it` / `voice-en` | `tts/<lang>/{index.bin,clips.pcm}` | ~3 MB | **postponed** |
+| `drivers-win` | Second Screen Windows drivers | ~2 MB | no (only from Settings or from the Second Screen page) |
+| `wiki-<lang>-top` | Wikipedia (already exists) | 23-50 MB | proposed, not ticked |
 
-Totale consigliato per un utente italiano: circa 140 MB.
+Recommended total for an Italian user: about 140 MB.
 
-**Mai** nei pacchetti, con una allowlist invece di una denylist: `teacher.json` (contiene una vera chiave
-API), `workspace.json`, `learned/` scritti dal dispositivo, `session.txt`, `conv/`, `memory.jsonl`, profili,
-regole, timer. Non vanno nemmeno i file inutili che il firmware non apre: `tts/*_final`, `tts/*_merged`,
-`anima-it-encoder.json`, `anima-it-index.bin` (fallback sostituito da AKB5).
+**Never** in the packages, with an allowlist instead of a denylist: `teacher.json` (contains a real API
+key), `workspace.json`, `learned/` written by the device, `session.txt`, `conv/`, `memory.jsonl`, profiles,
+rules, timers. Neither do the useless files the firmware does not open: `tts/*_final`, `tts/*_merged`,
+`anima-it-encoder.json`, `anima-it-index.bin` (fallback replaced by AKB5).
 
-## Lavoro
+## Work
 
-### F0 — Pulizia e sicurezza (prima di tutto)
+### F0 — Cleanup and security (first of all)
 
-- Togliere il `teacher.json` in chiaro dal mirror `sd/`: `sync-sd.ps1` oggi lo copia sopra la copia
-  cifrata della card. Resta solo `teacher.json.example`.
-- `tools/content/manifest.py`: allowlist esplicita per pacchetto, con controllo che fallisce se trova
-  chiavi o token (`"key":`, `sk-`, `AIza`…).
-- Licenze: un file `LICENSES.txt` dentro ogni pacchetto (Wiktionary CC BY-SA 4.0, WordNet CC BY 4.0, …).
-  Le CC BY-SA richiedono attribuzione e la stessa licenza: il pacchetto lo dichiara.
+- Remove the plaintext `teacher.json` from the `sd/` mirror: `sync-sd.ps1` today copies it over the
+  encrypted copy on the card. Only `teacher.json.example` remains.
+- `tools/content/manifest.py`: explicit allowlist per package, with a check that fails if it finds
+  keys or tokens (`"key":`, `sk-`, `AIza`…).
+- Licenses: a `LICENSES.txt` file inside each package (Wiktionary CC BY-SA 4.0, WordNet CC BY 4.0, …).
+  CC BY-SA requires attribution and the same license: the package declares it.
 
-### F1 — Motore dei pacchetti dati (nv_appstore / nv_store_pkg)
+### F1 — Data package engine (nv_appstore / nv_store_pkg)
 
-- Nuove destinazioni ammesse: `web`, `tts`, `anima`, `anima/kb`, `nucleos/drivers`.
-- **Archivi**: una voce di tipo `tar` (ustar non compresso; i `.gz` del web sono già compressi) viene
-  estratta in `<dest>.new/` e poi **scambiata atomicamente** con la cartella vecchia
-  (`web` → `web.old`, `web.new` → `web`, cancellazione di `web.old`). Serve per web (547 file) e AKB5
-  (62 shard): il limite di 64 righe di `pack.sig` resta, e un pacchetto a metà non rompe mai quello
-  installato.
-- Correggere i difetti trovati nell'analisi, perché ci appoggiamo a questo codice:
-  1. `store remove wiki-*` dalla shell dice "removed" ma non toglie nulla (`term_sh.cpp:2509`).
-  2. Gli aggiornamenti dei pacchetti dati non vengono mai segnalati (`abi` 99 viene scartato, `nv_appstore.cpp:1651`).
-  3. Un `.part` completo ma corrotto blocca il pacchetto per sempre (`nv_appstore.cpp:513-533`).
-  4. Il server di sviluppo non serve `/data/<id>/pack.sig`.
-  5. Ogni export rifirma tutti i `pack.sig` (differenze inutili nella repo dello store).
-- Test host: parser di `pack.sig` ed estrattore tar sotto libFuzzer (path traversal `../`, nomi lunghi,
-  file troncati), come gli altri fuzzer in `tests/host`.
+- New allowed destinations: `web`, `tts`, `anima`, `anima/kb`, `nucleos/drivers`.
+- **Archives**: an entry of type `tar` (uncompressed ustar; the web `.gz` files are already compressed) is
+  extracted into `<dest>.new/` and then **swapped atomically** with the old folder
+  (`web` → `web.old`, `web.new` → `web`, deletion of `web.old`). Needed for web (547 files) and AKB5
+  (62 shards): the 64-row limit of `pack.sig` stays, and a half package never breaks the
+  installed one.
+- Fix the defects found in the analysis, because we rely on this code:
+  1. `store remove wiki-*` from the shell says "removed" but removes nothing (`term_sh.cpp:2509`).
+  2. Data package updates are never reported (`abi` 99 is discarded, `nv_appstore.cpp:1651`).
+  3. A complete but corrupt `.part` blocks the package forever (`nv_appstore.cpp:513-533`).
+  4. The development server does not serve `/data/<id>/pack.sig`.
+  5. Every export re-signs all the `pack.sig` (useless differences in the store repo).
+- Host tests: `pack.sig` parser and tar extractor under libFuzzer (`../` path traversal, long names,
+  truncated files), like the other fuzzers in `tests/host`.
 
-### F2 — Servizio `nv_content`
+### F2 — `nv_content` service
 
-- **Manifest dei contenuti compilato nel firmware**: quali pacchetti esistono, quali sono consigliati per
-  lingua e la **versione minima** che questo firmware richiede (ad esempio `sys-web >= 2026.10.3`).
-  Dopo un OTA che richiede un web più nuovo, il servizio aggiorna `sys-web` da solo: il web companion resta
-  sempre allineato al firmware, ed è la parte oggi più fragile (non c'è nessun controllo di versione).
-- Stato per pacchetto: `ok` / `mancante` / `da aggiornare` / `danneggiato` / `in download x%`.
-- Coda persistente su SD (`/sdcard/nucleos/content.queue`): riprende dopo un riavvio, aspetta il Wi-Fi
-  (`net_up`) e lo store, con backoff (1, 5, 15, 60 min).
-- Verifica a richiesta: ricalcola lo sha256 dei file installati e confronta con il `.pack` firmato.
+- **Content manifest compiled into the firmware**: which packages exist, which are recommended per
+  language and the **minimum version** this firmware requires (for example `sys-web >= 2026.10.3`).
+  After an OTA that requires a newer web, the service updates `sys-web` by itself: the web companion always stays
+  aligned with the firmware, and it is today's most fragile part (there is no version check).
+- State per package: `Installed` / `Not installed` / `Update available` / `Needs repair` / `Downloading x%`.
+- Persistent queue on SD (`/sdcard/nucleos/content.queue`): resumes after a reboot, waits for Wi-Fi
+  (`net_up`) and the store, with backoff (1, 5, 15, 60 min).
+- On-demand verification: recomputes the sha256 of the installed files and compares with the signed `.pack`.
 - API:
-  - C: `nv_content_status`, `nv_content_install`, `nv_content_verify`, `nv_content_need(feature)` per gli avvisi.
+  - C: `nv_content_status`, `nv_content_install`, `nv_content_verify`, `nv_content_need(feature)` for the notices.
   - REST: `GET /api/content`, `POST /api/content/install|verify`.
   - Shell: `content status|install|verify|repair`.
-  - ANIMA (caps): sa cosa manca e può dirlo ("non ho il dizionario francese, vuoi scaricarlo?").
+  - ANIMA (caps): knows what is missing and can say so ("I don't have the French dictionary, do you want to download it?").
 
-### F3 — Interfaccia
+### F3 — Interface
 
-- **Wizard**: passo `ST_CONTENT` dopo `ST_WIFI`, con gli stati della tabella sopra. Il pulsante principale è
-  uno solo ("Scarica · 140 MB"); "Personalizza" apre la lista con le spunte.
-- **Impostazioni > Contenuti** (nuova voce nel rail):
-  - card in alto con lo stato generale ("Tutto installato" / "3 pacchetti mancanti · Scarica tutto").
-  - lista per pacchetto: nome, peso, versione, stato, Scarica / Aggiorna / Rimuovi.
-  - Verifica e Ripara.
-  - cambiare lingua propone il dizionario di quella lingua.
-- **Avvisi al bisogno**: dizionario o L1 mancante (ANIMA), driver mancante (Second Screen); voce quando i pacchetti voce esisteranno.
-  Una riga con il pulsante Scarica, mai un errore tecnico.
-- **Web companion senza `web/`**: invece del 404 una piccola pagina compilata nel firmware: "Il web companion
-  non è ancora installato · Installa ora" (chiama `/api/content/install`).
-- Tastiera e mouse su tutto, come da regola del progetto (skill keyboard-support).
+- **Wizard**: step `ST_CONTENT` after `ST_WIFI`, with the states of the table above. There is a single main
+  button ("Download · 140 MB"); "Customize" opens the list with the checkboxes.
+- **Settings > System content** (new entry in the rail):
+  - card at the top with the general state ("Everything is installed" / "Missing: 3 · Download all").
+  - list per package: name, size, version, state, Download / Update / Remove.
+  - Check and Repair.
+  - changing language offers the dictionary for that language.
+- **Notices at the moment of need**: missing dictionary or L1 (ANIMA), missing driver (Second Screen); voice when the voice packages exist.
+  One row with the Download button, never a technical error.
+- **Web companion without `web/`**: instead of the 404 a small page compiled into the firmware: "The web companion
+  is not installed yet · Install now" (calls `/api/content/install`).
+- Keyboard and mouse on everything, per the project rule (skill keyboard-support).
 
-### F4 — Pubblicazione
+### F4 — Publication
 
-- `tools/content/build.py`: costruisce i pacchetti da `sd/` e dalle cache dei builder, versione `YYYY.MM.N`.
-- `tools/dist.py content`: carica gli asset nella release `content-*` e scrive solo le righe `data/<id>` dello
-  store (innesto mirato: un export completo trascina le app non pubblicate delle altre sessioni).
-- Release del firmware: `nucleoos-p4-sdcard.zip` diventa **l'intero set consigliato**, per chi non ha il
-  Wi-Fi o preferisce preparare la SD dal PC. Il dispositivo lo riconosce come installato, perché ogni
-  pacchetto porta il suo record `.pack`.
-- README e pagina del web flasher: "Al primo avvio la scheda scarica da sola ciò che le serve".
+- `tools/content/build.py`: builds the packages from `sd/` and from the builders' caches, version `YYYY.MM.N`.
+- `tools/dist.py content`: uploads the assets to the `content-*` release and writes only the `data/<id>` rows of the
+  store (targeted graft: a full export drags along the unpublished apps of other sessions).
+- Firmware release: `nucleoos-p4-sdcard.zip` becomes **the entire recommended set**, for those without
+  Wi-Fi or who prefer to prepare the SD from the PC. The device recognizes it as installed, because each
+  package carries its own `.pack` record.
+- README and web flasher page: "At first boot the board downloads by itself what it needs".
 
-### F5 — Verifica su hardware (prima di qualsiasi OTA pubblico)
+### F5 — Hardware verification (before any public OTA)
 
-Factory reset + SD vuota, poi:
+Factory reset + empty SD, then:
 
-1. Wizard completo: download in background, controllo di ANIMA L1, dizionari e web companion.
-2. Wi-Fi staccato a metà download: riprende.
-3. Riavvio a metà download: riprende dalla coda.
-4. SD piena: messaggio chiaro, nessun file a metà.
-5. Nessuna SD.
-6. Store irraggiungibile (`store_url` falso): messaggio, poi recupero automatico.
-7. `.part` corrotto: viene scaricato di nuovo.
-8. OTA che richiede un `sys-web` più nuovo: aggiornamento automatico.
-9. Cambio lingua: proposta dei pacchetti di quella lingua.
-10. Verifica e Ripara dopo aver corrotto a mano un file.
-11. **Aggiornabilità** (G1-G14):
-    - un firmware vecchio (1.2.58) con lo store nuovo pubblicato: catalogo, app e `wiki-*` invariati;
-    - SD quasi piena: i contenuti si fermano alla riserva, l'OTA successivo passa;
-    - OTA nuovo in probation: nessun download finché l'immagine non è confermata;
-    - corrente staccata durante lo scambio della cartella `web`;
-    - rollback LKG a un firmware vecchio con web nuovo sulla SD: aggiornamento da Impostazioni funzionante;
-    - scheda preparata a mano: adozione senza download;
-    - `/api/web/put` sulla scheda di sviluppo: niente aggiornamento automatico sopra.
+1. Complete wizard: background download, check of ANIMA L1, dictionaries and web companion.
+2. Wi-Fi disconnected mid-download: resumes.
+3. Reboot mid-download: resumes from the queue.
+4. Full SD: clear message, no half files.
+5. No SD.
+6. Unreachable store (fake `store_url`): message, then automatic recovery.
+7. Corrupt `.part`: downloaded again.
+8. OTA requiring a newer `sys-web`: automatic update.
+9. Language change: offer of the packages for that language.
+10. Check and Repair after corrupting a file by hand.
+11. **Updatability** (G1-G14):
+    - an old firmware (1.2.58) with the new store published: catalog, apps and `wiki-*` unchanged;
+    - almost full SD: contents stop at the reserve, the next OTA goes through;
+    - new OTA in probation: no download until the image is confirmed;
+    - power cut during the swap of the `web` folder;
+    - LKG rollback to an old firmware with a new web on the SD: update from Settings working;
+    - hand-prepared card: adoption without download;
+    - `/api/web/put` on the development board: no automatic update over it.
 
-Più i test host (fuzz del tar e del `pack.sig`) e lo smoke `tools/hil/smoke.py`. Rilascio OTA >= 1.2.61.
+Plus the host tests (tar and `pack.sig` fuzz) and the `tools/hil/smoke.py` smoke. OTA release >= 1.2.61.

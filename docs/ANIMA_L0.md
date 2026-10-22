@@ -1,281 +1,283 @@
-# ANIMA L0: comandi in linguaggio naturale, offline
+# ANIMA L0: natural-language commands, offline
 
-Come ANIMA capisce le richieste al dispositivo senza modello e senza rete, e come lo si fa crescere.
-Il codice è in `components/nv_anima/`; i test in `tests/host/unit/test_anima_nl.cpp`.
+How ANIMA understands requests to the device without a model and without a network, and how it is made to grow.
+The code is in `components/nv_anima/`; the tests are in `tests/host/unit/test_anima_nl.cpp`.
 
-## I quattro strati, nell'ordine in cui rispondono
+Example phrases below are shown in Italian or in the language being discussed, since that is what the user types.
 
-1. **Regole** (`nucleo_anima.c`, `l0_query`): verbi, oggetti e direzione ("alza / abbassa", "troppo alto" →
-   abbassa, "giù / su"). Deterministiche, e le uniche che decidono un'azione da sole.
-2. **Parafrasi** (`anima_phrases.c`, generato): una tabella "frase normalizzata → frase canonica". Una frase in
-   tabella viene riscritta nella canonica, che le regole capiscono già: niente logica duplicata. Fonti:
-   - `tools/anima_phrases.txt`: modelli a mano, `(a|b)` = una delle due, `[x]` = facoltativo;
-   - `tools/anima_phrases_ha.txt`: frasi di test di Home Assistant (CC-BY-4.0), importate con
-     `tools/import_ha_intents.py`; in caso di conflitto vincono sempre le nostre.
-3. **Frasi imparate** (`/data/anima/phrases.user.tsv` sulla SD): quelle che l'utente ha confermato con un "sì"
-   (vedi sotto). Consultate dopo la tabella di serie, che vince sempre; allocate in PSRAM al primo uso.
-4. **Suggeritore** (`anima_intent.c` + `anima_intent_model.c`, generato): quando nessuno strato ha capito,
-   un classificatore (regressione logistica su parole, coppie di parole e n-grammi di caratteri, pesi int8,
-   ~300 KB in flash) propone la richiesta più vicina: *"Non sono sicuro di aver capito: intendi «alza il
-   volume»? (sì/no)"*. **Non esegue mai niente da solo.**
-   - Soglie: probabilità ≥ 0,45 e margine sul secondo ≥ 0,15, poi la lingua della classe.
-   - Filtro di polarità: non propone mai la direzione opposta alle parole dette ("più silenzio" non sarà
-     mai «alza il volume»).
-   - "sì" → esegue la canonica e impara la frase (strato 3); "no" → chiede altre parole e non impara;
-     qualsiasi altra cosa → la proposta decade. Solo chi l'ha ricevuta può rispondere, entro un minuto.
+## The four layers, in the order they answer
 
-Quando nulla risponde, il "non lo so" dice che cosa funziona offline: mai una risposta vuota.
+1. **Rules** (`nucleo_anima.c`, `l0_query`): verbs, objects and direction ("alza / abbassa", "troppo alto" →
+   abbassa, "giù / su"). Deterministic, and the only ones that decide an action on their own.
+2. **Paraphrases** (`anima_phrases.c`, generated): a table "normalized phrase → canonical phrase". A phrase in the
+   table is rewritten into the canonical one, which the rules already understand: no duplicated logic. Sources:
+   - `tools/anima_phrases.txt`: hand-written patterns, `(a|b)` = one of the two, `[x]` = optional;
+   - `tools/anima_phrases_ha.txt`: Home Assistant test phrases (CC-BY-4.0), imported with
+     `tools/import_ha_intents.py`; on conflict ours always win.
+3. **Learned phrases** (`/data/anima/phrases.user.tsv` on the SD): the ones the user confirmed with a "sì"
+   (see below). Consulted after the built-in table, which always wins; allocated in PSRAM on first use.
+4. **Suggester** (`anima_intent.c` + `anima_intent_model.c`, generated): when no layer understood,
+   a classifier (logistic regression on words, word pairs and character n-grams, int8 weights,
+   ~300 KB in flash) proposes the closest request: *"Non sono sicuro di aver capito: intendi «alza il
+   volume»? (sì/no)"*. **It never executes anything on its own.**
+   - Thresholds: probability ≥ 0.45 and margin over the second ≥ 0.15, then the class's language.
+   - Polarity filter: it never proposes the opposite direction of the words spoken ("più silenzio" will never
+     be «alza il volume»).
+   - "sì" → runs the canonical phrase and learns the phrase (layer 3); "no" → asks for other words and does not learn;
+     anything else → the proposal lapses. Only the person who received it can answer, within a minute.
 
-## Contesto tra un turno e l'altro
+When nothing answers, the "I don't know" says what works offline: never an empty answer.
 
-Un frammento che continua il turno precedente viene **riscritto in una richiesta completa** prima di entrare
-negli strati, come una parafrasi entra con la sua canonica (`nucleo_anima_query`, `anima_followup_math` in
-`anima_solve.c`). Oggi vale per i calcoli:
+## Context between turns
 
-| Prima | Poi | Riscritto | Risposta |
+A fragment that continues the previous turn is **rewritten into a complete request** before entering the
+layers, the way a paraphrase enters with its canonical phrase (`nucleo_anima_query`, `anima_followup_math` in
+`anima_solve.c`). Today this applies to calculations:
+
+| Before | Then | Rewritten | Answer |
 |---|---|---|---|
 | "6x6" | "più 5?", "e meno 6", "+ 4" | "36 piu 5" | "Partendo da 36: fa 41." |
 | "10 + 10" | "raddoppia", "il doppio?", "e la metà?" | "20 * 2" / "20 / 2" | |
 | "12 per 12" | "la radice di quello", "al quadrato" | "la radice di 144" | |
 | "6 times 6" | "plus 5?", "and times 2", "halve it" | "36 plus 5" | "Starting from 36: …" |
 
-Lo stesso vale per gli altri ambiti (`anima_context.c`, `anima_ctx_rewrite`), riscrivendo la richiesta precedente:
+The same holds for the other domains (`anima_context.c`, `anima_ctx_rewrite`), rewriting the previous request:
 
-| Prima | Poi | Riscritto |
+| Before | Then | Rewritten |
 |---|---|---|
-| "che tempo fa a Roma?" | "e a Milano?", poi "e domani?" | "che tempo fa a milano", "che tempo fa a milano domani" |
+| "che tempo fa a Roma?" | "e a Milano?", then "e domani?" | "che tempo fa a milano", "che tempo fa a milano domani" |
 | "che ore sono a Tokyo" | "e a New York?", "e Londra?", "what about Paris?" | "che ore sono a new york" |
-| "converti 5 km in miglia" | "e 10?", poi "e in metri?" | "converti 10 km in miglia", "converti 10 km in metri" |
-| "alza il volume" / "abbassa la luminosità" | "di più", "ancora di più", "a bit more" / "di meno" | stessa direzione / "abbassa …" |
+| "converti 5 km in miglia" | "e 10?", then "e in metri?" | "converti 10 km in miglia", "converti 10 km in metri" |
+| "alza il volume" / "abbassa la luminosità" | "di più", "ancora di più", "a bit more" / "di meno" | same direction / "abbassa …" |
 
-La richiesta riscritta compare in `corrected` ("ho capito: …"). Ora nelle città e conversioni sono verificate
-risolvendo la riscrittura ("e a Gotham?" non diventa una risposta); un luogo non è mai un pronome o "casa".
+The rewritten request appears in `corrected` ("ho capito: …"). Cities and conversions are now verified
+by resolving the rewrite ("e a Gotham?" does not turn into an answer); a place is never a pronoun or "casa".
 
-Regole, perché un calcolo non si mangi la richiesta successiva:
-- il turno sostanziale precedente deve essere dello stesso ambito, al massimo 3 turni fa (un "grazie" in mezzo va bene,
-  "apri le note" chiude l'argomento);
-- il frammento è corto (≤ 8 parole) e fatto **solo** di numeri, operatori e parole di un vocabolario chiuso
-  (operatori, verbi come "togli", "raddoppia", anafore come "quello", congiunzioni come "e", "ora"): "per favore
-  apri le note" resta una richiesta di aprire le note;
-- deve riferirsi davvero al risultato ("quanto fa 2 per 3" sta in piedi da solo) e la riscrittura deve essere
-  calcolabile; altrimenti la frase entra com'è;
-- la risposta dice da quale numero è partita, così un contesto sbagliato si vede subito.
+Rules, so that a calculation does not swallow the next request:
+- the previous substantial turn must be in the same domain, at most 3 turns ago (a "grazie" in between is fine,
+  "apri le note" closes the topic);
+- the fragment is short (≤ 8 words) and made **only** of numbers, operators and words from a closed vocabulary
+  (operators, verbs like "togli", "raddoppia", anaphors like "quello", conjunctions like "e", "ora"): "per favore
+  apri le note" stays a request to open Notes;
+- it must really refer to the result ("quanto fa 2 per 3" stands on its own) and the rewrite must be
+  computable; otherwise the sentence goes in as it is;
+- the answer says which number it started from, so a wrong context is seen at once.
 
-### A cosa si riferisce un frammento: una regola sola
+### What a fragment refers to: one rule
 
-Due tipi di memoria, con due regole (`ctx_fresh`, `topic_set` in `nucleo_anima.c`):
+Two kinds of memory, with two rules (`ctx_fresh`, `topic_set` in `nucleo_anima.c`):
 
-| Memoria | Esempi | Vale finché |
+| Memory | Examples | Holds as long as |
 |---|---|---|
-| **conversazione** | "più 5?", "e a Milano?", "e Newton?", "dimmi di più", "spiegati meglio" | è l'**ultimo turno sostanziale**, al massimo 3 turni fa |
-| **dispositivo** | "chiudila" (l'app aperta), "aprilo" (l'ultimo file), "ripeti" (l'ultima azione) | il dispositivo non la cambia |
+| **conversation** | "più 5?", "e a Milano?", "e Newton?", "dimmi di più", "spiegati meglio" | it is the **last substantial turn**, at most 3 turns ago |
+| **device** | "chiudila" (the open app), "aprilo" (the last file), "ripeti" (the last action) | the device does not change it |
 
-Gli atti di dialogo ("grazie", "sei sicuro?") non spostano l'ultimo turno, quindi non rompono il filo; ogni altra
-richiesta sì. Prima ognuno aveva la sua finestra: il focus di "e Newton?" durava 8 turni qualunque cosa si dicesse
-nel mezzo, e "dimmi di più" valeva per sempre sull'ultimo argomento (anche dopo un riavvio). Ora:
-- "dimmi di più" senza un argomento fresco chiede "Di più su cosa?" invece di ripescarne uno vecchio;
-- solo una richiesta "nuda" continua l'argomento: "dimmi di più su Einstein" e "voglio più volume" hanno il loro.
+Dialog acts ("grazie", "sei sicuro?") do not move the last turn, so they do not break the thread; every other
+request does. Before, each had its own window: the focus of "e Newton?" lasted 8 turns whatever was said
+in between, and "dimmi di più" held forever on the last topic (even after a reboot). Now:
+- "dimmi di più" without a fresh topic asks "Di più su cosa?" instead of fishing up an old one;
+- only a "bare" request continues the topic: "dimmi di più su Einstein" and "voglio più volume" have their own.
 
-Test: sezione "CONTEXT" di `tests/host/unit/test_anima_nl.cpp`, compresi i casi che **non** devono essere letti
-come seguito.
+Tests: "CONTEXT" section of `tests/host/unit/test_anima_nl.cpp`, including the cases that must **not** be read
+as follow-ups.
 
-## Spagnolo, francese, tedesco
+## Spanish, French, German
 
-Il motore ragiona in italiano e inglese. Una richiesta in spagnolo, francese o tedesco viene **letta attraverso
-l'inglese** e la risposta torna nella lingua dell'utente (`anima_lang.c`, l'involucro `nucleo_anima_query`):
+The engine reasons in Italian and English. A request in Spanish, French or German is **read through
+English** and the answer comes back in the user's language (`anima_lang.c`, the `nucleo_anima_query` wrapper):
 
 ```
-"¿Cuánto es 6 por 7?"  -> piega i caratteri -> tabella frasi / glossario -> "what is 6 times 7" -> motore
-motore: "It's 42."     -> tabella risposte                                -> "Da 42."
+"¿Cuánto es 6 por 7?"  -> fold characters -> phrase table / glossary -> "what is 6 times 7" -> engine
+engine: "It's 42."     -> answer table                                  -> "Da 42."
 ```
 
-1. **Piegatura**: minuscole, á ñ ü ö ä ß ç œ in ASCII, ¿ ¡ e apostrofi in spazi (`anima_lang_fold`, uguale a
-   `xfold()` di `tools/gen_anima_phrases.py`).
-2. **Frase intera**: la tabella delle parafrasi ha chiavi `es:` `fr:` `de:` con un canonico **inglese**. Fonti:
-   `tools/anima_phrases_xl.txt` (a mano) e le frasi di test di Home Assistant (`tools/import_ha_intents.py`, CC BY 4.0).
-3. **Glossario** (`GL_ES`, `GL_FR`, `GL_DE`): verbi, app, impostazioni, tempo, matematica, dizionario; vince la
-   corrispondenza più lunga ("pon el volumen al" prima di "pon"). Le parole che non conosce passano invariate:
-   nomi, numeri, il testo di una nota. "a/à/um" davanti a un numero diventano "at" (l'ora di un promemoria).
-4. **Sì da solo**: "sí", "oui", "ja", "vale", "d'accord", "klar"... valgono "yes" solo se sono tutta la frase.
-5. **Risposte**: una tabella di modelli inglesi con segnaposto (`RP`), poi date e nomi di giorni e mesi
+1. **Folding**: lowercase, á ñ ü ö ä ß ç œ to ASCII, ¿ ¡ and apostrophes to spaces (`anima_lang_fold`, same as
+   `xfold()` in `tools/gen_anima_phrases.py`).
+2. **Whole phrase**: the paraphrase table has `es:` `fr:` `de:` keys with an **English** canonical phrase. Sources:
+   `tools/anima_phrases_xl.txt` (by hand) and the Home Assistant test phrases (`tools/import_ha_intents.py`, CC BY 4.0).
+3. **Glossary** (`GL_ES`, `GL_FR`, `GL_DE`): verbs, apps, settings, weather, math, dictionary; the longest
+   match wins ("pon el volumen al" before "pon"). Words it does not know pass through unchanged:
+   names, numbers, the text of a note. "a/à/um" before a number become "at" (the time of a reminder).
+4. **Yes on its own**: "sí", "oui", "ja", "vale", "d'accord", "klar"... mean "yes" only if they are the whole sentence.
+5. **Answers**: a table of English patterns with placeholders (`RP`), then dates and names of days and months
    ("Saturday, October 3, 2026" -> "sábado, 3 de octubre de 2026" / "samedi 3 octobre 2026" / "Samstag, 3. Oktober 2026").
-   I `{value}` che l'OS riempie dopo restano al loro posto. Una risposta che la tabella non conosce resta in
-   inglese: è quello che questi utenti ricevevano prima, mai una traduzione inventata.
+   The `{value}` placeholders that the OS fills in later stay where they are. An answer the table does not know stays in
+   English: that is what these users got before, never an invented translation.
 
-| Esempio | Risposta |
+| Example | Answer |
 |---|---|
 | "sube el volumen" / "monte le son" / "mach lauter" | Subo el volumen. / J'augmente le volume. / Ich mache lauter. |
-| "abre la calculadora" / "ouvre la calculatrice" / "öffne den Taschenrechner" | Abro / J'ouvre / Ich öffne + il nome dell'app |
+| "abre la calculadora" / "ouvre la calculatrice" / "öffne den Taschenrechner" | Abro / J'ouvre / Ich öffne + the app name |
 | "¿Cuánto es 6 por 7?" / "combien font 6 fois 7" / "wie viel ist 6 mal 7" | Da 42. / Ça fait 42. / Das ergibt 42. |
 | "pon un temporizador de 5 minutos" | Temporizador de 5 min en marcha: sonará a las 21:51. |
 | "¿qué hora es en Tokio?" | En Tokyo son las 04:46. |
-| "6x6" poi "más 5" | Partiendo de 36: Da 41. (il contesto vale anche qui) |
-| "traduce perro al inglés", "traduce dog al español", "traduci cane in spagnolo" | dog, hound / perro / perro (via inglese) |
-| "traduci cane in tedesco", "traduci perro in italiano", "translate chien to english" | Hund (il "cane" italiano, non il bastone inglese) / cane (dallo spagnolo) / dog (from French) |
-| "come si dice gatto in tedesco" senza la voce | Non ho "gatto" nel dizionario offline di tedesco. (mai una risposta IT<->EN al suo posto) |
+| "6x6" then "más 5" | Partiendo de 36: Da 41. (context applies here too) |
+| "traduce perro al inglés", "traduce dog al español", "traduci cane in spagnolo" | dog, hound / perro / perro (via English) |
+| "traduci cane in tedesco", "traduci perro in italiano", "translate chien to english" | Hund (the Italian "cane", not the English walking stick) / cane (from Spanish) / dog (from French) |
+| "come si dice gatto in tedesco" without the entry | Non ho "gatto" nel dizionario offline di tedesco. (never an IT<->EN answer in its place) |
 
-**Con un modello.** Il primo passaggio è solo sul dispositivo (`s_xl_device_only`): "sube el volumen" non aspetta
-la rete. Se il dispositivo non capisce e c'è un modello utilizzabile, il modello riceve la frase **originale**.
+**With a model.** The first pass is on the device only (`s_xl_device_only`): "sube el volumen" does not wait for
+the network. If the device does not understand and a usable model exists, the model receives the **original** sentence.
 
-**Dove passa la lingua.** L'app ANIMA e Telegram usano `nv_anima_lang()` (la lingua di sistema); il web passa
-`lang`. Le voci offline parlano italiano e inglese: una risposta in spagnolo, francese o tedesco resta a schermo.
+**Where the language comes from.** The ANIMA app and Telegram use `nv_anima_lang()` (the system language); the web passes
+`lang`. The offline voices speak Italian and English: an answer in Spanish, French or German stays on screen.
 
-**Dizionari** (vedi sotto): `dict-{es,fr,de}-en.tsv`, `dict-en-{es,fr,de}.tsv` e `forms-{es,fr,de}.tsv` da
-Wiktionary; italiano <-> spagnolo/francese/tedesco passa dall'inglese.
+**Dictionaries** (see below): `dict-{es,fr,de}-en.tsv`, `dict-en-{es,fr,de}.tsv` and `forms-{es,fr,de}.tsv` from
+Wiktionary; Italian <-> Spanish/French/German goes through English.
 
-**Limiti**: le definizioni monolingui esistono in italiano e inglese; in spagnolo, francese e tedesco "cosa
-significa X" dà la traduzione inglese. Le risposte di un modello seguono la lingua del suo prompt. I valori che
-l'OS scrive in `{value}` (rete, memoria, capacità) sono in inglese.
+**Limits**: monolingual definitions exist in Italian and English; in Spanish, French and German "what does X
+mean" gives the English translation. A model's answers follow the language of its prompt. The values the
+OS writes into `{value}` (network, memory, capacity) are in English.
 
-## Dizionari offline: definizioni, sinonimi, contrari, traduzioni
+## Offline dictionaries: definitions, synonyms, antonyms, translations
 
-Uno strumento di L0 (`nucleo_anima_lex.c`) risponde da dizionari sulla SD, senza rete e senza modello. Come il
-traduttore, è fondato per costruzione: una parola c'è nel file o non c'è, e la risposta dice da dove viene.
+An L0 tool (`nucleo_anima_lex.c`) answers from dictionaries on the SD, without network and without a model. Like the
+translator, it is grounded by construction: a word is in the file or it is not, and the answer says where it comes from.
 
-| Richiesta | Esempio | Risposta |
+| Request | Example | Answer |
 |---|---|---|
-| definizione | "cosa significa effimero", "che vuol dire procrastinare?", "definizione di serendipità", "what does ephemeral mean" | fino a 3 sensi con la parte del discorso, poi 4 sinonimi |
-| sinonimi / contrari | "sinonimi di veloce", "il contrario di felice", "synonyms of happy", "opposite of cold" | fino a 6 parole |
-| forme flesse | "cosa significa andavamo", "traduci correvano in inglese", "translate went to italian" | passa dal lemma e lo dice: «andavamo» è una forma di «andare» |
-| parola dell'altra lingua | "cosa significa ephemeral", "what does gatto mean" | la definizione, con la lingua e la traduzione |
-| senza definizione | "cosa significa casa" | lo dice, e dà la traduzione |
-| "cos'è X" che nessuno strato conosce | "cos'è un ornitorinco" | la definizione, prima del "non lo so" |
+| definition | "cosa significa effimero", "che vuol dire procrastinare?", "definizione di serendipità", "what does ephemeral mean" | up to 3 senses with the part of speech, then 4 synonyms |
+| synonyms / antonyms | "sinonimi di veloce", "il contrario di felice", "synonyms of happy", "opposite of cold" | up to 6 words |
+| inflected forms | "cosa significa andavamo", "traduci correvano in inglese", "translate went to italian" | goes through the lemma and says so: «andavamo» è una forma di «andare» |
+| word from the other language | "cosa significa ephemeral", "what does gatto mean" | the definition, with the language and the translation |
+| no definition | "cosa significa casa" | says so, and gives the translation |
+| "cos'è X" that no layer knows | "cos'è un ornitorinco" | the definition, before the "I don't know" |
 
-Non è una richiesta di dizionario: "sono contrario alla guerra" (manca "di"), "che significa questo?" (un
-pronome), "cosa significa 404", "cosa vuoi dire". Una definizione assente lascia passare la domanda a L1 e al
-modello; sinonimi e contrari assenti danno un "non è nel dizionario" onesto. "Sinonimi di pioggia" non è il meteo.
+Not a dictionary request: "sono contrario alla guerra" (missing "di"), "che significa questo?" (a
+pronoun), "cosa significa 404", "cosa vuoi dire". A missing definition lets the question pass to L1 and to the
+model; missing synonyms and antonyms give an honest "it's not in the dictionary". "Sinonimi di pioggia" is not the weather.
 
-### File sulla SD (`/data/anima/`, generati, fuori da git)
+### Files on the SD (`/data/anima/`, generated, outside git)
 
-| File | Contenuto | Fonte | Licenza | Voci |
+| File | Content | Source | License | Entries |
 |---|---|---|---|---|
-| `lex-it.tsv` | sensi, sinonimi, contrari, grafia | Wikizionario | CC BY-SA 4.0 | 67.000 |
-| `lex-en.tsv` | sensi, sinonimi, contrari, grafia | Open English WordNet 2025 | CC BY 4.0 | 126.000 |
-| `forms-it.tsv` | forma flessa -> lemma | Wiktionary (voci italiane) | CC BY-SA 4.0 | 526.000 |
-| `forms-en.tsv` | forma flessa -> lemma | regole + verbi irregolari sui lemmi di WordNet | CC BY 4.0 | 80.000 |
-| `dict-{es,fr,de}-en.tsv`, `dict-en-{es,fr,de}.tsv`, `forms-{es,fr,de}.tsv` | traduzioni e forme | Wiktionary (voci spagnole, francesi, tedesche) | CC BY-SA 4.0 | vedi `DICTIONARIES.txt` |
-| `dict-it-en.tsv` | traduzioni IT -> EN | Wiktionary + Wikizionario + FreeDict/WikDict | CC BY-SA 4.0 | 122.000 |
-| `dict-en-it.tsv` | traduzioni EN -> IT | FreeDict/WikDict + Wiktionary invertito | CC BY-SA 4.0 | 97.000 |
-| `DICTIONARIES.txt` | fonti, versioni, licenze, conteggi | | | |
+| `lex-it.tsv` | senses, synonyms, antonyms, spelling | Wikizionario | CC BY-SA 4.0 | 67,000 |
+| `lex-en.tsv` | senses, synonyms, antonyms, spelling | Open English WordNet 2025 | CC BY 4.0 | 126,000 |
+| `forms-it.tsv` | inflected form -> lemma | Wiktionary (Italian entries) | CC BY-SA 4.0 | 526,000 |
+| `forms-en.tsv` | inflected form -> lemma | rules + irregular verbs on the WordNet lemmas | CC BY 4.0 | 80,000 |
+| `dict-{es,fr,de}-en.tsv`, `dict-en-{es,fr,de}.tsv`, `forms-{es,fr,de}.tsv` | translations and forms | Wiktionary (Spanish, French, German entries) | CC BY-SA 4.0 | see `DICTIONARIES.txt` |
+| `dict-it-en.tsv` | IT -> EN translations | Wiktionary + Wikizionario + FreeDict/WikDict | CC BY-SA 4.0 | 122,000 |
+| `dict-en-it.tsv` | EN -> IT translations | FreeDict/WikDict + inverted Wiktionary | CC BY-SA 4.0 | 97,000 |
+| `DICTIONARIES.txt` | sources, versions, licenses, counts | | | |
 
-Circa 50 MB in tutto. Ogni file è `chiave<TAB>valore` ordinato per byte: il firmware lo cerca per bisezione
-direttamente sulla SD (`anima_dict_get`, una ventina di letture, un buffer da 2 KB sullo heap, niente di residente).
-Le chiavi sono normalizzate come il tokenizzatore del firmware (`anima_dict_tokenize`, condiviso da tutti i
-dizionari), e il generatore le scrive allo stesso modo.
+About 50 MB in all. Each file is `key<TAB>value` sorted by byte: the firmware looks it up by bisection
+directly on the SD (`anima_dict_get`, about twenty reads, one 2 KB buffer on the heap, nothing resident).
+Keys are normalized like the firmware's tokenizer (`anima_dict_tokenize`, shared by all the
+dictionaries), and the generator writes them the same way.
 
 ```bash
-python tools/dicts/gen_dicts.py fetch    # scarica le fonti in tools/dicts/.cache (~385 MB)
-python tools/dicts/gen_dicts.py build    # scrive sd/data/anima/*.tsv (~4 min con ES/FR/DE)
-python tools/dicts/gen_dicts.py check    # cerca parole come fa il firmware, ordinamento e qualità EN -> IT
+python tools/dicts/gen_dicts.py fetch    # download the sources into tools/dicts/.cache (~385 MB)
+python tools/dicts/gen_dicts.py build    # write sd/data/anima/*.tsv (~4 min with ES/FR/DE)
+python tools/dicts/gen_dicts.py check    # look up words as the firmware does, ordering and EN -> IT quality
 ```
 
-Poi `tools/sync-sd.ps1 -Drive X:` copia i file sulla card.
+Then `tools/sync-sd.ps1 -Drive X:` copies the files to the card.
 
-Qualità, scelte del generatore:
-- le traduzioni EN -> IT mettono prima le parole su cui **due fonti concordano** (FreeDict le elenca e sono la
-  prima glossa di Wiktionary), poi le più **usate** (frequenze FrequencyWords da OpenSubtitles, CC BY-SA 4.0) e
-  quelle della parte del discorso principale della parola inglese (WordNet): "chair" -> sedia prima di presiedere,
-  "door" -> porta prima di anta;
-- EN -> IT scarta il rumore delle fonti: sensi marcati slang, volgari, umoristici, letterari, poetici, dialettali o
-  "relational" (water -> idrico) restano solo come riserva per le parole che nient'altro traduce (alacritous ->
-  alacre); una parola con un senso offensivo ("bike" -> puttana) solo se Wiktionary e FreeDict confermano proprio
-  quel significato; via affissi ("-ato"), forme flesse accanto al lemma ("cuori" dopo "cuore"), inglese rimasto
-  nelle liste, parole funzionali ("de" per "rome"); i nomi propri di FreeDict arrivano (Italy -> Italia).
-  `gen_dicts.py check` lo verifica su un elenco di parole (la prima traduzione e quelle che non devono comparire);
-- in ogni voce la parte del discorso con più sensi viene prima ("andare" il verbo, "fast" l'aggettivo);
-- sensi arcaici, rari o specialistici vanno in fondo; i residui di modello di Wikizionario sono scartati. Qualche
-  voce comune ("casa") non ha una definizione estraibile: in quel caso risponde con la traduzione.
-- la parola si legge prima nella lingua di chi parla: per un italiano "cane" è il cane, non l'inglese *cane*
-  (bastone); poi l'inglese come scritta, poi l'italiano;
-- una voce con un senso suo è un lemma anche se ha pure un senso "forma di" ("música" = musica e femminile di
-  "músico"): prima restava fuori da EN -> ES;
-- EN -> ES/FR/DE inverte le glosse mostrate; i sensi successivi (fino al quinto) riempiono solo le parole
-  inglesi che nessun primo senso traduce ("cat" -> Katze dal terzo senso), senza scalzare "queen" -> Königin.
+Quality, generator choices:
+- EN -> IT translations put first the words on which **two sources agree** (FreeDict lists them and they are the
+  first Wiktionary gloss), then the most **used** (FrequencyWords frequencies from OpenSubtitles, CC BY-SA 4.0) and
+  those of the English word's main part of speech (WordNet): "chair" -> sedia before presiedere,
+  "door" -> porta before anta;
+- EN -> IT discards source noise: senses marked slang, vulgar, humorous, literary, poetic, dialectal or
+  "relational" (water -> idrico) stay only as a fallback for words that nothing else translates (alacritous ->
+  alacre); a word with an offensive sense ("bike" -> puttana) only if Wiktionary and FreeDict both confirm that
+  exact meaning; affixes ("-ato") are dropped, as are inflected forms next to the lemma ("cuori" after "cuore"), English left over
+  in the lists, function words ("de" for "rome"); FreeDict's proper nouns come through (Italy -> Italia).
+  `gen_dicts.py check` verifies this on a list of words (the first translation and those that must not appear);
+- in each entry the part of speech with the most senses comes first ("andare" the verb, "fast" the adjective);
+- archaic, rare or specialist senses go at the bottom; Wikizionario template leftovers are discarded. Some
+  common entries ("casa") have no extractable definition: in that case it answers with the translation.
+- the word is read first in the speaker's language: for an Italian speaker "cane" is the dog, not the English *cane*
+  (stick); then English as written, then Italian;
+- an entry with a sense of its own is a lemma even if it also has a "form of" sense ("música" = music and feminine of
+  "músico"): before, it was left out of EN -> ES;
+- EN -> ES/FR/DE inverts the displayed glosses; later senses (up to the fifth) fill in only the English words
+  that no first sense translates ("cat" -> Katze from the third sense), without displacing "queen" -> Königin.
 
-I test sul PC usano dizionari in miniatura scritti dal test (`write_lexicon_fixture` in
-`tests/host/unit/test_anima_nl.cpp`): stesso formato, stessa ricerca.
+The PC tests use miniature dictionaries written by the test (`write_lexicon_fixture` in
+`tests/host/unit/test_anima_nl.cpp`): same format, same lookup.
 
-## Strumenti (sul PC)
+## Tools (on the PC)
 
-| Comando | Cosa fa |
+| Command | What it does |
 |---|---|
-| `python tools/gen_anima_phrases.py [--check]` | rigenera tabella e test dalle parafrasi (`--check`: fallisce se non aggiornati, come in CI) |
-| `python tools/import_ha_intents.py <checkout home-assistant/intents>` | reimporta le frasi di Home Assistant |
-| `python tools/import_nucleo_evals.py <checkout NucleoOs>` | reimporta i corpus di azioni dell'ANIMA del Cardputer come test |
-| `python tools/augment_anima_intent.py [--verify]` | **GPU**: un LLM locale (Ollama, default `qwen3.5:9b`) genera parafrasi e negativi "difficili"; `--verify` fa da giudice e tiene solo quelle giuste (scarti in `.rejected`) |
-| `python tools/train_anima_intent.py [--eval-only]` | addestra il suggeritore, lo valuta sul set mai visto e scrive i pesi C + i casi golden |
-| `python tools/dicts/gen_dicts.py fetch\|build\|check` | scarica le fonti, genera e verifica i dizionari offline (vedi sopra) |
-| `python tools/anima_misses.py [--promote]` | dalla scheda: frasi non capite, proposte fatte, frasi imparate; `--promote` porta queste ultime nella tabella di serie |
+| `python tools/gen_anima_phrases.py [--check]` | regenerate the table and tests from the paraphrases (`--check`: fails if out of date, as in CI) |
+| `python tools/import_ha_intents.py <checkout home-assistant/intents>` | re-import the Home Assistant phrases |
+| `python tools/import_nucleo_evals.py <checkout NucleoOs>` | re-import the Cardputer ANIMA action corpora as tests |
+| `python tools/augment_anima_intent.py [--verify]` | **GPU**: a local LLM (Ollama, default `qwen3.5:9b`) generates paraphrases and "hard" negatives; `--verify` acts as judge and keeps only the right ones (rejects in `.rejected`) |
+| `python tools/train_anima_intent.py [--eval-only]` | train the suggester, evaluate it on the unseen set and write the C weights + the golden cases |
+| `python tools/dicts/gen_dicts.py fetch\|build\|check` | download the sources, generate and verify the offline dictionaries (see above) |
+| `python tools/anima_misses.py [--promote]` | from the board: phrases not understood, proposals made, phrases learned; `--promote` moves the latter into the built-in table |
 
-I tre script di addestramento richiedono `numpy`, `scikit-learn`, `pyyaml` (solo sul PC; quello che va
-nel firmware è C generato e committato).
+The three training scripts require `numpy`, `scikit-learn`, `pyyaml` (PC only; what goes
+into the firmware is generated C, committed).
 
-## Il ciclo di miglioramento
+## The improvement loop
 
-1. La scheda registra ogni turno (`telemetry.ndjson`) e le frasi confermate (`phrases.user.tsv`).
-2. `anima_misses.py` mostra cosa non è stato capito e cosa proporrebbe il suggeritore.
-3. Le frasi giuste diventano modelli in `anima_phrases.txt` (o `--promote` per quelle confermate).
-4. `augment_anima_intent.py` + `--verify` allargano i dati di addestramento con la GPU.
-5. `gen_anima_phrases.py`, `train_anima_intent.py`, `make -C tests/host`: tabella, pesi e test.
+1. The board logs every turn (`telemetry.ndjson`) and the confirmed phrases (`phrases.user.tsv`).
+2. `anima_misses.py` shows what was not understood and what the suggester would propose.
+3. The right phrases become patterns in `anima_phrases.txt` (or `--promote` for the confirmed ones).
+4. `augment_anima_intent.py` + `--verify` widen the training data with the GPU.
+5. `gen_anima_phrases.py`, `train_anima_intent.py`, `make -C tests/host`: table, weights and tests.
 
-## Le misure (160 frasi scritte a mano, mai viste)
+## The measurements (160 hand-written phrases, never seen)
 
-Il set `tools/anima_intent_heldout.txt` ha 160 frasi: 30 sono già nella tabella (le capisce L0), le altre misurano
-il suggeritore. Un controllo di contaminazione toglie dall'addestramento ogni frase uguale a una di prova.
+The set `tools/anima_intent_heldout.txt` has 160 phrases: 30 are already in the table (L0 understands them), the others measure
+the suggester. A contamination check removes from training every phrase equal to a test one.
 
-| Variante provata | Proposte giuste | Sbagliate | Frasi non comandi con proposta | Esito |
+| Variant tried | Correct proposals | Wrong | Non-command phrases with a proposal | Outcome |
 |---|---|---|---|---|
-| Frasi LLM giudicate dal 9B | 62/95 | 5 | 5/35 | sostituita |
-| **Frasi LLM riviste a mano + filtri stato/passato/negazione** | **62/95** | **2** | **3/35** | **in uso** |
-| Conformal prediction (CICC) | meno proposte, 0 sbagliate | | | scartata: con la conferma, una proposta mancata costa più di una sbagliata |
-| Energy score per il fuori tema | AUROC 0,82 contro 0,975 della classe "-" | | | scartato |
-| Filtro per accordo tra modelli | 31 contro 37 (set da 57) | | | scartato: toglie i negativi difficili, i dati più utili |
-| Negativi difficili e coppie confondibili generati | 33-35 contro 37 (set da 57) | | | scartati: troppe etichette sbagliate |
-| Pesi più grandi (fino a 4,8 MB) | entro il rumore | | | scartato: il limite sono i dati |
+| LLM phrases judged by the 9B | 62/95 | 5 | 5/35 | replaced |
+| **LLM phrases reviewed by hand + state/past/negation filters** | **62/95** | **2** | **3/35** | **in use** |
+| Conformal prediction (CICC) | fewer proposals, 0 wrong | | | dropped: with the confirmation, a missed proposal costs more than a wrong one |
+| Energy score for off-topic | AUROC 0.82 against 0.975 for the "-" class | | | dropped |
+| Filter by agreement between models | 31 against 37 (57-phrase set) | | | dropped: removes the hard negatives, the most useful data |
+| Hard negatives and confusable pairs generated | 33-35 against 37 (57-phrase set) | | | dropped: too many wrong labels |
+| Bigger weights (up to 4.8 MB) | within noise | | | dropped: the limit is the data |
 
-Filtri del suggeritore (identici in Python e in C): direzione contraria alle parole dette; uno STATO senza verbo né
-comparativo ("il volume è basso") è una lamentela e inverte la direzione, come "troppo"; un racconto al passato o
-una negazione ("ho alzato il volume ieri", "non toccare la musica") non riceve mai una proposta.
+Suggester filters (identical in Python and in C): direction opposite to the words spoken; a STATE with no verb or
+comparative ("il volume è basso") is a complaint and inverts the direction, like "troppo"; a story in the past or
+a negation ("ho alzato il volume ieri", "non toccare la musica") never gets a proposal.
 
-Giudice LLM: `--judge-model qwen3.6:35b-a3b-mtp-q4_K_M --num-gpu 16` (35B a esperti, 3B attivi, metà strati sulla
-GPU da 8 GB, il resto in RAM) è molto più severo del 9B ma lento (~1 h per 2.400 frasi). Per questo giro le frasi
-sono state riviste a mano: scartate 408 su 1.373 (per esempio "go home" come guida verso casa, "resume" come
-riprendere un discorso, "non vedo niente" etichettata come abbassare la luce).
+LLM judge: `--judge-model qwen3.6:35b-a3b-mtp-q4_K_M --num-gpu 16` (35B mixture-of-experts, 3B active, half the layers on the
+8 GB GPU, the rest in RAM) is much stricter than the 9B but slow (~1 h for 2,400 phrases). For this round the phrases
+were reviewed by hand: 408 discarded out of 1,373 (for example "go home" as directions to a house, "resume" as
+resuming a conversation, "non vedo niente" labeled as lowering the light).
 
-## Perché non un encoder semantico per i comandi
+## Why not a semantic encoder for commands
 
-`tools/anima_intent_heldout.txt` contiene frasi che nessuno strato ha mai visto: misura onesta, da non usare
-mai per addestrare. Il test fallisce se un modello nuovo ne azzecca meno o ne sbaglia di più.
+`tools/anima_intent_heldout.txt` contains phrases that no layer has ever seen: an honest measurement, never to be used
+for training. The test fails if a new model gets fewer of them right or more of them wrong.
 
-Gli encoder di frasi "statici" (quello già usato da L1, distillato da multilingual-e5-small, e anche
-potion-multilingual-128M e static-similarity-mrl-multilingual) sono stati misurati sulle stesse frasi: danno
-agli **opposti** ("apri / chiudi la musica" 0,83) una somiglianza più alta che alle vere parafrasi ("alza il
-volume / aumenta l'audio" 0,31). Vanno bene per cercare conoscenza, non per scegliere un comando: per questo
-il suggeritore è un classificatore addestrato, con conferma e filtro di polarità.
+"Static" sentence encoders (the one L1 already uses, distilled from multilingual-e5-small, and also
+potion-multilingual-128M and static-similarity-mrl-multilingual) were measured on the same phrases: they give
+**opposites** ("apri / chiudi la musica" 0.83) a higher similarity than real paraphrases ("alza il
+volume / aumenta l'audio" 0.31). They are fine for finding knowledge, not for choosing a command: that is why
+the suggester is a trained classifier, with confirmation and a polarity filter.
 
-## Memoria: in PSRAM solo quello che è attivo
+## Memory: only what is active is in PSRAM
 
-Niente di quanto sopra occupa memoria quando ANIMA non lavora:
+None of the above takes memory when ANIMA is not working:
 
-| Cosa | Dove | Quando |
+| What | Where | When |
 |---|---|---|
-| Tabella delle parafrasi, pesi del suggeritore | flash (`const`), ~0,3 MB | sempre mappati, 0 byte di RAM |
-| Frasi imparate (fino a 2048) | PSRAM heap, ~360 KB | al primo uso di ANIMA |
-| Encoder L1 (3 MB int8) | PSRAM heap | al primo uso, solo se restano ≥ 8 MB liberi |
-| Indice e shard di conoscenza (`nucleo_anima_l1.c`, `l1_fopen`) | PSRAM heap, fino a 24 MB, file fino a 12 MB | al primo uso, solo se restano ≥ 8 MB liberi; LRU |
+| Paraphrase table, suggester weights | flash (`const`), ~0.3 MB | always mapped, 0 bytes of RAM |
+| Learned phrases (up to 2048) | PSRAM heap, ~360 KB | on first use of ANIMA |
+| L1 encoder (3 MB int8) | PSRAM heap | on first use, only if ≥ 8 MB remain free |
+| Knowledge index and shards (`nucleo_anima_l1.c`, `l1_fopen`) | PSRAM heap, up to 24 MB, files up to 12 MB | on first use, only if ≥ 8 MB remain free; LRU |
 
-Il router AKB5 sceglie gli shard che servono alla domanda, come un mixture-of-experts sceglie gli esperti:
-in PSRAM restano quelli attivi. Il memory broker (`nv_mem_reclaimer_add("anima-l1-mirrors")`) libera tutte le
-copie quando un'app pesante (fotocamera, video) chiede memoria; alla domanda successiva si ricaricano. La
-PSRAM *statica* (`.ext_ram.bss`, sorvegliata da `tools/ci/check_budgets.py`) resta quasi intatta: tutto
-quello che è grande è dinamico.
+The AKB5 router picks the shards a question needs, the way a mixture-of-experts picks its experts:
+the active ones stay in PSRAM. The memory broker (`nv_mem_reclaimer_add("anima-l1-mirrors")`) frees all the
+copies when a heavy app (camera, video) asks for memory; they are reloaded at the next question. The *static*
+PSRAM (`.ext_ram.bss`, watched by `tools/ci/check_budgets.py`) stays almost untouched: everything
+large is dynamic.
 
-## Test
+## Tests
 
-`make -C tests/host` (Linux/WSL, clang) esegue anche `anima_nl`:
-- **frasi in linguaggio naturale:** italiano e inglese, con le regressioni trovate provando la scheda;
-- **parafrasi:** ogni parafrasi deve dare lo stesso intento e argomento della sua canonica;
-- **corpus del Cardputer:** quello curato è bloccante, comprese le frasi che *nominano* un'azione senza
-  chiederla e che non devono mai eseguirla; quello grezzo è solo una metrica che non può scendere;
-- **suggeritore:** parità C/Python sui casi golden, soglie sul set mai visto e flusso
-  proposta → sì → esegue → impara.
+`make -C tests/host` (Linux/WSL, clang) also runs `anima_nl`:
+- **natural-language phrases:** Italian and English, with the regressions found by testing on the board;
+- **paraphrases:** each paraphrase must give the same intent and argument as its canonical phrase;
+- **Cardputer corpus:** the curated one is blocking, including the phrases that *mention* an action without
+  asking for it and must never execute it; the raw one is only a metric that cannot go down;
+- **suggester:** C/Python parity on the golden cases, thresholds on the unseen set and the
+  proposal → yes → executes → learns flow.

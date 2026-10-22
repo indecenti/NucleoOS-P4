@@ -1,699 +1,698 @@
-# Biblioteca offline: lettore ZIM
+# Offline library: ZIM reader
 
-Stato al 2026-10-12:
+Status as of 2026-10-12:
 
-- **F0 chiusa**: misure sulla scheda nel §1b, banco di prova in `ports/zim/bench`.
-- **F1 chiusa in locale**: libreria in `ports/zim/nvzim`, risultati nel §4b. La CI su GitHub partirà al primo push.
-- **F2 chiusa in locale**: `zim` 1.1.0 è nello Store; ANIMA lo usa dal firmware `b07d75a` (risultati nel §4c).
-- **F3 chiusa**: l'app Biblioteca 1.0.0 è nello Store (store `7303ad3`, categoria Conoscenza); provata sulla scheda
-  con il firmware locale 1.2.113 (risultati nel §4d).
-- **F4 chiusa**: immagini e formule nella Biblioteca 1.1.0, nello Store dal 2026-10-12 (store `fcca9e6`);
-  aggiornamento dallo Store provato sulla scheda (1.2.115 locale; risultati nel §4e).
-- **F5 chiusa in locale** (branch `f5dl` sopra `feat/office`): downloader di sistema `nv_dl` (ABI 18) e schermata
-  "Scarica raccolte" nella Biblioteca 1.2.0. Provata sulla scheda con il firmware locale 1.2.142, non ancora pubblica
-  (risultati nel §4g).
+- **F0 closed**: measurements on the board in §1b, test bench in `ports/zim/bench`.
+- **F1 closed locally**: library in `ports/zim/nvzim`, results in §4b. The CI on GitHub will start at the first push.
+- **F2 closed locally**: `zim` 1.1.0 is in the Store; ANIMA uses it since firmware `b07d75a` (results in §4c).
+- **F3 closed**: the Library app 1.0.0 is in the Store (store `7303ad3`, Knowledge category); tested on the board
+  with local firmware 1.2.113 (results in §4d).
+- **F4 closed**: images and formulas in Library 1.1.0, in the Store since 2026-10-12 (store `fcca9e6`);
+  update from the Store tested on the board (local 1.2.115; results in §4e).
+- **F5 closed locally** (branch `f5dl` on top of `feat/office`): system downloader `nv_dl` (ABI 18) and the
+  "Download collections" screen in Library 1.2.0. Tested on the board with local firmware 1.2.142, not yet public
+  (results in §4g).
 
-Obiettivo: leggere sul P4 i file ZIM di Kiwix/openZIM
-(Wikipedia completa, Wiktionary, Wikivoyage, medicina, iFixit, Stack Exchange, DevDocs, Gutenberg...) con un'app
-grafica dello Store, e dare ad ANIMA e al Terminale lo stesso accesso con un programma `zim`.
+Goal: read Kiwix/openZIM ZIM files on the P4
+(full Wikipedia, Wiktionary, Wikivoyage, medicine, iFixit, Stack Exchange, DevDocs, Gutenberg...) with a
+graphical Store app, and give ANIMA and the Terminal the same access with a `zim` program.
 
-Un solo lettore apre **3.631 raccolte** del catalogo Kiwix, 382 in italiano, aggiornate ogni mese, senza che
-dobbiamo convertire nulla.
+A single reader opens **3,631 collections** of the Kiwix catalog, 382 in Italian, updated every month, without
+us having to convert anything.
 
-## 1. Cosa sappiamo già (verificato, non ipotesi)
+## 1. What we already know (verified, not hypotheses)
 
-### Il formato, misurato sui file reali
+### The format, measured on real files
 
-Sonda sui file in `tools/kb/.cache` (`wikipedia_it_top_mini_2026-07.zim`, `wikipedia_en_top_mini_2026-09.zim`):
+Probe on the files in `tools/kb/.cache` (`wikipedia_it_top_mini_2026-07.zim`, `wikipedia_en_top_mini_2026-09.zim`):
 
-| Cosa | Valore |
+| What | Value |
 |---|---|
-| versione | 6.3, intestazione di 80 byte little endian, magic `0x044D495A` |
-| namespace | schema nuovo: `C` contenuti, `M` metadati (13), `W` `mainPage` (redirect), `X` indici |
-| voci | IT 195.173, di cui 121.276 redirect; dirent media 32 byte |
-| indice dei titoli | `titleIdxPos = -1` (niente lista v0): l'ordine per titolo esiste **solo** in `X/listing/titleOrdered/v1`, array di `uint32` (indici di voce) |
-| ordinamento titoli | **per byte**, quindi sensibile alle maiuscole; la lista contiene anche i redirect (IT 62%, EN 93% del campione) |
-| cluster | 276 zstd (tipo 5) e 4 non compressi (tipo 1, da 23 a 30 MB l'uno: indici Xapian e liste) |
-| frame zstd | livello 19, **finestra dichiarata 8 MiB, dimensione del contenuto assente** |
-| cluster decompresso | circa 2 MiB e 186 blob (mediana); compresso circa 160 KB nella variante `mini` |
-| tipi MIME | `text/html`, SVG (formule e icone), WebP, CSS, JS |
-| checksum | MD5 negli ultimi 16 byte |
-| ricerca di Kiwix | `X/fulltext/xapian` e `X/title/xapian` (Xapian, GPL): non utilizzabili da noi |
+| version | 6.3, 80-byte little-endian header, magic `0x044D495A` |
+| namespaces | new scheme: `C` contents, `M` metadata (13), `W` `mainPage` (redirect), `X` indexes |
+| entries | IT 195,173, of which 121,276 redirects; average dirent 32 bytes |
+| title index | `titleIdxPos = -1` (no v0 list): the title order exists **only** in `X/listing/titleOrdered/v1`, an array of `uint32` (entry indexes) |
+| title ordering | **by byte**, hence case-sensitive; the list also contains redirects (IT 62%, EN 93% of the sample) |
+| clusters | 276 zstd (type 5) and 4 uncompressed (type 1, 23 to 30 MB each: Xapian indexes and lists) |
+| zstd frame | level 19, **declared window 8 MiB, content size absent** |
+| decompressed cluster | about 2 MiB and 186 blobs (median); compressed about 160 KB in the `mini` variant |
+| MIME types | `text/html`, SVG (formulas and icons), WebP, CSS, JS |
+| checksum | MD5 in the last 16 bytes |
+| Kiwix search | `X/fulltext/xapian` and `X/title/xapian` (Xapian, GPL): not usable by us |
 
-I file vecchi (versione 5) usano xz (tipo 4). Le offset dei blob sono a 4 byte, o a 8 se il bit `0x10` del byte
-di informazione del cluster è acceso.
+Old files (version 5) use xz (type 4). Blob offsets are 4 bytes, or 8 if bit `0x10` of the cluster
+information byte is set.
 
-### Il catalogo
+### The catalog
 
-- OPDS: `https://opds.library.kiwix.org/catalog/v2/entries?lang=ita` (`library.kiwix.org` risponde 301 verso qui).
-  Per ogni voce: nome, titolo, lingua, variante, numero di voci, illustrazione 48x48, dimensione e link `.meta4`.
-- Il `.meta4` (Metalink) contiene la dimensione, lo **SHA-256**, uno **SHA-1 per ogni pezzo da 4 MiB** e i mirror
-  HTTPS (nluug.nl, fau.de, accum.se, dumps.wikimedia.org...). Il download si può riprendere pezzo per pezzo,
-  verificato.
+- OPDS: `https://opds.library.kiwix.org/catalog/v2/entries?lang=ita` (`library.kiwix.org` answers 301 to here).
+  For each entry: name, title, language, variant, number of entries, 48x48 illustration, size and `.meta4` link.
+- The `.meta4` (Metalink) contains the size, the **SHA-256**, a **SHA-1 for each 4 MiB piece** and the HTTPS
+  mirrors (nluug.nl, fau.de, accum.se, dumps.wikimedia.org...). The download can be resumed piece by piece,
+  verified.
 
-| Raccolta | Dimensione |
+| Collection | Size |
 |---|---|
-| `wikipedia_it_top_mini` (introduzioni, sorgente di AKB6) | 107 MB |
+| `wikipedia_it_top_mini` (introductions, source of AKB6) | 107 MB |
 | `wikipedia_it_medicine_nopic` | 92 MB |
 | `wikipedia_it_top_nopic` | 898 MB |
-| `wikipedia_it_all_mini` | 2,3 GB |
-| `wikipedia_it_all_nopic` | 8,4 GB |
+| `wikipedia_it_all_mini` | 2.3 GB |
+| `wikipedia_it_all_nopic` | 8.4 GB |
 | `wikipedia_it_all_maxi` | 30 GB |
 | `wiktionary_it_all_nopic` | 357 MB |
 | `wikivoyage_it_all_maxi` | 617 MB |
 | `gutenberg_it_all` | 824 MB |
-| `ifixit_it_all` | 3,2 GB |
-| `unix.stackexchange.com_en_all` | 1,2 GB |
-| `devdocs_en_python`, `_c`, `_cpp`, `_git`, `_lua`... | da 0,4 a 7 MB l'una |
+| `ifixit_it_all` | 3.2 GB |
+| `unix.stackexchange.com_en_all` | 1.2 GB |
+| `devdocs_en_python`, `_c`, `_cpp`, `_git`, `_lua`... | 0.4 to 7 MB each |
 
-### I vincoli del nostro sistema
+### The constraints of our system
 
-1. **Offset a 32 bit sopra FatFs.** FatFs ha exFAT e LBA64 accesi (`components/fatfs/src/ffconf.h:255,284`), ma
-   newlib ha `off_t` = `long`. Il `os_lseek` di WAMR e `__wrap_pread` (`components/nv_wasm/nv_wasm_wasi.c:336`)
-   lo restringono, quindi **un'app non legge oltre 2 GiB** di un file.
-2. **Seek su FAT32.** `pread` è `f_lseek` + `f_read`. Su FAT32 un seek all'indietro ripercorre la catena dei
-   cluster dall'inizio, e `CONFIG_FATFS_USE_FASTSEEK` è spento (`sdkconfig:1926`). Un lettore ZIM fa molte letture
-   casuali, quindi va misurato. Su exFAT i file contigui si posizionano in tempo costante.
-3. **Testo.** `gfx_text` è un font 5x7 con sole maiuscole ASCII. L'app deve portarsi i suoi font, come già fanno
-   luaapp e puzzles (atlanti a 4 bit generati al build).
-4. **Immagini.** Il sistema non decodifica immagini per le app: decodifica l'app (openhasp ha già lodepng).
-5. **Rete per le app.** `nv.http_req` mette in buffer tutta la risposta (massimo 1 MB), non segue i redirect, non
-   espone le intestazioni e ha un timeout di 30 s. Il downloader dello Store (`nv_appstore`) riprende, calcola
-   SHA-256 e segue i redirect, ma accetta solo pacchetti firmati verso cartelle in whitelist, e il suo `fseek` è
+1. **32-bit offsets on top of FatFs.** FatFs has exFAT and LBA64 on (`components/fatfs/src/ffconf.h:255,284`), but
+   newlib has `off_t` = `long`. WAMR's `os_lseek` and `__wrap_pread` (`components/nv_wasm/nv_wasm_wasi.c:336`)
+   narrow it, so **an app does not read beyond 2 GiB** of a file.
+2. **Seek on FAT32.** `pread` is `f_lseek` + `f_read`. On FAT32 a backward seek walks the cluster chain
+   from the start, and `CONFIG_FATFS_USE_FASTSEEK` is off (`sdkconfig:1926`). A ZIM reader does many random
+   reads, so this must be measured. On exFAT contiguous files are positioned in constant time.
+3. **Text.** `gfx_text` is a 5x7 font with only ASCII capitals. The app must bring its own fonts, as luaapp
+   and puzzles already do (4-bit atlases generated at build time).
+4. **Images.** The system does not decode images for apps: the app decodes (openhasp already has lodepng).
+5. **Network for apps.** `nv.http_req` buffers the whole response (maximum 1 MB), does not follow redirects, does not
+   expose headers and has a 30 s timeout. The Store downloader (`nv_appstore`) resumes, computes
+   SHA-256 and follows redirects, but accepts only signed packages toward whitelisted folders, and its `fseek` is
    `long` (2 GiB).
-6. **File visibili.** Con il permesso `home` un'app WASI vede `/sdcard/home`. La libreria va in `~/zim/`, condivisa
-   tra l'app, il Terminale e l'app File.
-7. **Memoria.** `ram_budget` arriva al massimo a 16 MB.
-8. **ANIMA ha già AKB6.** `docs/ANIMA_KB.md` ha scelto apposta di non leggere uno ZIM a ogni domanda: AKB6 resta
-   la via veloce, lo ZIM è il livello sotto.
+6. **Visible files.** With the `home` permission a WASI app sees `/sdcard/home`. The library goes in `~/zim/`, shared
+   among the app, the Terminal and the Files app.
+7. **Memory.** `ram_budget` reaches at most 16 MB.
+8. **ANIMA already has AKB6.** `docs/ANIMA_KB.md` chose on purpose not to read a ZIM at every question: AKB6 remains
+   the fast path, the ZIM is the level below.
 
-## 1b. Misure F0 sulla scheda (1.2.100, SD da 16 GB, AOT)
+## 1b. F0 measurements on the board (1.2.100, 16 GB SD, AOT)
 
-Il file system della SD non è esposto da nessuna API. Lo deduciamo FAT32 dal costo che cresce con la distanza
-dall'inizio del file, cosa che un file contiguo su exFAT non fa.
+The SD file system is not exposed by any API. We deduce FAT32 from the cost that grows with the distance
+from the start of the file, which a contiguous file on exFAT does not do.
 
-Banco: `ports/zim/bench/zimbench.c` (programma WASI, `bash ports/zim/bench/build.sh`), lanciato nel Terminale.
-Campioni in `D:\zimtest\fixtures` (fuori dal repo, SHA-256 verificati sul `.meta4`).
+Bench: `ports/zim/bench/zimbench.c` (WASI program, `bash ports/zim/bench/build.sh`), launched in the Terminal.
+Samples in `D:\zimtest\fixtures` (outside the repo, SHA-256 verified against the `.meta4`).
 
-**Dove stanno gli indici.** In tutti i file le dirent e le liste di puntatori occupano gli **ultimi 2-8%** del file
-(Wiktionary: 28 MB in fondo a 374 MB). Le dirent sono scritte **in ordine di percorso** (100% dei casi in
-Medicina e Wiktionary): un intervallo di indici è un tratto contiguo del file.
+**Where the indexes are.** In all files the dirents and pointer lists occupy the **last 2-8%** of the file
+(Wiktionary: 28 MB at the end of 374 MB). The dirents are written **in path order** (100% of cases in
+Medicine and Wiktionary): a range of indexes is a contiguous stretch of the file.
 
-**Letture dalla SD** (file di prova da 64 MB):
+**Reads from the SD** (64 MB test file):
 
-| Misura | `pread` | `lseek` + `read` |
+| Measurement | `pread` | `lseek` + `read` |
 |---|---|---|
-| lettura sequenziale a blocchi da 1 MiB | **0,74 MB/s** | **8,55 MB/s** |
-| 4 KiB in un punto a caso | 14,2 ms in media (6,7 ms a 0 MB, 18 ms a 57 MB) | 6,9 ms |
-| 4 KiB, letture ordinate in avanti | 13,9 ms | **1,5 ms** |
-| 64 byte in un punto a caso | 9,6 ms (1,4 ms a 0 MB, 13,9 ms a 57 MB) | 6,9 ms |
-| scrittura sequenziale | 3,7 MB/s | |
+| sequential read in 1 MiB blocks | **0.74 MB/s** | **8.55 MB/s** |
+| 4 KiB at a random point | 14.2 ms on average (6.7 ms at 0 MB, 18 ms at 57 MB) | 6.9 ms |
+| 4 KiB, reads ordered forward | 13.9 ms | **1.5 ms** |
+| 64 bytes at a random point | 9.6 ms (1.4 ms at 0 MB, 13.9 ms at 57 MB) | 6.9 ms |
+| sequential write | 3.7 MB/s | |
 
-- Il `pread` di ESP-IDF fa `f_lseek` + `f_read` e poi torna alla posizione precedente: ogni lettura riparte
-  dall'inizio della catena dei cluster di FAT32.
-- Su un file da 1 GB scritto apposta (scrittura a 4,35 MB/s), 64 byte con `pread` costano 8 ms all'inizio e
-  120 ms nell'ultimo decimo: lineare, circa **0,12 ms per MB** di distanza dall'inizio. Vuol dire circa 50 ms
-  in fondo a Wiktionary e circa 250 ms in fondo a una parte da 2 GiB.
-- Con `lseek` + `read` la posizione resta dove si è letto. Sullo stesso file da 1 GB:
-  - letture ordinate in avanti: **3 ms**;
-  - letture a caso: 46 ms in media, perché tornare indietro ripercorre ancora la catena.
+- ESP-IDF's `pread` does `f_lseek` + `f_read` and then returns to the previous position: every read restarts
+  from the start of the FAT32 cluster chain.
+- On a 1 GB file written on purpose (write at 4.35 MB/s), 64 bytes with `pread` cost 8 ms at the start and
+  120 ms in the last tenth: linear, about **0.12 ms per MB** of distance from the start. That means about 50 ms
+  at the end of Wiktionary and about 250 ms at the end of a 2 GiB part.
+- With `lseek` + `read` the position stays where it was read. On the same 1 GB file:
+  - reads ordered forward: **3 ms**;
+  - random reads: 46 ms on average, because going back still walks the chain.
 
-**zstd in AOT**: **6,6 MB/s**, circa **290 ms** per un cluster da 2 MiB (sul PC 1,5 GB/s). È la voce più cara
-all'apertura di un articolo.
-- Decodificando in streaming nel buffer stabile (`ZSTD_d_stableOutBuffer`) e fermandosi appena il blob è
-  completo, si decodifica in media il 44-57% del cluster (PC e scheda).
-- Sulla scheda servono **176 ms** invece di 292 (−40%), con un contesto di 221 KB e senza la finestra da 8 MiB.
+**zstd in AOT**: **6.6 MB/s**, about **290 ms** for a 2 MiB cluster (on the PC 1.5 GB/s). It is the most expensive item
+when opening an article.
+- Decoding in streaming into the stable buffer (`ZSTD_d_stableOutBuffer`) and stopping as soon as the blob is
+  complete, on average 44-57% of the cluster is decoded (PC and board).
+- On the board it takes **176 ms** instead of 292 (−40%), with a 221 KB context and without the 8 MiB window.
 
-**ZIM su ScoutWiki** (16 MB, 5.256 voci):
+**ZIM on ScoutWiki** (16 MB, 5,256 entries):
 
-| Misura | Risultato |
+| Measurement | Result |
 |---|---|
-| ricerca per percorso, senza cache | 58 ms (`lseek`) o 88 ms (`pread`), 11 sonde e 23 letture |
-| ricerca per percorso, cache di 64 pagine da 4 KiB | 2,4 ms di mediana, 1,8 letture |
-| lista dei titoli trovata | 50 ms |
-| prefisso di titolo a freddo | 31-106 ms |
-| prefisso di titolo a caldo | 2 ms |
-| articolo a freddo (ricerca, cluster, decodifica completa) | 430-570 ms |
+| search by path, no cache | 58 ms (`lseek`) or 88 ms (`pread`), 11 probes and 23 reads |
+| search by path, cache of 64 pages of 4 KiB | 2.4 ms median, 1.8 reads |
+| title list found | 50 ms |
+| title prefix cold | 31-106 ms |
+| title prefix warm | 2 ms |
+| article cold (search, cluster, full decode) | 430-570 ms |
 
-**Rete**: Wi-Fi della scheda a **-86 dBm**. HTTPS da Kiwix 128 KB/s, HTTP sulla rete di casa 130-140 KB/s (sia
-`wget` sia `nv.http_req` a pezzi da 1 MiB). Il limite è il collegamento radio, non il server né la SD: 92 MB
-richiedono circa 12 minuti, una raccolta da 900 MB circa 2 ore. Un mirror (ftp.fau.de) rifiuta la connessione
-TLS della scheda; download.kiwix.org e mirror.download.kiwix.org funzionano.
+**Network**: board Wi-Fi at **-86 dBm**. HTTPS from Kiwix 128 KB/s, HTTP on the home network 130-140 KB/s (both
+`wget` and `nv.http_req` in 1 MiB pieces). The limit is the radio link, not the server or the SD: 92 MB
+take about 12 minutes, a 900 MB collection about 2 hours. A mirror (ftp.fau.de) refuses the board's TLS
+connection; download.kiwix.org and mirror.download.kiwix.org work.
 
-**Formato vecchio** (`icd10_fr_all_2012-01`, ZIM 5.0): cluster xz, namespace `A` (articoli `.html`), `I`, `-`,
-`M`, pagina principale dall'intestazione e lista dei titoli v0 nell'intestazione.
+**Old format** (`icd10_fr_all_2012-01`, ZIM 5.0): xz clusters, namespace `A` (`.html` articles), `I`, `-`,
+`M`, main page from the header and v0 title list in the header.
 
-**Cosa cambia nel piano**:
+**What changes in the plan**:
 
-- **D12 (nuova):** il lettore usa `lseek` + `read`, mai `pread`, con una cache di pagine da 4 KiB.
-  - Le ricerche binarie **memorizzano i livelli alti** (12 di default): le prime sonde sono identiche per ogni
-    ricerca, quindi dalla seconda in poi arrivano dalla RAM, senza costi all'apertura.
-  - Quando restano 64 voci, i loro puntatori si leggono in una lettura e le loro dirent (contigue, perché in
-    ordine di percorso) in una seconda.
-- **D13 (nuova, firmware):** `CONFIG_FATFS_USE_FASTSEEK=y`. ESP-IDF crea la mappa dei cluster quando un file viene
-  aperto in sola lettura e, se il file è troppo frammentato, continua senza. Aiuta anche video, musica e
-  gallerie. Va misurato il costo di apertura dei file grandi e quello in SRAM (256 byte per file aperto).
-- **D4 aggiornata:** decodifica parziale in streaming al posto del colpo unico.
-- **F5 aggiornata:** con un Wi-Fi debole le raccolte grandi passano dal PC (lettore di schede); dalla scheda si
-  scaricano quelle piccole. Il downloader di sistema in background (ABI 18) diventa necessario, perché un
-  download di ore non può dipendere dall'app aperta.
+- **D12 (new):** the reader uses `lseek` + `read`, never `pread`, with a cache of 4 KiB pages.
+  - Binary searches **memorize the upper levels** (12 by default): the first probes are identical for every
+    search, so from the second one on they come from RAM, with no cost at opening.
+  - When 64 entries remain, their pointers are read in one read and their dirents (contiguous, because in
+    path order) in a second.
+- **D13 (new, firmware):** `CONFIG_FATFS_USE_FASTSEEK=y`. ESP-IDF builds the cluster map when a file is
+  opened read-only and, if the file is too fragmented, continues without it. It also helps video, music and
+  galleries. The opening cost of large files and the SRAM cost (256 bytes per open file) must be measured.
+- **D4 updated:** partial streaming decoding instead of the single shot.
+- **F5 updated:** with weak Wi-Fi the large collections go through the PC (card reader); the small ones are
+  downloaded from the board. The background system downloader (ABI 18) becomes necessary, because a
+  download of hours cannot depend on the app being open.
 
-## 2. Decisioni
+## 2. Decisions
 
-| # | Decisione | Perché |
+| # | Decision | Why |
 |---|---|---|
-| D1 | Lettore **nostro** in C (`nvzim`), scritto dalla specifica | libzim e Xapian sono GPL-2.0: incompatibili con le licenze commerciali |
-| D2 | Tre pezzi sulla stessa libreria: `nvzim` (C, testabile sul PC), `zim` (WASI, Terminale e ANIMA), `biblioteca` (app WASM dello Store) | niente app nativa: la partizione firmware è stretta, lo Store rilascia senza OTA, e l'ABI 16 basta (`gfx_blit` + `gfx_persist`) |
-| D3 | File oltre 2 GiB divisi in **parti** `.zimaa`, `.zimab`... sotto i 2 GiB, lette come un file unico | è lo schema di libzim, quindi Kiwix legge le stesse parti; funziona su FAT32 ed exFAT senza toccare il firmware |
-| D4 | zstd **in un colpo solo** (`ZSTD_decompressDCtx`) in un buffer da 2 MiB, che cresce a 4 o 8 MiB se serve | senza dimensione nel frame, lo streaming allocherebbe una finestra da 8 MiB; il colpo unico usa l'uscita come finestra |
-| D5 | Dei cluster non compressi si legge **solo il blob** che serve, per offset | sono da 23-30 MB |
-| D6 | Ricerca per **prefisso di titolo** sulla lista v1, con varianti (come scritto, iniziale maiuscola, tutto minuscolo, iniziali maiuscole) unite e senza doppioni | la lista è ordinata per byte; i redirect coprono già molte grafie. Il testo completo (Xapian) resta fuori dalla v1 |
-| D7 | Impaginazione in **modalità lettura**, motore nostro (`nvhtml`), non litehtml | una pagina Kiwix carica più di 10 CSS di MediaWiki: un motore CSS costerebbe secondi e memoria sul P4. La modalità lettura dà tipografia coerente ed è riusabile per EPUB, RSS, Markdown e mail |
-| D8 | Font Noto Sans e Noto Sans Mono (OFL), sottoinsieme latino esteso, greco e cirillico, atlanti a 4 bit in 3 dimensioni (normale, grassetto, corsivo) | copre le 5 lingue del sistema e i nomi propri di Wikipedia; un glifo mancante diventa un riquadro |
-| D9 | ANIMA: prima AKB6, poi `zim` per i dettagli e per le raccolte specialistiche | rispetta la scelta di `ANIMA_KB.md`; la riga dello strumento va nel prompt solo se `~/zim` contiene raccolte, e le elenca |
-| D10 | Nome "Biblioteca" / "Library", mai "Kiwix" | il marchio è loro; nella scheda si scrive "legge i file ZIM di Kiwix/openZIM" |
+| D1 | **Our own** reader in C (`nvzim`), written from the specification | libzim and Xapian are GPL-2.0: incompatible with commercial licenses |
+| D2 | Three pieces on the same library: `nvzim` (C, testable on the PC), `zim` (WASI, Terminal and ANIMA), `biblioteca` (WASM app in the Store) | no native app: the firmware partition is tight, the Store releases without OTA, and ABI 16 is enough (`gfx_blit` + `gfx_persist`) |
+| D3 | Files over 2 GiB split into **parts** `.zimaa`, `.zimab`... under 2 GiB, read as a single file | it is libzim's scheme, so Kiwix reads the same parts; works on FAT32 and exFAT without touching the firmware |
+| D4 | zstd **in a single shot** (`ZSTD_decompressDCtx`) into a 2 MiB buffer, which grows to 4 or 8 MiB if needed | with no size in the frame, streaming would allocate an 8 MiB window; the single shot uses the output as the window |
+| D5 | For uncompressed clusters **only the needed blob** is read, by offset | they are 23-30 MB |
+| D6 | Search by **title prefix** on the v1 list, with variants (as written, initial capital, all lowercase, initial capitals) merged and without duplicates | the list is ordered by byte; the redirects already cover many spellings. Full text (Xapian) stays out of v1 |
+| D7 | Layout in **reading mode**, our own engine (`nvhtml`), not litehtml | a Kiwix page loads more than 10 MediaWiki CSS files: a CSS engine would cost seconds and memory on the P4. Reading mode gives consistent typography and is reusable for EPUB, RSS, Markdown and mail |
+| D8 | Noto Sans and Noto Sans Mono fonts (OFL), extended Latin subset, Greek and Cyrillic, 4-bit atlases in 3 sizes (regular, bold, italic) | covers the 5 system languages and the proper names of Wikipedia; a missing glyph becomes a box |
+| D9 | ANIMA: first AKB6, then `zim` for details and for specialist collections | respects the choice of `ANIMA_KB.md`; the tool line goes in the prompt only if `~/zim` contains collections, and lists them |
+| D10 | Name "Biblioteca" / "Library", never "Kiwix" | the trademark is theirs; the card says "reads Kiwix/openZIM ZIM files" |
 
-## 3. Architettura
+## 3. Architecture
 
 ```
-SD   ~/zim/*.zim  |  *.zimaa, *.zimab...   (FAT32 o exFAT, parti < 2 GiB)
+SD   ~/zim/*.zim  |  *.zimaa, *.zimab...   (FAT32 or exFAT, parts < 2 GiB)
           |
-nvzim (C)   intestazione, MIME, dirent, cluster zstd/xz, redirect, titoli, metadati, parti,
-            cache di pagine da 4 KiB allineate, LRU di 2 cluster decompressi
+nvzim (C)   header, MIME, dirent, zstd/xz clusters, redirects, titles, metadata, parts,
+            aligned 4 KiB page cache, LRU of 2 decompressed clusters
           |                                   |
-zim (WASI, programma di sistema)        biblioteca (WASM, Store)
-Terminale e ANIMA                       libreria, ricerca, lettore, catalogo e download
-html -> testo con nvhtml                nvhtml: tokenizer -> blocchi -> righe -> atlante glifi
-                                        -> framebuffer RGB565 -> gfx_blit (persist, solo righe cambiate)
+zim (WASI, system program)              biblioteca (WASM, Store)
+Terminal and ANIMA                      library, search, reader, catalog and download
+html -> text with nvhtml                nvhtml: tokenizer -> blocks -> lines -> glyph atlas
+                                        -> RGB565 framebuffer -> gfx_blit (persist, changed rows only)
 ```
 
-## 4. Fasi
+## 4. Phases
 
-Ogni fase si chiude con la verifica sulla scheda, non prima.
+Each phase closes with verification on the board, not before.
 
-### F0: misure e campioni (piccola, niente firmware)
+### F0: measurements and samples (small, no firmware)
 
-- Campioni (da scaricare dopo l'ok): `wikipedia_it_medicine_nopic` (92 MB), `wiktionary_it_all_nopic` (357 MB),
-  `devdocs_en_c` (1,2 MB), `scoutwiki.org_it_all` maxi (16 MB, con immagini WebP) e un vecchio ZIM xz dall'archivio.
-  Le parti e il file oltre 2 GiB si provano con file sintetici, senza scaricare 2 GB.
-- Benchmark sul P4 con un'app WASI di prova in AOT:
-  - zstd in un colpo solo su 2 MiB;
-  - `pread` casuali su un file da 2 GiB, su FAT32 e su exFAT;
-  - ricerca completa di una dirent;
-  - velocità di `nv.http_req` a pezzi da 1 MiB (HTTPS, mirror del `.meta4`).
-- Inventario dei tag e delle classi HTML negli articoli completi (`nopic`), per fissare il sottoinsieme della
-  modalità lettura.
-- **Uscita:** numeri scritti qui; decisione su FASTSEEK ed exFAT, e su download dentro l'app o ABI 18 (F5).
+- Samples (to download after the OK): `wikipedia_it_medicine_nopic` (92 MB), `wiktionary_it_all_nopic` (357 MB),
+  `devdocs_en_c` (1.2 MB), `scoutwiki.org_it_all` maxi (16 MB, with WebP images) and an old xz ZIM from the archive.
+  The parts and the file over 2 GiB are tried with synthetic files, without downloading 2 GB.
+- Benchmark on the P4 with a test WASI app in AOT:
+  - single-shot zstd on 2 MiB;
+  - random `pread` on a 2 GiB file, on FAT32 and on exFAT;
+  - complete search of a dirent;
+  - `nv.http_req` speed in 1 MiB pieces (HTTPS, mirror from the `.meta4`).
+- Inventory of the tags and HTML classes in full articles (`nopic`), to fix the subset of reading
+  mode.
+- **Output:** numbers written here; decision on FASTSEEK and exFAT, and on download inside the app or ABI 18 (F5).
 
-### F1: libreria `nvzim` e test (media, niente firmware)
+### F1: `nvzim` library and tests (medium, no firmware)
 
-- API: `zim_open(parti)`, `zim_meta(chiave)`, `zim_find_path(ns, path)`, `zim_find_title(prefisso, n)`,
-  `zim_get(voce)` (vista sul blob), `zim_resolve(redirect)`, `zim_main()`, `zim_random()`, `zim_illustration(48)`,
-  `zim_check()` (MD5, incrementale).
-- Letture in pagine da 4 KiB allineate, per non pagare il rimbalzo di un settore per comando della SD (lezione di
+- API: `zim_open(parts)`, `zim_meta(key)`, `zim_find_path(ns, path)`, `zim_find_title(prefix, n)`,
+  `zim_get(entry)` (view on the blob), `zim_resolve(redirect)`, `zim_main()`, `zim_random()`, `zim_illustration(48)`,
+  `zim_check()` (MD5, incremental).
+- Reads in aligned 4 KiB pages, so as not to pay the bounce of one sector per SD command (lesson from
   `sd-dma-alignment`).
-- Test in `tests/host/unit`. Fuzz `fuzz_zim` e `fuzz_zimhtml` in `tests/host/Makefile`, nella CI.
-- **Test differenziale** contro python-libzim sul PC (solo come strumento, non distribuito): 10.000 voci di IT ed EN
-  con titolo, MIME, redirect e hash del contenuto identici.
-- **Uscita:** CI verde, test differenziale a zero differenze.
+- Tests in `tests/host/unit`. Fuzz `fuzz_zim` and `fuzz_zimhtml` in `tests/host/Makefile`, in the CI.
+- **Differential test** against python-libzim on the PC (only as a tool, not distributed): 10,000 IT and EN entries
+  with identical title, MIME, redirect and content hash.
+- **Output:** green CI, differential test with zero differences.
 
-### F1: risultati (§4b)
+### F1: results (§4b)
 
-**Cosa c'è**:
-- `ports/zim/nvzim` (`nvzim.h`, `nvzim.c`, `nvzim_md5.c`), in C99 e senza variabili globali (a parte le tabelle
-  CRC di XZ Embedded, in sola lettura);
-- `fetch.sh`, che scarica zstd 1.5.7 e XZ Embedded con i checksum fissati;
-- gli strumenti in `ports/zim/tools`;
+**What is there**:
+- `ports/zim/nvzim` (`nvzim.h`, `nvzim.c`, `nvzim_md5.c`), in C99 and without global variables (apart from the CRC
+  tables of XZ Embedded, read-only);
+- `fetch.sh`, which downloads zstd 1.5.7 and XZ Embedded with pinned checksums;
+- the tools in `ports/zim/tools`;
 - `ports/zim/README.md`.
 
-**Funzioni**:
-- intestazione, tipi MIME, voci e redirect (catene e cicli);
-- ricerca per percorso con livelli memorizzati e lettura in blocco degli ultimi 64;
-- pagina principale e metadati;
-- contenuti da cluster zstd (decodifica parziale che riprende), non compressi (letti sul posto) e xz (ZIM 5);
-- puntatori a 8 byte, file divisi `.zimaa`…;
-- lista dei titoli v1 e indice v0 dei file vecchi;
-- suggerimenti con varianti di maiuscole e accenti latini, voce a caso;
-- verifica MD5.
+**Functions**:
+- header, MIME types, entries and redirects (chains and cycles);
+- search by path with memorized levels and block read of the last 64;
+- main page and metadata;
+- contents from zstd clusters (partial decoding that resumes), uncompressed (read in place) and xz (ZIM 5);
+- 8-byte pointers, split files `.zimaa`…;
+- v1 title list and v0 index of old files;
+- suggestions with case variants and Latin accents, random entry;
+- MD5 verification.
 
-**Prove**:
+**Tests**:
 
-| Prova | Esito |
+| Test | Outcome |
 |---|---|
-| Confronto con python-libzim (`tools/diff_libzim.py`): 10.000 voci di Wikipedia IT e EN top mini e di Wiktionary IT (758.797 voci), 3.000-5.000 di Medicina, DevDocs C, ScoutWiki e ICD-10 2012 (xz); percorso, titolo, tipo, redirect, dimensione e MD5 del contenuto, pagina principale, metadati, ordine della lista dei titoli | **0 differenze** |
-| `tests/host/unit/test_nvzim.cpp` su file sintetici (`tests/host/gen_zim.py`): ogni voce per ogni via, configurazione predefinita e minima, file divisi, backend in memoria, file vecchio, troncamenti e byte alterati | **18.105 controlli, 0 falliti**, a 64 e 32 bit con ASan e UBSan |
-| `tests/host/fuzz/fuzz_nvzim.cpp` | 2 minuti per architettura (~50.000 e ~30.000 esecuzioni): nessun crash, leak o timeout |
-| Sulla scheda (WASI + AOT, ScoutWiki 16 MB) | vedi sotto |
+| Comparison with python-libzim (`tools/diff_libzim.py`): 10,000 entries of Wikipedia IT and EN top mini and of Wiktionary IT (758,797 entries), 3,000-5,000 of Medicine, DevDocs C, ScoutWiki and ICD-10 2012 (xz); path, title, type, redirect, size and content MD5, main page, metadata, title list order | **0 differences** |
+| `tests/host/unit/test_nvzim.cpp` on synthetic files (`tests/host/gen_zim.py`): every entry by every route, default and minimal configuration, split files, in-memory backend, old file, truncations and altered bytes | **18,105 checks, 0 failed**, at 64 and 32 bit with ASan and UBSan |
+| `tests/host/fuzz/fuzz_nvzim.cpp` | 2 minutes per architecture (~50,000 and ~30,000 executions): no crash, leak or timeout |
+| On the board (WASI + AOT, ScoutWiki 16 MB) | see below |
 
-Misure sulla scheda:
+Measurements on the board:
 
-| Misura | Risultato |
+| Measurement | Result |
 |---|---|
-| 200 ricerche per percorso | **4,1 ms** di media, 21 ms la peggiore, 1,7 letture ciascuna (il banco F0 senza cache: 58 ms) |
-| suggerimenti a freddo | 77-92 ms (32-39 letture) |
-| `zim get` di un articolo, avvio del programma compreso | 1,3 s |
-| verifica MD5 di 16 MB | 5,9 s |
+| 200 searches by path | **4.1 ms** on average, 21 ms the worst, 1.7 reads each (the F0 bench without cache: 58 ms) |
+| cold suggestions | 77-92 ms (32-39 reads) |
+| `zim get` of an article, program startup included | 1.3 s |
+| MD5 verification of 16 MB | 5.9 s |
 
-**Corretto strada facendo**:
-- con il buffer stabile, zstd segnala l'uscita piena come errore senza conservare il progresso. Il buffer cresce
-  e si riparte, e l'input entra 16 KiB alla volta, così ci si ferma davvero vicino al blob;
-- un cluster oltre `cluster_max` ora dà `NVZIM_EUNSUPPORTED` e non "file danneggiato".
+**Fixed along the way**:
+- with the stable buffer, zstd reports the full output as an error without keeping the progress. The buffer grows
+  and it restarts, and the input enters 16 KiB at a time, so it really stops near the blob;
+- a cluster over `cluster_max` now gives `NVZIM_EUNSUPPORTED` and not "damaged file".
 
-**Limite noto**: la lista dei titoli è ordinata per byte. Una ricerca che non indovina le maiuscole di una voce
-senza redirect ("IPHONE" per "iPhone") non la trova. L'indice laterale del §8 lo risolverà.
+**Known limit**: the title list is ordered by byte. A search that does not guess the capitalization of an entry
+without a redirect ("IPHONE" for "iPhone") does not find it. The side index of §8 will solve it.
 
-### F2: risultati (§4c)
+### F2: results (§4c)
 
-**Store**: `zim` 1.0 pubblicato il 2026-10-11 (store `dd8858d`), poi 1.1.0 (`a5f7876`). Programma di sistema
-dal firmware 1.2.108: ogni scheda lo installa da sola.
+**Store**: `zim` 1.0 published on 2026-10-11 (store `dd8858d`), then 1.1.0 (`a5f7876`). System program
+since firmware 1.2.108: every board installs it by itself.
 
-**Firmware** (`3c6aa48`, provato come build locale 1.2.106 e 1.2.108 sulla scheda di prova):
+**Firmware** (`3c6aa48`, tested as local build 1.2.106 and 1.2.108 on the test board):
 - `zim` in `kSystemApps`;
-- nel blocco AMBIENTE di ogni turno, quando `~/zim` contiene raccolte, una riga con i loro nomi di file e l'uso
-  (`zim search`, `zim get --intro`, poi `--sections`/`--section`, "di' quale raccolta hai usato");
-- l'intento "cosa sai fare" scattava per "comandi", "elenca" o "aiuto" in qualunque frase; ora solo nelle
-  richieste fino a 8 parole (nuovo caso in `test_anima.cpp`).
+- in the ENVIRONMENT block of every turn, when `~/zim` contains collections, a line with their file names and usage
+  (`zim search`, `zim get --intro`, then `--sections`/`--section`, "say which collection you used");
+- the "what can you do" intent fired for "commands", "list" or "help" in any sentence; now only in
+  requests of up to 8 words (new case in `test_anima.cpp`).
 
-**ANIMA sulla scheda**: modello online del dispositivo; raccolte Wikimed (97 MB), ScoutWiki, DevDocs C, ICD-10.
+**ANIMA on the board**: the device's online model; Wikimed collections (97 MB), ScoutWiki, DevDocs C, ICD-10.
 
-| Domanda | Esito |
+| Question | Outcome |
 |---|---|
-| "Che raccolte ho nella biblioteca offline?" | ✓ `zim ls`, elenco esatto |
-| "Usa zim per leggere cosa dice Wikimed sull'insulina" | ✓ `zim search` + `zim get --intro`, riassunto corretto |
-| "Quante persone hanno il diabete nel mondo secondo la biblioteca offline?" | ✓ dopo il correttivo: `--intro`, poi `--section Epidemiologia`, dato e raccolta citati |
-| "Cosa dice l'enciclopedia medica offline sull'insulina? … elenca i comandi" | ✗ prima (intento "cosa sai fare", poi comando ripetuto per l'output tagliato), ✓ dopo i correttivi |
-| "In the offline C documentation, what does fprintf return?" | ✗ prima (titoli di DevDocs sbagliati), ✓ dopo: `zim get fprintf` trova `io/fprintf` |
-| "A cosa serve il paracetamolo? … da dove hai preso l'informazione" | ✗ nessun comando eseguito, ma la risposta cita `zim get` e la raccolta ICD-10: inventato |
+| "Che raccolte ho nella biblioteca offline?" | ✓ `zim ls`, exact list |
+| "Usa zim per leggere cosa dice Wikimed sull'insulina" | ✓ `zim search` + `zim get --intro`, correct summary |
+| "Quante persone hanno il diabete nel mondo secondo la biblioteca offline?" | ✓ after the fix: `--intro`, then `--section Epidemiologia`, figure and collection cited |
+| "Cosa dice l'enciclopedia medica offline sull'insulina? … elenca i comandi" | ✗ before (intent "what can you do", then command repeated because of truncated output), ✓ after the fixes |
+| "In the offline C documentation, what does fprintf return?" | ✗ before (wrong DevDocs titles), ✓ after: `zim get fprintf` finds `io/fprintf` |
+| "A cosa serve il paracetamolo? … da dove hai preso l'informazione" | ✗ no command executed, but the answer cites `zim get` and the ICD-10 collection: invented |
 
-**Correttivi venuti dalle prove** (in `zim` 1.1.0, senza firmware):
-- una parola che non è un comando vale `get`;
-- ricerca dentro titoli e percorsi (`nvzim_scan`), poi per la parola più lunga;
-- `--intro` finisce con le sezioni;
-- `--max` limita l'output intero (ANIMA legge 2000 byte per comando);
-- `-z` accetta il nome del file;
-- cache `~/zim/.zim-index` (`zim get` da 2,1 a 1,6 s).
+**Fixes that came from the tests** (in `zim` 1.1.0, no firmware):
+- a word that is not a command counts as `get`;
+- search inside titles and paths (`nvzim_scan`), then by the longest word;
+- `--intro` ends with the sections;
+- `--max` limits the entire output (ANIMA reads 2000 bytes per command);
+- `-z` accepts the file name;
+- cache `~/zim/.zim-index` (`zim get` from 2.1 to 1.6 s).
 
-**Build locale 1.2.109** (2026-10-12):
-- **Commit**: `b07d75a` su `main`.
-- **Contenuto**:
-  - titoli e lingua delle raccolte nella riga di ANIMA (da `~/zim/.zim-index`);
-  - `zim` di sola lettura per la grammatica `ACT sh` (prima chiedeva "procedo?" ai modelli senza strumenti nativi);
-  - spinta "eseguilo adesso" quando una risposta cita `zim get`/`search`/`ls` senza aver eseguito nulla;
+**Local build 1.2.109** (2026-10-12):
+- **Commit**: `b07d75a` on `main`.
+- **Content**:
+  - titles and language of the collections in ANIMA's line (from `~/zim/.zim-index`);
+  - read-only `zim` for the `ACT sh` grammar (before it asked "proceed?" to models without native tools);
+  - "run it now" nudge when an answer cites `zim get`/`search`/`ls` without having run anything;
   - `--max 1800`;
-  - nuovi casi in `test_anima.cpp` e `test_anima_agent.cpp`, 64 e 32 bit verdi.
-- **Sulla scheda**:
-  - il paracetamolo ora è letto davvero (`zim get Paracetamolo`) e la fonte citata è Wikimed: niente più fonti
-    inventate;
-  - la risposta è arrivata dopo 344 s, perché il modello ha ripetuto più volte la stessa lettura.
-- **Guasto trovato (firmware, non `zim`)**: quando ANIMA lancia un programma da terminale senza schermo, il primo
-  lancio di ogni chat (non la prima chat dopo l'avvio) muore 23-25 ms dopo l'istanziazione con
+  - new cases in `test_anima.cpp` and `test_anima_agent.cpp`, 64 and 32 bit green.
+- **On the board**:
+  - paracetamol is now really read (`zim get Paracetamolo`) and the cited source is Wikimed: no more invented
+    sources;
+  - the answer arrived after 344 s, because the model repeated the same read several times.
+- **Fault found (firmware, not `zim`)**: when ANIMA launches a terminal program without a screen, the first
+  launch of every chat (not the first chat after boot) dies 23-25 ms after instantiation with
   `wasm: Exception: native stack overflow`.
-  - Visto 3 volte su 1.2.109.
-  - Gli altri lanci della stessa chat vanno bene, e dal Terminale (anche in pipe) non succede mai.
-  - È troppo presto per una ricorsione del programma: sembra un limite dello stack nativo sbagliato per quel lancio
+  - Seen 3 times on 1.2.109.
+  - The other launches of the same chat are fine, and from the Terminal (even in a pipe) it never happens.
+  - It is too early for a program recursion: it looks like a wrong native stack limit for that launch
     (`run_worker`, `wasm_runtime_set_native_stack_boundary`).
 
-**Build diagnostica locale 1.2.111** (2026-10-12, log di task, sp, base e limite a ogni lancio da terminale):
-- 5 chat ANIMA con il modello locale (Ollama, qwen3.5:9b, niente TLS), 6 lanci di `zim` dal task `sh`: l'errore non
-  è tornato.
-- `zim` usa circa **1 KB** dei 256 KB di stack nativo: il limite sta 230 KB sotto lo sp, e il minimo libero a fine
-  lancio è ~254 KB. Una ricorsione vera è esclusa: se l'errore torna, è un limite sbagliato o uno stack sporcato.
-- Le 3 volte su 1.2.109 il modello era quello online (TLS): il sospetto è un legame con le chiamate HTTPS in corso,
-  non dimostrato.
-- Su `main` resta `f8ef52c`: nessun log nei lanci normali; se un lancio da terminale muore per "native stack
-  overflow", un WARN dice task, sp, base, limite e minimo libero. Minimo libero alto = limite sbagliato, basso =
-  uso vero.
+**Local diagnostic build 1.2.111** (2026-10-12, log of task, sp, base and limit at every terminal launch):
+- 5 ANIMA chats with the local model (Ollama, qwen3.5:9b, no TLS), 6 launches of `zim` from the `sh` task: the error did not
+  return.
+- `zim` uses about **1 KB** of the 256 KB native stack: the limit sits 230 KB below sp, and the free minimum at the end of the
+  launch is ~254 KB. A true recursion is ruled out: if the error returns, it is a wrong limit or a dirtied stack.
+- The 3 times on 1.2.109 the model was the online one (TLS): the suspicion is a link with ongoing HTTPS calls,
+  not proven.
+- On `main` stays `f8ef52c`: no log in normal launches; if a terminal launch dies of "native stack
+  overflow", a WARN says task, sp, base, limit and free minimum. High free minimum = wrong limit, low = real
+  use.
 
-**Prossimi passi prima di un firmware pubblico**:
-- ripetere le chat con un provider online (chiavi sulla scheda) e leggere il WARN di `f8ef52c` in `/api/logs`;
-- valutazione ripetibile: casi `zim` in `tools/anima_eval.py`, invece delle domande a mano di questa sessione;
-- meno letture ripetute: il paracetamolo ha richiesto 344 s perché il modello ha riletto la stessa voce.
+**Next steps before a public firmware**:
+- repeat the chats with an online provider (keys on the board) and read the WARN of `f8ef52c` in `/api/logs`;
+- repeatable evaluation: `zim` cases in `tools/anima_eval.py`, instead of the manual questions of this session;
+- fewer repeated reads: paracetamol took 344 s because the model reread the same entry.
 
-### F3: risultati (§4d)
+### F3: results (§4d)
 
-**Cosa c'è**:
-- L'app `apps/biblioteca` (WASI, `app.wasm` 0,97 MB, AOT 1,5 MB) con i sorgenti in `ports/zim/biblioteca`:
-  - `doc.c`: l'impaginazione;
-  - `font.c`: Noto Sans e Noto Sans Mono (OFL, sottoinsieme latino, greco e cirillico in `fonts/`),
-    rasterizzati da stb_truetype a qualunque dimensione;
-  - `gfx.c`: il frame buffer;
-  - `kbd.c`: la tastiera fisica;
-  - `lib.c`: raccolte, copertine, cronologia, segnalibri;
-  - `i18n.c`: 5 lingue;
-  - `app.c`: le schermate.
-- Le icone sono disegnate da `gen_icons.py`, nessuna immagine di terzi.
-- `nvhtml` ha una modalità "rich" (`opts.rich`) con marcatori in linea per grassetto, corsivo, codice, apici e
-  pedici, link, righe e celle di tabella, voci di elenco, testo preformattato e ancore dei titoli. Le regole sono
-  verificate riga per riga da `tests/host/unit/nvhtml_rich_check.h`, nei test e nel fuzzer. Il testo semplice per
-  ANIMA non cambia (3632 controlli).
-- Le tabelle dentro una cella diventano righe loro, poi la cella riprende (le tabelle di DevDocs).
-- **Schermate**:
-  - libreria con copertine e "Continua a leggere";
-  - lettore con link, ancore, indietro e avanti;
-  - ricerca mentre si scrive, con "Cerca dentro i titoli" quando nessun titolo inizia così;
-  - sezioni, segnalibri, cronologia;
-  - informazioni sulla raccolta con la verifica MD5;
-  - tastiera sullo schermo (lettere, accenti, simboli);
-  - tema chiaro e scuro, 5 dimensioni del testo, 5 lingue dell'interfaccia.
-- **Test sul PC**: `bash ports/zim/biblioteca/test.sh` esegue 7 copioni di tocchi e tasti sulle raccolte di prova.
-  - Ogni copione gira due volte: con ASan e UBSan, e con il tetto di memoria del dispositivo.
-  - Gli screenshot finiscono in `ports/zim/_out/bib_shots`.
-  - Picco di memoria dell'app: 5,8 MiB su 12.
-- Con `/appdata/bench.txt` (`FILE<TAB>PERCORSO`) l'app apre la voce e la scorre da sola: è il banco di prova
-  ripetibile dello scorrimento sulla scheda.
+**What is there**:
+- The `apps/biblioteca` app (WASI, `app.wasm` 0.97 MB, AOT 1.5 MB) with the sources in `ports/zim/biblioteca`:
+  - `doc.c`: the layout;
+  - `font.c`: Noto Sans and Noto Sans Mono (OFL, Latin, Greek and Cyrillic subset in `fonts/`),
+    rasterized by stb_truetype at any size;
+  - `gfx.c`: the frame buffer;
+  - `kbd.c`: the physical keyboard;
+  - `lib.c`: collections, covers, history, bookmarks;
+  - `i18n.c`: 5 languages;
+  - `app.c`: the screens.
+- The icons are drawn by `gen_icons.py`, no third-party images.
+- `nvhtml` has a "rich" mode (`opts.rich`) with inline markers for bold, italic, code, superscripts and
+  subscripts, links, table rows and cells, list items, preformatted text and heading anchors. The rules are
+  verified line by line by `tests/host/unit/nvhtml_rich_check.h`, in the tests and in the fuzzer. The plain text
+  for ANIMA does not change (3632 checks).
+- Tables inside a cell become rows of their own, then the cell resumes (DevDocs tables).
+- **Screens**:
+  - library with covers and "Continue reading";
+  - reader with links, anchors, back and forward;
+  - search as you type, with "Find “…” inside titles" when no title starts that way;
+  - sections, bookmarks, history;
+  - collection information with MD5 verification;
+  - on-screen keyboard (letters, accents, symbols);
+  - light and dark theme, 5 text sizes, 5 interface languages.
+- **Tests on the PC**: `bash ports/zim/biblioteca/test.sh` runs 7 scripts of taps and keys on the test collections.
+  - Each script runs twice: with ASan and UBSan, and with the device's memory cap.
+  - Screenshots end up in `ports/zim/_out/bib_shots`.
+  - App memory peak: 5.8 MiB out of 12.
+- With `/appdata/bench.txt` (`FILE<TAB>PATH`) the app opens the entry and scrolls it by itself: it is the repeatable
+  scrolling test bench on the board.
 
-**Misure sulla scheda** (firmware locale 1.2.113, Wikimed 97 MB su FAT32; tempi nel log di sistema):
+**Measurements on the board** (local firmware 1.2.113, Wikimed 97 MB on FAT32; times in the system log):
 
-| Misura | Risultato | Obiettivo §5 |
+| Measurement | Result | Goal §5 |
 |---|---|---|
-| libreria, 4 raccolte dalla cache | 234-283 ms | |
-| apertura di una raccolta | 26-90 ms | < 300 ms |
-| voce a freddo | 200 ms (Paradenti, 15 KB); 550 ms (Paracetamolo, 79 KB: lettura 344, HTML 53, impaginazione 120) | < 1,5 s |
-| suggerimenti | primo tasto 254 ms, poi 1-76 ms | < 150 ms a caldo |
-| scorrimento | 17-20 fps | >= 30 fps |
-| memoria | picco 5,8 MiB (PC, con tetto); `ram_budget` 12 MiB | <= 12 MiB |
+| library, 4 collections from cache | 234-283 ms | |
+| opening a collection | 26-90 ms | < 300 ms |
+| cold entry | 200 ms (Paradenti, 15 KB); 550 ms (Paracetamolo, 79 KB: read 344, HTML 53, layout 120) | < 1.5 s |
+| suggestions | first key 254 ms, then 1-76 ms | < 150 ms warm |
+| scrolling | 17-20 fps | >= 30 fps |
+| memory | peak 5.8 MiB (PC, with cap); `ram_budget` 12 MiB | <= 12 MiB |
 
-**Trovato e corretto sulla scheda**:
-1. **Memoria lineare.** WAMR la fa crescere con un realloc del blocco intero in PSRAM. Con la PSRAM frammentata la
-   crescita fallisce: ENOMEM, o zstd che fallisce un'allocazione e sembra un file danneggiato, in modo diverso a
-   ogni avvio.
-   - L'app all'avvio alloca e libera un blocco grande, così la memoria cresce una volta sola, quando il blocco in
-     cui l'app è stata caricata è ancora libero.
-   - Il `ram_budget` passa da 16 a 12 MiB: con 16 l'app a volte non partiva ("allocate linear memory failed").
-2. **nvzim.** `slot_grow` teneva insieme il buffer vecchio e quello nuovo (12 MiB per un cluster da 8). Ora libera
-   prima il vecchio: il contenuto viene comunque decodificato di nuovo.
-3. **Scorrimento**, da 8 a 20 fps:
-   - il memmove del frame buffer (1,1 MB in 88 ms) è sostituito da una tabella di puntatori alle righe che ruota;
-   - il canvas 1:1 passava dal render software di LVGL: ora `canvas_scale: fit` va al pannello con il PPA;
-   - il firmware `756bff7` dà a queste app anche il puntatore LVGL (mouse e `/api/ui/tap`, prima arrivava solo il
-     touch grezzo) e copia le righe del blit con memcpy.
-4. **Link parola per parola** (Wikizionario): si fondevano in un link solo. Ora ogni `</a>` chiude il suo link.
+**Found and fixed on the board**:
+1. **Linear memory.** WAMR grows it with a realloc of the whole block in PSRAM. With fragmented PSRAM the
+   growth fails: ENOMEM, or zstd failing an allocation and looking like a damaged file, differently at
+   every start.
+   - At startup the app allocates and frees a large block, so memory grows only once, when the block in
+     which the app was loaded is still free.
+   - The `ram_budget` goes from 16 to 12 MiB: with 16 the app sometimes did not start ("allocate linear memory failed").
+2. **nvzim.** `slot_grow` kept the old and the new buffer together (12 MiB for an 8 MiB cluster). Now it frees the old
+   one first: the content is decoded again anyway.
+3. **Scrolling**, from 8 to 20 fps:
+   - the memmove of the frame buffer (1.1 MB in 88 ms) is replaced by a table of row pointers that rotates;
+   - the 1:1 canvas went through LVGL's software render: now `canvas_scale: fit` goes to the panel with the PPA;
+   - firmware `756bff7` also gives these apps the LVGL pointer (mouse and `/api/ui/tap`, before only the raw
+     touch arrived) and copies the blit rows with memcpy.
+4. **Word-by-word links** (Wiktionary): they merged into a single link. Now every `</a>` closes its own link.
 
-**Aperti**:
-- **30 fps.** Il limite è la copia del canvas dall'app all'host: 34 ms per 1,1 MB, banda della PSRAM, non il
-  codice. Due leve nel firmware, entrambe una nuova ABI:
-  - uno scroll fatto dall'host con il PPA, con cui l'app invia solo la striscia nuova;
-  - una presentazione senza copia.
-- **Firmware, per tutte le app WASI grandi.** Prenotare la memoria lineare massima all'istanziazione (o fare il
-  pregrow nel runtime), invece di affidarsi a ogni app.
-- **Tastiera.** I tasti di `/api/ui/hid` passano dalla coda di LVGL e non dallo stato letto da `nv_kbd_state`: la
-  tastiera è verificata dai test sul PC, va provata con una tastiera vera.
-- Le immagini (F4) e lo Store (F6).
+**Open**:
+- **30 fps.** The limit is the canvas copy from the app to the host: 34 ms for 1.1 MB, PSRAM bandwidth, not the
+  code. Two levers in the firmware, both a new ABI:
+  - a scroll done by the host with the PPA, with which the app sends only the new strip;
+  - a presentation without copy.
+- **Firmware, for all large WASI apps.** Reserve the maximum linear memory at instantiation (or do the
+  pregrow in the runtime), instead of relying on each app.
+- **Keyboard.** The keys of `/api/ui/hid` go through LVGL's queue and not through the state read by `nv_kbd_state`: the
+  keyboard is verified by the tests on the PC, it must be tried with a real keyboard.
+- Images (F4) and the Store (F6).
 
-### F4: risultati (§4e)
+### F4: results (§4e)
 
-**Cosa c'è**:
-- **`nvhtml`**: il testo ricco segna le immagini con `NVHTML_IMAGE`, poi sorgente, dimensioni dichiarate (px o ex),
-  `vertical-align` delle formule, flag (formula, formula su riga propria, dentro una figura), testo alternativo.
-  Il testo semplice per ANIMA non cambia: una formula resta il suo TeX.
+**What is there**:
+- **`nvhtml`**: rich text marks images with `NVHTML_IMAGE`, then source, declared size (px or ex),
+  `vertical-align` of formulas, flags (formula, formula on its own line, inside a figure), alternative text.
+  The plain text for ANIMA does not change: a formula remains its TeX.
 - **`img.c`**:
-  - decodifica WebP (libwebp 1.6.0, solo il decoder, scalato già durante la decodifica);
+  - WebP decoding (libwebp 1.6.0, decoder only, scaled already during decoding);
   - PNG (LodePNG);
-  - JPEG, GIF al primo fotogramma, BMP (stb_image 2.30);
+  - JPEG, GIF first frame, BMP (stb_image 2.30);
   - SVG (NanoSVG).
-  - Le immagini sono decodificate alla dimensione mostrata e tenute in una cache di 3 MiB (RGB565 + alfa).
-  - Mai durante il disegno: una coda, un'immagine per fotogramma a pagina ferma; intanto c'è un segnaposto.
-- **Formule**:
-  - Gli SVG di MathJax (Wikipedia) usano `<defs>`/`<use>` e `currentColor`, che NanoSVG non conosce: prima del
-    parsing ogni `<use transform x y>` diventa il suo path con `transform translate(x y)`, come dice la specifica
-    (i pedici sono `scale(0.707)`).
-  - Le formule si disegnano come maschera nel colore del testo, quindi si leggono anche col tema scuro.
-  - Si allineano alla linea di base del testo con il loro `vertical-align`; 1 ex vale 0,536 em, l'altezza della x
-    di Noto Sans.
-- **Visualizzatore**: un tocco su un'immagine senza link la mostra a tutto schermo con la descrizione, fino a 3
-  volte la dimensione nella pagina. Le formule vettoriali restano nitide su fondo chiaro.
-- **Font**: aggiunti l'IPA (le pronunce del Wikizionario), i diacritici combinanti e il greco politonico: 758 KB in
-  tutto.
-- **Fuzzer** `ports/zim/biblioteca/test/fuzz.sh` (decoder e riscrittura degli SVG, ASan e UBSan):
-  - ha trovato due overflow da float a int in NanoSVG (un lato quasi orizzontale fa esplodere la pendenza);
-  - li corregge `nanosvgrast.patch`, applicata da `fetch.sh` su una copia: il file scaricato resta verificabile con
-    lo SHA;
-  - dopo la patch, 99.689 esecuzioni in 5 minuti senza errori.
+  - Images are decoded at the displayed size and kept in a 3 MiB cache (RGB565 + alpha).
+  - Never during drawing: a queue, one image per frame when the page is still; meanwhile there is a placeholder.
+- **Formulas**:
+  - MathJax SVGs (Wikipedia) use `<defs>`/`<use>` and `currentColor`, which NanoSVG does not know: before
+    parsing, every `<use transform x y>` becomes its path with `transform translate(x y)`, as the specification says
+    (subscripts are `scale(0.707)`).
+  - Formulas are drawn as a mask in the text color, so they are readable with the dark theme too.
+  - They align to the text baseline with their `vertical-align`; 1 ex is 0.536 em, the x-height of Noto Sans.
+- **Viewer**: a tap on an image without a link shows it full screen with the description, up to 3
+  times the size in the page. Vector formulas stay sharp on a light background.
+- **Fonts**: added IPA (Wiktionary pronunciations), combining diacritics and polytonic Greek: 758 KB in
+  total.
+- **Fuzzer** `ports/zim/biblioteca/test/fuzz.sh` (decoder and SVG rewriting, ASan and UBSan):
+  - found two float-to-int overflows in NanoSVG (an almost horizontal side makes the slope explode);
+  - `nanosvgrast.patch` fixes them, applied by `fetch.sh` on a copy: the downloaded file remains verifiable with
+    the SHA;
+  - after the patch, 99,689 executions in 5 minutes without errors.
 
-**Misure sulla scheda** (1.2.115 locale; tempi nel log):
+**Measurements on the board** (local 1.2.115; times in the log):
 
-| Misura | Risultato |
+| Measurement | Result |
 |---|---|
-| foto WebP 250x333 (ScoutWiki) | 211 ms |
-| formula SVG 64x25 ... 221x30 (Wikimed) | 41-48 ms con il cluster già decodificato, 98-338 ms se va decodificato |
-| formula ingrandita 663x90 | 297 ms |
-| memoria dell'app | picco 7,8 MiB (PC con tetto), budget 12 |
-| app.wasm / app.aot | 1,37 MB / 2,43 MB (limiti 2 e 4) |
+| WebP photo 250x333 (ScoutWiki) | 211 ms |
+| SVG formula 64x25 ... 221x30 (Wikimed) | 41-48 ms with the cluster already decoded, 98-338 ms if it must be decoded |
+| enlarged formula 663x90 | 297 ms |
+| app memory | peak 7.8 MiB (PC with cap), budget 12 |
+| app.wasm / app.aot | 1.37 MB / 2.43 MB (limits 2 and 4) |
 
-**Trovato e corretto**:
-1. **"Continua a leggere" spariva**: il sistema chiude l'app senza farle finire il ciclo, quindi il salvataggio
-   finale non avveniva. Ora la posizione si salva a ogni pagina aperta e dopo 2 s di pagina ferma.
-2. **Font**: senza l'IPA le pronunce (ɪ) erano riquadri.
-3. **Cluster in memoria**: 2 invece di 1, così la pagina e le sue immagini non si scacciano a vicenda.
+**Found and fixed**:
+1. **"Continue reading" disappeared**: the system closes the app without letting it finish the loop, so the final
+   save did not happen. Now the position is saved at every opened page and after 2 s of still page.
+2. **Fonts**: without IPA the pronunciations (ɪ) were boxes.
+3. **Clusters in memory**: 2 instead of 1, so the page and its images do not evict each other.
 
-4. **Ordine della coda**: prima le immagini il cui cluster non costa decompressione, perché è già in memoria o
-   non è compresso (`nvzim_cluster_cached`). Con le 7 formule di Paracetamolo in coda insieme, le due nei cluster
-   già pronti passano avanti. Il guadagno qui è piccolo (1,2-1,5 s in tutto): stanno in circa 5 cluster, e ognuno
-   costa circa 0,2 s di zstd a 6,6 MB/s.
+4. **Queue order**: first the images whose cluster costs no decompression, because it is already in memory or
+   is not compressed (`nvzim_cluster_cached`). With the 7 formulas of Paracetamolo in the queue together, the two in clusters
+   already ready go first. The gain here is small (1.2-1.5 s in total): they sit in about 5 clusters, and each
+   costs about 0.2 s of zstd at 6.6 MB/s.
 
-**Aperti**:
-- Una pagina con molte formule le mostra una dopo l'altra, circa 0,2 s per ogni cluster da decomprimere.
-- Le immagini senza link non si raggiungono da tastiera: il visualizzatore si apre col tocco o col mouse.
-- Una GIF animata mostra solo il primo fotogramma; un PNG o JPEG oltre 1 Mpixel resta un riquadro.
+**Open**:
+- A page with many formulas shows them one after the other, about 0.2 s for each cluster to decompress.
+- Images without a link cannot be reached from the keyboard: the viewer opens with touch or mouse.
+- An animated GIF shows only the first frame; a PNG or JPEG over 1 Mpixel remains a box.
 
-### F5: progetto (§4f)
+### F5: design (§4f)
 
-Dati reali (12 ottobre 2026):
-- **Catalogo**: OPDS v2 su `https://opds.library.kiwix.org/catalog/v2/entries?lang=ita&count=N&start=K`, con
-  filtri `category=` e `q=`. Il vecchio `library.kiwix.org` risponde 301, e l'ABI 12 non segue i redirect.
-  Sono circa 1,3 KB di XML Atom per voce e 382 raccolte in italiano.
-- **Ogni voce** porta nome, titolo, riassunto, lingua, data, `articleCount`, `tags` (`_pictures:yes`...), la miniatura
-  PNG 48x48 e il link `.meta4` su `lb.download.kiwix.org` con `length` (risposta 200 diretta, senza redirect).
+Real data (12 October 2026):
+- **Catalog**: OPDS v2 at `https://opds.library.kiwix.org/catalog/v2/entries?lang=ita&count=N&start=K`, with
+  filters `category=` and `q=`. The old `library.kiwix.org` answers 301, and ABI 12 does not follow redirects.
+  There are about 1.3 KB of Atom XML per entry and 382 collections in Italian.
+- **Each entry** carries name, title, summary, language, date, `articleCount`, `tags` (`_pictures:yes`...), the 48x48
+  PNG thumbnail and the `.meta4` link on `lb.download.kiwix.org` with `length` (direct 200 answer, no redirect).
 - **`.meta4`** (MirrorBrain, RFC 5854):
   - `size`;
-  - `md5`, `sha-1` e `sha-256` del file intero;
-  - `<pieces length="4194304" type="sha-1">`, cioè un hash per ogni pezzo da 4 MiB;
-  - circa 8 mirror HTTPS con priorità, ordinati per vicinanza.
-  - Pesa circa 60 byte per pezzo: 15 KB per un file da 1 GB.
+  - `md5`, `sha-1` and `sha-256` of the whole file;
+  - `<pieces length="4194304" type="sha-1">`, that is, a hash for every 4 MiB piece;
+  - about 8 HTTPS mirrors with priority, ordered by proximity.
+  - It weighs about 60 bytes per piece: 15 KB for a 1 GB file.
 
-Decisioni:
-- **Downloader di sistema, `components/nv_dl` + ABI 18**. Un download di ore non può dipendere dall'app aperta, e
-  l'ABI 12 ha risposte da 1 MB, niente redirect e tutto legato all'esecuzione dell'app.
-  - Un task suo, con stack in PSRAM: scrive solo sulla SD. Gira un download alla volta e gli altri stanno in coda.
-  - Non blocca lo Store: il worker dello Store resta libero, e i due TLS possono stare insieme perché mbedTLS
-    alloca in PSRAM.
-  - Un flusso solo con `Range: bytes=N-` dal punto verificato. Ogni pezzo da 4 MiB è verificato con SHA-1 appena
-    completo.
-  - Il registro del job sulla SD si aggiorna a ogni pezzo verificato. Dopo un'interruzione, un riavvio o un mirror
-    caduto si riparte dall'ultimo pezzo buono.
-  - Un pezzo sbagliato fa cambiare mirror e lo riscarica; il terzo errore sullo stesso pezzo ferma il job.
-  - Senza pezzi nel `.meta4` (o con un URL semplice) vale lo SHA-256 del file intero, riletto alla fine.
-- **File grandi**: oltre 2 GiB si scrive in parti `nome.zimaa`, `nome.zimab`... da 2 GiB meno 4 MiB, cioè un
-  multiplo dei pezzi, così un pezzo non sta mai in due file. `nvzim` le legge come un file solo.
-- **Scrittura**: in `nome.part` e rinomina alla fine, solo dopo la verifica completa. Prima di partire si
-  controlla lo spazio libero: la dimensione più la riserva dell'OTA (64 MB).
-- **Sicurezza**:
-  - solo `https`, solo indirizzi pubblici (`nv_net_policy`), redirect seguiti solo verso `https` pubblici;
-  - destinazione dentro ciò che l'app vede (`home` -> `/sdcard/home`, `fs` -> la sua cartella dati), senza `..`;
-  - un'app vede e controlla solo i suoi download;
-  - User-Agent `NucleoOS/<versione> (+https://indecenti.github.io/nucleoos-p4-store)`.
-- **ABI 18** (la 17 è dei programmi a schermo intero, "tty"), permesso `net`:
-  - `dl_start(spec)` con spec `{"meta4": URL}` oppure `{"url": URL, "size": n, "sha256": hex}`, più `"dest"` e
+Decisions:
+- **System downloader, `components/nv_dl` + ABI 18**. A download of hours cannot depend on the app being open, and
+  ABI 12 has 1 MB responses, no redirects and everything tied to the app's execution.
+  - Its own task, with the stack in PSRAM: writes only to the SD. One download runs at a time and the others wait in the queue.
+  - Does not block the Store: the Store worker stays free, and the two TLS can coexist because mbedTLS
+    allocates in PSRAM.
+  - A single stream with `Range: bytes=N-` from the verified point. Each 4 MiB piece is verified with SHA-1 as soon as
+    it is complete.
+  - The job registry on the SD is updated at every verified piece. After an interruption, a reboot or a dropped
+    mirror it restarts from the last good piece.
+  - A wrong piece makes it change mirror and download it again; the third error on the same piece stops the job.
+  - Without pieces in the `.meta4` (or with a simple URL) the SHA-256 of the whole file applies, reread at the end.
+- **Large files**: over 2 GiB it writes in parts `name.zimaa`, `name.zimab`... of 2 GiB minus 4 MiB, that is a
+  multiple of the pieces, so a piece never sits in two files. `nvzim` reads them as a single file.
+- **Writing**: to `name.part` and rename at the end, only after full verification. Before starting the
+  free space is checked: the size plus the OTA reserve (64 MB).
+- **Security**:
+  - only `https`, only public addresses (`nv_net_policy`), redirects followed only toward public `https`;
+  - destination inside what the app sees (`home` -> `/sdcard/home`, `fs` -> its data folder), without `..`;
+  - an app sees and controls only its own downloads;
+  - User-Agent `NucleoOS/<version> (+https://indecenti.github.io/nucleoos-p4-store)`.
+- **ABI 18** (17 belongs to the full-screen programs, "tty"), `net` permission:
+  - `dl_start(spec)` with spec `{"meta4": URL}` or `{"url": URL, "size": n, "sha256": hex}`, plus `"dest"` and
     `"title"`;
-  - `dl_info(id)` e `dl_list()` rispondono in JSON: stato, byte fatti, velocità, errore;
-  - `dl_pause(id, on)` e `dl_cancel(id)` (che cancella anche la parte scaricata).
-- **Fine del download**: una notifica ("Biblioteca: Wikipedia scaricata"), e il tocco apre l'app.
-- **Shell**: `dl` elenca, mette in pausa, riprende, annulla; `dl get URL.meta4 DEST` serve a persone e prove HIL.
-- **Biblioteca**:
-  - schermata "Scarica" con i Consigliati (per nome) e la ricerca per lingua, categoria e testo, con miniature,
-    dimensione, data e numero di voci;
-  - "Aggiornamento disponibile" quando c'è lo stesso nome con una data più nuova; la raccolta vecchia si toglie solo
-    dopo la verifica della nuova, e solo se l'utente lo chiede;
-  - elenco dei download con l'avanzamento.
-- **Test**:
-  - nucleo puro `nv_dl_core` (parser del `.meta4`, registro dei job, parti, percorsi) con test unitari e fuzzer in
+  - `dl_info(id)` and `dl_list()` answer in JSON: state, bytes done, speed, error;
+  - `dl_pause(id, on)` and `dl_cancel(id)` (which also deletes the downloaded part).
+- **End of the download**: a notification ("Library: Wikipedia downloaded"), and the tap opens the app.
+- **Shell**: `dl` lists, pauses, resumes, cancels; `dl get URL.meta4 DEST` serves people and HIL tests.
+- **Library**:
+  - "Download collections" screen with the Recommended (by name) and search by language, category and text, with thumbnails,
+    size, date and number of entries;
+  - "Newer edition" when there is the same name with a newer date; the old collection is removed only after
+    the new one is verified, and only if the user asks for it;
+  - list of downloads with progress.
+- **Tests**:
+  - pure core `nv_dl_core` (`.meta4` parser, job registry, parts, paths) with unit tests and fuzzer in
     `tests/host`;
-  - **HIL** `tools/hil/dl_resume.py`: circa 900 MB con il Wi-Fi interrotto e un riavvio a metà, poi la verifica e
-    l'apertura della raccolta.
+  - **HIL** `tools/hil/dl_resume.py`: about 900 MB with the Wi-Fi interrupted and a reboot in the middle, then verification and
+    opening of the collection.
 
-### F5: risultati (§4g)
+### F5: results (§4g)
 
-**Cosa c'è**:
-- **`components/nv_dl`**: il downloader di sistema descritto nel §4f.
-  - Il nucleo puro `nv_dl_core.c` (Metalink 4, registro dei job, parti, percorsi delle app) ha 95 controlli in
-    `tests/host` e un fuzzer, che ha trovato un registro leggibile ma non riscrivibile (corretto).
-  - `nv_net_policy` passa in `nv_kernel`.
-- **ABI 18** (la 17 è dei programmi "tty" di `feat/office`): `dl_start`, `dl_info`, `dl_list`, `dl_pause`,
+**What is there**:
+- **`components/nv_dl`**: the system downloader described in §4f.
+  - The pure core `nv_dl_core.c` (Metalink 4, job registry, parts, app paths) has 95 checks in
+    `tests/host` and a fuzzer, which found a registry that was readable but not rewritable (fixed).
+  - `nv_net_policy` moves into `nv_kernel`.
+- **ABI 18** (17 belongs to the "tty" programs of `feat/office`): `dl_start`, `dl_info`, `dl_list`, `dl_pause`,
   `dl_cancel`, `dl_free`.
 - **Shell**: `dl ls`, `dl get`, `dl pause`, `dl resume`, `dl cancel`, `dl wait`.
-- **Notifica alla fine**: il tocco apre l'app che ha chiesto il download.
-- **Biblioteca 1.2.0** (`cat.c`, `get.c`):
-  - catalogo OPDS in cache per un giorno, Consigliate per nome, categorie, ricerca;
-  - edizioni raggruppate, spazio disponibile, elenco dei download con pausa, ripresa e annulla a due tocchi;
-  - "Elimina dalla scheda" nelle informazioni della raccolta;
-  - 39 frasi nuove in 5 lingue.
-- **Test sul PC**:
-  - `test/cat_test.c`: 133 controlli su 8 voci reali del catalogo;
-  - `test/fuzz_cat.sh`: 105.000 esecuzioni pulite;
-  - `test/get.script`: tutto il percorso con catalogo e downloader simulati, compreso il caso offline;
-  - `test/delete.script`: la cancellazione.
+- **Notification at the end**: the tap opens the app that requested the download.
+- **Library 1.2.0** (`cat.c`, `get.c`):
+  - OPDS catalog cached for one day, Recommended by name, categories, search;
+  - grouped editions, available space, list of downloads with pause, resume and two-tap cancel;
+  - "Delete from the card" in the collection information;
+  - 39 new phrases in 5 languages.
+- **Tests on the PC**:
+  - `test/cat_test.c`: 133 checks on 8 real catalog entries;
+  - `test/fuzz_cat.sh`: 105,000 clean executions;
+  - `test/get.script`: the whole path with simulated catalog and downloader, including the offline case;
+  - `test/delete.script`: the deletion.
 - **HIL**: `tools/hil/dl_resume.py`.
 
-**Misure sulla scheda** (1.2.142 locale, Wi-Fi a -85 dBm):
+**Measurements on the board** (local 1.2.142, Wi-Fi at -85 dBm):
 
-| Misura | Risultato |
+| Measurement | Result |
 |---|---|
-| Vikidia nopic, 14,8 MB, 4 pezzi, 5 mirror | 61 s, SHA-256 uguale a quello del `.meta4` |
-| Il meglio di Wikipedia nopic, 941.812.270 byte, 225 pezzi, 6 mirror | 71 min con un `wifi off` di 45 s a 56 MB e un riavvio a 173 MB; SHA-256 uguale |
-| velocità | 80-390 KB/s, media circa 220 KB/s |
-| dopo l'interruzione | ripreso a 58.720.256 byte, cioè dall'ultimo pezzo verificato (14 x 4 MiB) |
-| catalogo italiano (382 voci, 466 KB) e miniature | catalogo in una richiesta; miniature una alla volta, poi dalla scheda |
-| apertura della raccolta scaricata | pagina principale subito, immagini in 0,3-1,5 s |
-| RAM interna statica | +88 byte (586 liberi su 1.002 con `feat/office`) |
-| memoria dell'app | picco 5 MiB nella schermata dei download (PC con tetto) |
+| Vikidia nopic, 14.8 MB, 4 pieces, 5 mirrors | 61 s, SHA-256 equal to the one in the `.meta4` |
+| The best of Wikipedia nopic, 941,812,270 bytes, 225 pieces, 6 mirrors | 71 min with a 45 s `wifi off` at 56 MB and a reboot at 173 MB; SHA-256 equal |
+| speed | 80-390 KB/s, average about 220 KB/s |
+| after the interruption | resumed at 58,720,256 bytes, that is from the last verified piece (14 x 4 MiB) |
+| Italian catalog (382 entries, 466 KB) and thumbnails | catalog in one request; thumbnails one at a time, then from the card |
+| opening the downloaded collection | main page immediately, images in 0.3-1.5 s |
+| static internal RAM | +88 bytes (586 free out of 1,002 with `feat/office`) |
+| app memory | peak 5 MiB in the downloads screen (PC with cap) |
 
-**Trovato e corretto sulla scheda**: `dl ls` diceva "waiting for: net" per tutta l'ora in cui un job girava
-(l'etichetta si aggiornava solo tra un job e l'altro), e una ripresa non lasciava traccia nel log.
+**Found and fixed on the board**: `dl ls` said "waiting for: net" for the whole hour in which a job was running
+(the label was updated only between one job and the next), and a resume left no trace in the log.
 
-**Aperti**:
-- La pagina principale di Wikipedia "top" è una griglia di schede: esce come immagini e link in colonna.
-- Il primo scan di una raccolta appena scaricata legge i metadati (2,5 s per 942 MB), poi la cache.
-- Pubblicazione: prima `feat/office` in main, poi `f5dl`, il firmware pubblico, poi la Biblioteca 1.2.0 nello
-  Store (`abi` 18, permesso `net`).
+**Open**:
+- The main page of Wikipedia "top" is a grid of cards: it comes out as images and links in a column.
+- The first scan of a newly downloaded collection reads the metadata (2.5 s for 942 MB), then the cache.
+- Publication: first `feat/office` into main, then `f5dl`, the public firmware, then Library 1.2.0 in the
+  Store (`abi` 18, `net` permission).
 
-### F2: `zim` nel Terminale e in ANIMA (media; firmware solo per l'aggancio ad ANIMA)
+### F2: `zim` in the Terminal and in ANIMA (medium; firmware only for the hook into ANIMA)
 
-- Comandi:
-  - `zim ls` e `zim info ID`;
-  - `zim search [-z ID] [-n N] TESTO`;
-  - `zim get [-z ID] TITOLO [--intro | --section NOME | --html | --links]`;
-  - `zim random [-z ID]` e `zim check ID`.
-- Il testo esce da `nvhtml` (paragrafi, elenchi, tabelle a righe), senza passare da `html2text`.
-- Prima nello Store come programma da terminale. Con il primo OTA utile: `kSystemApps`, la riga dinamica in
-  `ANIMA_SH_TOOLS` e la citazione della fonte ("Wikipedia IT, luglio 2026, offline").
-- Valutazione: 10 casi nuovi in `tools/anima_eval.py` (medicina, iFixit, DevDocs, Wiktionary, "dimmi di più su X"),
-  misurati prima e dopo.
-- **Uscita:** verificato sulla scheda, nessuna regressione nella valutazione.
+- Commands:
+  - `zim ls` and `zim info ID`;
+  - `zim search [-z ID] [-n N] TEXT`;
+  - `zim get [-z ID] TITLE [--intro | --section NAME | --html | --links]`;
+  - `zim random [-z ID]` and `zim check ID`.
+- The text comes out of `nvhtml` (paragraphs, lists, row tables), without going through `html2text`.
+- First in the Store as a terminal program. With the first useful OTA: `kSystemApps`, the dynamic line in
+  `ANIMA_SH_TOOLS` and the citation of the source ("Wikipedia IT, July 2026, offline").
+- Evaluation: 10 new cases in `tools/anima_eval.py` (medicine, iFixit, DevDocs, Wiktionary, "tell me more about X"),
+  measured before and after.
+- **Output:** verified on the board, no regression in the evaluation.
 
-### F3: app Biblioteca, il lettore (grande, niente firmware)
+### F3: Library app, the reader (large, no firmware)
 
-- Schermate:
-  - **Libreria:** copertina 48x48, titolo, lingua, data, numero di voci, spazio occupato.
-  - **Ricerca:** suggerimenti mentre si scrive.
-  - **Lettore:** indice delle sezioni, link interni, indietro e avanti, cronologia, segnalibri, voce a caso,
-    dimensione del testo, tema chiaro o scuro.
-  - **Informazioni sulla raccolta:** autore, editore, fonte, licenza, dai metadati.
+- Screens:
+  - **Library:** 48x48 cover, title, language, date, number of entries, space used.
+  - **Search:** suggestions as you type.
+  - **Reader:** section index, internal links, back and forward, history, bookmarks, random entry,
+    text size, light or dark theme.
+  - **Collection information:** author, publisher, source, license, from the metadata.
 - `nvhtml`:
-  - blocchi: `h1`-`h6`, `p`, `ul`/`ol`/`li`, `dl`, `blockquote`, `pre`, `table` (semplificata, infobox a coppie),
+  - blocks: `h1`-`h6`, `p`, `ul`/`ol`/`li`, `dl`, `blockquote`, `pre`, `table` (simplified, infobox as pairs),
     `figure`/`figcaption`, `hr`, `details`/`summary`;
-  - in linea: `b`, `i`, `a`, `sup`/`sub`, `code`, `br`, `small`;
-  - si scartano `script`, `style` e la navigazione; le note si raccolgono in fondo.
-- Ogni voce si impagina una volta; si disegna solo la parte visibile, lo scorrimento avviene nel framebuffer
-  dell'app e si inviano solo le righe cambiate.
-- Tastiera e mouse obbligatori (skill `keyboard-support`):
-  - Tab, frecce, PagSu/PagGiù, Spazio, Home/Fine;
-  - `/` o Ctrl+F per cercare;
-  - Alt+freccia sinistra/destra per indietro/avanti;
+  - inline: `b`, `i`, `a`, `sup`/`sub`, `code`, `br`, `small`;
+  - `script`, `style` and navigation are discarded; notes are collected at the bottom.
+- Each entry is laid out once; only the visible part is drawn, scrolling happens in the app's
+  framebuffer and only the changed rows are sent.
+- Keyboard and mouse mandatory (skill `keyboard-support`):
+  - Tab, arrows, PgUp/PgDn, Space, Home/End;
+  - `/` or Ctrl+F to search;
+  - Alt+left/right arrow for back/forward;
   - Esc.
-- 5 lingue dell'interfaccia.
-- Associazione `.zim`: `"file_types": [{"ext": "zim", "mime": "application/x-zim", "kind": "other"}]` più `"opens"`.
-  Un file fuori da `~` va spostato in `~/zim/`.
-- **Uscita:** obiettivi del §5 misurati sulla scheda, screenshot con la skill `ui-screenshot`.
+- 5 interface languages.
+- `.zim` association: `"file_types": [{"ext": "zim", "mime": "application/x-zim", "kind": "other"}]` plus `"opens"`.
+  A file outside `~` must be moved to `~/zim/`.
+- **Output:** goals of §5 measured on the board, screenshots with the `ui-screenshot` skill.
 
-### F4: immagini e formule (media, niente firmware)
+### F4: images and formulas (medium, no firmware)
 
-- Formati:
-  - WebP (decoder di libwebp);
+- Formats:
+  - WebP (libwebp decoder);
   - PNG (lodepng);
-  - JPEG (decoder software);
-  - SVG con nanosvg (formule matematiche e icone);
-  - GIF (primo fotogramma).
-- Decodifica solo quando l'immagine entra nella vista, scalata alla colonna, con una cache di massimo 4 MiB.
-- **Uscita:** pagine corrette di Wikivoyage maxi e ScoutWiki, memoria entro il budget.
+  - JPEG (software decoder);
+  - SVG with nanosvg (mathematical formulas and icons);
+  - GIF (first frame).
+- Decoding only when the image enters the view, scaled to the column, with a cache of at most 4 MiB.
+- **Output:** correct pages of Wikivoyage maxi and ScoutWiki, memory within budget.
 
-### F5: catalogo e download (media; firmware solo se F0 lo chiede)
+### F5: catalog and download (medium; firmware only if F0 asks for it)
 
-- Catalogo:
-  - OPDS filtrato per lingua, categoria e dimensione;
-  - "Consigliati" scelti per nome: Wikipedia top/medicina, Wiktionary, Wikivoyage, Gutenberg, DevDocs;
-  - controllo dello spazio libero prima di partire.
+- Catalog:
+  - OPDS filtered by language, category and size;
+  - "Recommended" chosen by name: Wikipedia top/medicine, Wiktionary, Wikivoyage, Gutenberg, DevDocs;
+  - free space check before starting.
 - Download:
   1. `.meta4`;
-  2. mirror HTTPS;
-  3. richieste Range da 1 MiB;
-  4. verifica SHA-1 di ogni pezzo da 4 MiB;
-  5. ripresa dall'ultimo pezzo buono;
-  6. scrittura in parti sotto i 2 GiB e rinomina finale.
-- Aggiornamenti: se c'è la stessa raccolta con una data più recente, si propone l'aggiornamento; la vecchia si
-  cancella solo dopo la verifica della nuova.
-- Se in F0 il download dentro l'app è lento, o se scaricare un GB con l'app aperta è inaccettabile: **ABI 18**, un
-  downloader di sistema in background per qualsiasi app, ricavato da quello di `nv_appstore`, con hash fissato dal
-  chiamante e notifica alla fine. Servirebbe anche a podcast, RSS e mappe.
-- Mai download automatici. User-Agent riconoscibile, mirror dal `.meta4`.
-- Dal PC: lettore di schede più `tools/zim_split.py` per i file oltre 2 GiB.
-- **Uscita:** 900 MB scaricati con un'interruzione del Wi-Fi e un riavvio a metà, ripresi e verificati.
+  2. HTTPS mirror;
+  3. 1 MiB Range requests;
+  4. SHA-1 verification of every 4 MiB piece;
+  5. resume from the last good piece;
+  6. writing in parts under 2 GiB and final rename.
+- Updates: if the same collection exists with a more recent date, the update is proposed; the old one is
+  deleted only after the new one is verified.
+- If in F0 the download inside the app is slow, or if downloading a GB with the app open is unacceptable: **ABI 18**, a
+  background system downloader for any app, derived from that of `nv_appstore`, with a hash fixed by the
+  caller and a notification at the end. It would also serve podcasts, RSS and maps.
+- Never automatic downloads. Recognizable User-Agent, mirrors from the `.meta4`.
+- From the PC: card reader plus `tools/zim_split.py` for files over 2 GiB.
+- **Output:** 900 MB downloaded with a Wi-Fi interruption and a reboot in the middle, resumed and verified.
 
-### F6: Store e rifiniture (piccola)
+### F6: Store and polish (small)
 
-- `GUIDE.md` e `GUIDE.en.md`, scheda dello Store con QR, righe in `THIRD_PARTY.md`, categoria `knowledge` (oggi
-  vuota).
-- Screenshot ripuliti dai dati personali (SSID, città) prima di pubblicarli.
-- **Uscita:** pacchetto firmato, installato dallo Store sulla scheda e verificato.
+- `GUIDE.md` and `GUIDE.en.md`, Store card with QR, rows in `THIRD_PARTY.md`, category `knowledge` (empty
+  today).
+- Screenshots cleaned of personal data (SSID, city) before publishing them.
+- **Output:** signed package, installed from the Store on the board and verified.
 
-## 5. Obiettivi misurati
+## 5. Measured goals
 
-Sulla scheda, con `wikipedia_it_top_nopic` (898 MB), su exFAT e su FAT32.
+On the board, with `wikipedia_it_top_nopic` (898 MB), on exFAT and on FAT32.
 
-| Misura | Obiettivo |
+| Measurement | Goal |
 |---|---|
-| apertura di una raccolta | < 300 ms |
-| suggerimenti a ogni tasto, a caldo | < 150 ms |
-| apertura di una voce, a freddo | < 1,5 s |
-| apertura di una voce con il cluster già in cache | < 300 ms |
-| scorrimento | >= 30 fps |
-| memoria dell'app | <= 12 MiB (tetto del manifest 16) |
-| `zim get --intro` per ANIMA | < 1 s |
-| download con buon Wi-Fi | >= 1 MB/s, ripresa dopo un riavvio |
+| opening a collection | < 300 ms |
+| suggestions at every key, warm | < 150 ms |
+| opening an entry, cold | < 1.5 s |
+| opening an entry with the cluster already in cache | < 300 ms |
+| scrolling | >= 30 fps |
+| app memory | <= 12 MiB (manifest cap 16) |
+| `zim get --intro` for ANIMA | < 1 s |
+| download with good Wi-Fi | >= 1 MB/s, resume after a reboot |
 
-Budget di memoria previsto:
+Planned memory budget:
 
-| Voce | MiB |
+| Item | MiB |
 |---|---|
-| contesto zstd | 0,15 |
-| 2 cluster decompressi | 4 |
-| cache delle pagine d'indice | 0,25 |
-| atlanti dei font | circa 1 |
-| impaginazione di una voce lunga | 1-2 |
-| framebuffer 1024x600 RGB565 | 1,2 |
-| immagini (F4) | fino a 4 |
-| **totale** | **circa 12** |
+| zstd context | 0.15 |
+| 2 decompressed clusters | 4 |
+| index page cache | 0.25 |
+| font atlases | about 1 |
+| layout of a long entry | 1-2 |
+| 1024x600 RGB565 framebuffer | 1.2 |
+| images (F4) | up to 4 |
+| **total** | **about 12** |
 
-## 6. Rischi
+## 6. Risks
 
-| Rischio | Contromisura |
+| Risk | Countermeasure |
 |---|---|
-| Seek su FAT32 lenti (catena dei cluster, FASTSEEK spento): decine di ms per lettura | misura in F0; consigliare exFAT; un file aperto per regione (indice, dirent, cluster) per evitare seek all'indietro; FASTSEEK nel firmware se serve |
-| File oltre 2 GiB | parti (D3); gli offset WASI a 64 bit sono un lavoro firmware a parte, utile anche a sqlite e zstd |
-| Finestra zstd da 8 MiB | colpo unico (D4) |
-| Scritture non latine (CJK, arabo, devanagari) | riquadro nella v1; font aggiuntivi più avanti, su richiesta |
-| Contenuto non fidato | fuzz di parser e impaginazione, sandbox WASM, nessun JavaScript eseguito mai |
-| HTML diverso a seconda dello scraper | v1 garantita per mwoffliner (Wikimedia), DevDocs, Stack Exchange (sotoki), Gutenberg, iFixit; i siti fatti con zimit (pieni di JS) solo al meglio |
-| Carico sui server Kiwix | mirror dal `.meta4`, User-Agent riconoscibile, nessun download automatico |
-| Altre sessioni sullo stesso albero | slot di versione e regola di coordinamento prima di ogni rilascio |
+| Slow seeks on FAT32 (cluster chain, FASTSEEK off): tens of ms per read | measurement in F0; recommend exFAT; one open file per region (index, dirent, cluster) to avoid backward seeks; FASTSEEK in the firmware if needed |
+| Files over 2 GiB | parts (D3); 64-bit WASI offsets are a separate firmware job, also useful to sqlite and zstd |
+| 8 MiB zstd window | single shot (D4) |
+| Non-Latin scripts (CJK, Arabic, Devanagari) | box in v1; additional fonts later, on request |
+| Untrusted content | fuzzing of parser and layout, WASM sandbox, no JavaScript ever executed |
+| HTML differs depending on the scraper | v1 guaranteed for mwoffliner (Wikimedia), DevDocs, Stack Exchange (sotoki), Gutenberg, iFixit; sites made with zimit (full of JS) only best-effort |
+| Load on Kiwix servers | mirrors from the `.meta4`, recognizable User-Agent, no automatic downloads |
+| Other sessions on the same tree | version slot and coordination rule before every release |
 
-## 7. Licenze
+## 7. Licenses
 
-| Componente | Licenza | Note |
+| Component | License | Notes |
 |---|---|---|
-| `nvzim`, `nvhtml`, app, `zim` | nostra | |
-| zstd 1.5.7 | BSD-3-Clause | già in `ports/cli` |
-| liblzma (xz 5.8.4) | 0BSD | già in `ports/cli` |
+| `nvzim`, `nvhtml`, app, `zim` | ours | |
+| zstd 1.5.7 | BSD-3-Clause | already in `ports/cli` |
+| liblzma (xz 5.8.4) | 0BSD | already in `ports/cli` |
 | lodepng | zlib | |
-| libwebp, solo decoder | BSD-3-Clause | |
+| libwebp, decoder only | BSD-3-Clause | |
 | nanosvg | zlib | |
 | Noto Sans, Noto Sans Mono | OFL 1.1 | |
-| libzim, Xapian | GPL-2.0 | **non usati**; python-libzim solo per i test sul PC |
-| contenuti | per raccolta (Wikipedia CC BY-SA 4.0...) | mostrata dall'app a partire dai metadati |
+| libzim, Xapian | GPL-2.0 | **not used**; python-libzim only for the tests on the PC |
+| contents | per collection (Wikipedia CC BY-SA 4.0...) | shown by the app from the metadata |
 
-## 8. Dopo la v1
+## 8. After v1
 
-- **Ricerca nel testo completo** con un indice laterale nostro (`.zim.nvx`): costruito sul PC per le raccolte
-  consigliate, o sul dispositivo per quelle piccole.
-- **Server sulla rete di casa:** `nv_web` serve le raccolte ai browser di telefono e PC, come kiwix-serve (firmware).
-- **Offset WASI a 64 bit e FASTSEEK** (firmware): via le parti.
-- **Riuso di `nvhtml`** per EPUB, RSS e mail.
+- **Full-text search** with a side index of our own (`.zim.nvx`): built on the PC for the recommended
+  collections, or on the device for the small ones.
+- **Server on the home network:** `nv_web` serves the collections to phone and PC browsers, like kiwix-serve (firmware).
+- **64-bit WASI offsets and FASTSEEK** (firmware): parts go away.
+- **Reuse of `nvhtml`** for EPUB, RSS and mail.

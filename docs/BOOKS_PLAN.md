@@ -1,90 +1,90 @@
-# Libri: lettore di ebook e catalogo nello Store
+# Books: ebook reader and catalog in the Store
 
-Stato al 2026-10-21 (branch `feat/books`, worktree `D:\nv_books`):
+Status as of 2026-10-21 (branch `feat/books`, worktree `D:\nv_books`):
 
-- **F1 chiusa**: motore (EPUB 2/3 anche a layout fisso, CBZ, FB2, TXT, HTML, Markdown), pagine, temi, sfoglio,
-  indice; test sul PC (`bash ports/books/test.sh`, ASan/UBSan + tetto di memoria) e `test/book_check.c`, che la
-  pipeline del catalogo usa per scartare gli EPUB che il motore non apre.
-- **F2 quasi chiusa**: libreria, segnalibri, note, ricerca, verticale (l'app ruota da sé, come la rotazione 90 del
-  sistema), sillabazione in 11 lingue (`hyph/LICENSES.md`). Provata sulla scheda col firmware 1.2.148: pagina in
-  ~35-50 ms, capitolo in 20-80 ms, sfoglio ~55 ms a fotogramma. Manca la schermata delle licenze di terzi.
-- **F3 scritta**: catalogo (`catalog.c`) provato sul PC con un catalogo di prova, download compreso; da provare
-  sulla scheda col catalogo vero.
-- **F4/F5 in corso** nella sessione del catalogo: italiano pubblicato (216 libri, release `books-it-1`).
+- **F1 closed**: engine (EPUB 2/3 including fixed layout, CBZ, FB2, TXT, HTML, Markdown), pages, themes, page turning,
+  table of contents; tests on the PC (`bash ports/books/test.sh`, ASan/UBSan + memory cap) and `test/book_check.c`, which the
+  catalog pipeline uses to discard EPUBs the engine cannot open.
+- **F2 almost closed**: library, bookmarks, notes, search, portrait (the app rotates by itself, like the system's 90 rotation),
+  hyphenation in 11 languages (`hyph/LICENSES.md`). Tested on the board with firmware 1.2.148: page in
+  ~35-50 ms, chapter in 20-80 ms, page turning ~55 ms per frame. The third-party licenses screen is missing.
+- **F3 written**: catalog (`catalog.c`) tested on the PC with a test catalog, download included; still to be tested
+  on the board with the real catalog.
+- **F4/F5 in progress** in the catalog session: Italian published (216 books, release `books-it-1`).
 
-Obiettivo: un'app **Libri** completa per leggere sul P4 (EPUB, FB2, TXT, HTML, Markdown) con temi da lettore
-vero (bianco, seppia, scuro, nero, simulazione e-ink, monocromatico), pagine sfogliate, capitoli e indice, e un
-**catalogo di libri liberi nel repo dello Store** (`indecenti/nucleoos-p4-store`), scaricabili dall'app e
-raggiungibili da una sezione Libri dello Store. Più lingue possibile, solo contenuti utili (classici, saggistica,
-manuali veri), solo contenuti che possiamo distribuire.
+Goal: a complete **Books** app for reading on the P4 (EPUB, FB2, TXT, HTML, Markdown) with real-reader
+themes (white, sepia, dark, black, e-ink simulation, monochrome), turned pages, chapters and table of contents, and a
+**catalog of free books in the Store repo** (`indecenti/nucleoos-p4-store`), downloadable from the app and
+reachable from a Books section of the Store. As many languages as possible, only useful content (classics, nonfiction,
+real manuals), only content we can distribute.
 
-## 1. Decisioni
+## 1. Decisions
 
-### D1. Un catalogo solo, dentro l'app; lo Store ha l'ingresso, non un secondo catalogo
+### D1. One catalog only, inside the app; the Store has the entry point, not a second catalog
 
-Valutate tre strade:
+Three routes were evaluated:
 
-| Strada | Pro | Contro |
+| Route | Pros | Cons |
 |---|---|---|
-| Libri come righe dello Store (tipo "piattaforma", come Arduboy) | nessuna app nuova per sfogliare | `store2-<lang>.json` ha un tetto di 512 KB condiviso con le app: ~12-15k libri in tutto e poi lo Store **smette di caricarsi** anche per le app; nessuna riga "libro" installabile oggi (`kDataDests`, `asset_ok`); cerca solo per titolo; firmware nuovo per ogni miglioria |
-| Store parallelo nel firmware (indice libri separato, UI LVGL nuova) | separato dalle app | due interfacce da mantenere (Store + app), firmware OTA per ogni cambiamento del catalogo, UI LVGL con font Latin-1 (niente greco/cirillico nei titoli) |
-| **Catalogo nell'app Libri + sezione Libri nello Store che la apre** | un solo codice di catalogo; aggiornabile dallo Store come app, senza OTA; font completi (greco, cirillico, vietnamita); nessun limite del firmware; le schede con il firmware attuale lo hanno subito | serve l'app installata (lo Store la installa al primo tocco) |
+| Books as Store rows ("platform" type, like Arduboy) | no new app to browse | `store2-<lang>.json` has a 512 KB cap shared with the apps: ~12-15k books in total and then the Store **stops loading** even for the apps; no installable "book" row today (`kDataDests`, `asset_ok`); search by title only; new firmware for every improvement |
+| Parallel store in the firmware (separate book index, new LVGL UI) | separate from the apps | two interfaces to maintain (Store + app), OTA firmware for every catalog change, LVGL UI with Latin-1 font (no Greek/Cyrillic in titles) |
+| **Catalog in the Books app + Books section in the Store that opens it** | a single catalog codebase; updatable from the Store like an app, without OTA; full fonts (Greek, Cyrillic, Vietnamese); no firmware limits; boards with the current firmware have it immediately | the app must be installed (the Store installs it on first tap) |
 
-Scelta: **la terza**. L'indice dei libri vive su Pages in `books/` (fuori da `store*.json`, quindi il firmware
-vecchio non lo vede e non si rompe), gli EPUB nelle Release dello stesso repo. Nello Store:
+Choice: **the third**. The book index lives on Pages in `books/` (outside `store*.json`, so the old firmware
+does not see it and does not break), the EPUBs in the Releases of the same repo. In the Store:
 
-- subito (nessun firmware): categoria nuova **Libri** in `server/appstore/catalog.json` con l'app Libri in vetrina;
-- con un OTA (F6): un riquadro **Libri** nella pagina Scopri, come quello delle Console, che apre il catalogo
-  dell'app (o la installa se manca).
+- right away (no firmware): new **Books** category in `server/appstore/catalog.json` with the Books app featured;
+- with an OTA (F6): a **Books** tile in the Discover page, like the one for Consoles, which opens the app's
+  catalog (or installs the app if missing).
 
-### D2. Dove stanno i file
+### D2. Where the files live
 
-- **EPUB**: asset delle Release `books-<lang>-<n>` (max 1000 asset per release, < 2 GiB per file, nessun limite
-  totale né di banda secondo la documentazione GitHub). Mai in git, mai su Pages.
-- **Indici**: Pages `books/` (pochi MB anche con decine di migliaia di titoli).
-- **Copertine**: Pages `books/covers/<id>.jpg`, miniature 132x192 JPEG (~5 KB), solo per i libri con una
-  copertina vera (Standard Ebooks, scansioni/illustrazioni originali; non le copertine di testo generate da
-  Gutenberg). Pages oggi pesa ~790 MB su 1 GB: copertine + indici entro ~120 MB, priorità ai libri più letti.
-  Senza copertina l'app disegna una copertina tipografica (titolo/autore su colore generato); dopo il
-  download usa quella dell'EPUB.
-- **Sulla scheda**: `/home/books/` (visibile in File, `.epub` apribili anche da lì), stato dell'app in `/appdata`.
+- **EPUB**: assets of the Releases `books-<lang>-<n>` (max 1000 assets per release, < 2 GiB per file, no total
+  or bandwidth limit according to the GitHub documentation). Never in git, never on Pages.
+- **Indexes**: Pages `books/` (a few MB even with tens of thousands of titles).
+- **Covers**: Pages `books/covers/<id>.jpg`, 132x192 JPEG thumbnails (~5 KB), only for books with a
+  real cover (Standard Ebooks, original scans/illustrations; not the text covers generated by
+  Gutenberg). Pages currently weighs ~790 MB out of 1 GB: covers + indexes within ~120 MB, priority to the most read books.
+  Without a cover the app draws a typographic cover (title/author on a generated color); after
+  download it uses the EPUB's own.
+- **On the board**: `/home/books/` (visible in Files, `.epub` files can also be opened from there), app state in `/appdata`.
 
-### D3. Cosa entra (diritti)
+### D3. What gets in (rights)
 
-Un libro entra solo se è libero sia negli USA (dove sta GitHub) sia in Italia/UE (dove si usa la scheda):
+A book gets in only if it is free both in the USA (where GitHub is) and in Italy/EU (where the board is used):
 
-- **pubblico dominio**: tutti gli autori morti entro il 1955 (UE: 70 anni) **e** opera pubblicata entro il 1930
-  (USA: 95 anni). Se manca una data verificabile, il libro non entra.
-- **licenze libere** che permettono la ridistribuzione anche fuori da uso personale: CC0, CC BY, CC BY-SA, GFDL,
-  MIT/Apache/BSD (per i manuali). **Niente NC/ND** (NucleoOS ha anche licenze commerciali).
-- **Project Gutenberg**: EPUB ridistribuiti gratis con la loro licenza dentro il file (verbatim). Nelle schede
-  "Fonte: Project Gutenberg" con link (riconoscimento, permesso); mai il marchio nei titoli o come promozione.
-- **Standard Ebooks**: CC0 sul loro lavoro, testi PD USA → stesso filtro date.
-- **archive.org**: solo collezioni curate e con controllo qualità del testo; niente OCR automatico da scansioni
-  (EPUB illeggibili) né caricamenti di utenti marcati "Public Domain" a caso (visti: García Márquez marcato PD).
-- **Wikisource**: CC BY-SA 4.0, attribuzione nella scheda del libro e nel file.
+- **public domain**: all authors who died by 1955 (EU: 70 years) **and** work published by 1930
+  (USA: 95 years). If there is no verifiable date, the book does not get in.
+- **free licenses** that allow redistribution beyond personal use: CC0, CC BY, CC BY-SA, GFDL,
+  MIT/Apache/BSD (for manuals). **No NC/ND** (NucleoOS also has commercial licenses).
+- **Project Gutenberg**: EPUBs redistributed for free with their license inside the file (verbatim). In the cards:
+  "Source: Project Gutenberg" with a link (acknowledgement, permission); never the trademark in titles or as promotion.
+- **Standard Ebooks**: CC0 on their work, US PD texts → same date filter.
+- **archive.org**: only curated collections with text quality control; no automatic OCR from scans
+  (unreadable EPUBs) and no user uploads randomly marked "Public Domain" (seen: García Márquez marked PD).
+- **Wikisource**: CC BY-SA 4.0, attribution in the book card and in the file.
 
-### D4. Cosa entra (utilità): curato, non "tutto"
+### D4. What gets in (usefulness): curated, not "everything"
 
-- **Classici e narrativa**: le opere canoniche per lingua (download Gutenberg, selezione Standard Ebooks, liste di
-  classici di Wikisource), niente doppioni (vince l'edizione migliore: Standard Ebooks > Wikisource > Gutenberg).
-- **Saggistica**: filosofia, storia, scienze, economia, poesia, teatro, viaggi.
-- **Manuali veri**: programmazione, Linux/Unix, matematica, elettronica, lingue, cucina, primo soccorso, orto, fai
-  da te, con licenza libera verificata. Niente manuali di elettrodomestici, cataloghi, opuscoli, documenti sparsi.
-- Filtri automatici di qualità: lunghezza minima, testo leggibile (rapporto parole vere/caratteri), EPUB che il
-  nostro parser apre davvero (si prova ogni file con il motore dell'app compilato sul PC).
+- **Classics and fiction**: the canonical works per language (Gutenberg downloads, Standard Ebooks selection, Wikisource
+  lists of classics), no duplicates (the best edition wins: Standard Ebooks > Wikisource > Gutenberg).
+- **Nonfiction**: philosophy, history, science, economics, poetry, theater, travel.
+- **Real manuals**: programming, Linux/Unix, mathematics, electronics, languages, cooking, first aid, vegetable garden, DIY,
+  with a verified free license. No appliance manuals, catalogs, brochures, scattered documents.
+- Automatic quality filters: minimum length, readable text (ratio of real words to characters), EPUBs that
+  our parser actually opens (every file is tried with the app's engine compiled on the PC).
 
-### D5. Lingue
+### D5. Languages
 
-- Interfaccia dell'app nelle 5 lingue di sistema (it, en, es, fr, de), segue `nv_lang()`.
-- Catalogo: tutte le lingue con libri utili (it, en, es, fr, de, pt, la, el, ru, nl, ...). Filtro per lingua con
-  default = lingua di sistema + inglese, modificabile.
-- Sillabazione per la lingua del libro (pattern di Liang, `hyph-utf8`, licenze permissive da verificare per
-  ognuna); senza pattern: niente sillabazione, giustificato lo stesso.
-- Font: Noto Sans/Serif con latino esteso, greco, cirillico. CJK/arabo/devanagari: non nella prima versione
-  (font da 10+ MB): libri in quelle lingue esclusi dal catalogo finché non c'è un pacchetto font.
+- App interface in the 5 system languages (it, en, es, fr, de), follows `nv_lang()`.
+- Catalog: all languages with useful books (it, en, es, fr, de, pt, la, el, ru, nl, ...). Language filter with
+  default = system language + English, editable.
+- Hyphenation for the book's language (Liang patterns, `hyph-utf8`, permissive licenses to be verified for
+  each); without patterns: no hyphenation, still justified.
+- Fonts: Noto Sans/Serif with extended Latin, Greek, Cyrillic. CJK/Arabic/Devanagari: not in the first version
+  (10+ MB fonts): books in those languages are excluded from the catalog until there is a font pack.
 
-## 2. Formato del catalogo (contratto tra pipeline e app)
+## 2. Catalog format (contract between pipeline and app)
 
 Base: `https://indecenti.github.io/nucleoos-p4-store/books/`
 
@@ -99,7 +99,7 @@ Base: `https://indecenti.github.io/nucleoos-p4-store/books/`
 }
 ```
 
-`books/<lang>/<k>.json` (k = 1..shards, max 500 righe, ordinate per popolarità):
+`books/<lang>/<k>.json` (k = 1..shards, max 500 rows, sorted by popularity):
 
 ```json
 { "format": 1, "lang": "it", "part": 1, "parts": 4, "books": [
@@ -108,61 +108,61 @@ Base: `https://indecenti.github.io/nucleoos-p4-store/books/`
     "s": 912345, "h": "<sha256 hex>",
     "u": "https://github.com/indecenti/nucleoos-p4-store/releases/download/books-it-1/pg1012.epub",
     "u2": "https://www.gutenberg.org/ebooks/1012.epub3.images",
-    "d": "Breve descrizione nella lingua del libro (max 240 caratteri)" } ] }
+    "d": "Short description in the book's language (max 240 characters)" } ] }
 ```
 
-- `id`: `[a-z0-9-]{1,40}`, prefisso della fonte (`pg`, `se`, `ws`, `ia`, `mn` = manuali); nome file = `<id>.epub`.
-- `s` + `h` obbligatori: l'app scarica con `nv_dl_start({"url","size","sha256","dest":"/books/<id>.epub"})`,
-  il downloader di sistema verifica, riprende, sopravvive ai riavvii; `u2` = mirror se GitHub non risponde.
-- `lic`: `pd`, `cc0`, `cc-by`, `cc-by-sa`, `gfdl`, `mit`, ...; `src` + `lic` mostrati nella scheda del libro.
-- `cv`: 1 quando esiste `books/covers/<id>.jpg` (132x192).
-- Ogni campo nuovo è opzionale; `format` sale solo se cambia qualcosa di incompatibile.
+- `id`: `[a-z0-9-]{1,40}`, source prefix (`pg`, `se`, `ws`, `ia`, `mn` = manuals); file name = `<id>.epub`.
+- `s` + `h` required: the app downloads with `nv_dl_start({"url","size","sha256","dest":"/books/<id>.epub"})`,
+  the system downloader verifies, resumes, survives restarts; `u2` = mirror if GitHub does not respond.
+- `lic`: `pd`, `cc0`, `cc-by`, `cc-by-sa`, `gfdl`, `mit`, ...; `src` + `lic` shown in the book card.
+- `cv`: 1 when `books/covers/<id>.jpg` exists (132x192).
+- Every new field is optional; `format` goes up only if something incompatible changes.
 
-## 3. L'app Libri
+## 3. The Books app
 
-Codice in `ports/books/` (riusa da `ports/zim/biblioteca`: `font.c`, `gfx.c`, `kbd.c`, `img.c`, `nvhtml`;
-miniz 3.1.2 da `ports/_src` per lo ZIP). App WASI con canvas 1024x600 `fit` (PPA), ABI 18, permessi
+Code in `ports/books/` (reuses from `ports/zim/biblioteca`: `font.c`, `gfx.c`, `kbd.c`, `img.c`, `nvhtml`;
+miniz 3.1.2 from `ports/_src` for ZIP). WASI app with 1024x600 `fit` canvas (PPA), ABI 18, permissions
 `gfx fs home net log`, `file_types` epub/fb2.
 
-- **Formati**: EPUB 2/3 (OPF, spine, NCX/nav, CSS ridotto a quello che conta: corsivi, grassetti, centrato,
-  rientri, a capo), FB2 e `.fb2.zip`, TXT (UTF-8/UTF-16/CP1252/Latin-1 riconosciuti), HTML, Markdown.
-  PDF no (resta `pdftotext` nel Terminale).
-- **Impaginazione**: pagine vere (non scorrimento), giustificato con sillabazione, controllo vedove/orfane,
-  capolettera opzionale, margini/interlinea/dimensione/font regolabili. Posizione salvata come
-  (capitolo, offset nel testo): resta giusta se cambia il carattere. Impaginazione per capitolo, al bisogno.
-- **Temi**: Bianco, Seppia, Scuro, Nero, **E-ink** (16 grigi, carta, immagini con retinatura, sfogliata con lampo
-  di refresh come un e-reader, refresh completo ogni N pagine, leggera "ombra" della pagina prima, nessuna
-  animazione), **Monocromatico** (1 bit, testo a soglia, immagini con retinatura Atkinson).
-- **Sfogliare**: tocco a destra/sinistra, swipe, tasti (frecce, PgSu/PgGiù, spazio), animazioni scorri / copri /
-  nessuna; in e-ink e mono solo il lampo.
-- **Navigazione**: indice dei capitoli, barra di avanzamento con i capitoli, vai a %, cerca nel libro, segnalibri,
-  note a piè di pagina in finestra (EPUB3 `noteref`), link interni, indietro.
-- **Biblioteca**: `/home/books`, "Continua a leggere", ordinamenti (recenti, titolo, autore, avanzamento),
-  copertine estratte, filtri per lingua, elimina, statistiche di lettura.
-- **Catalogo**: indice da Pages (cache in `/appdata`), categorie, lingue, cerca titolo/autore, scheda libro con
-  fonte e licenza, scarica (coda `nv_dl`, prosegue ad app chiusa), stato scaricato/in lettura.
-- **Lettura ad alta voce** (`nv_speak`, voce offline): frase per frase con evidenziazione. Dopo F4.
-- **Tastiera e mouse** completi (skill `keyboard-support`), interfaccia in 5 lingue.
+- **Formats**: EPUB 2/3 (OPF, spine, NCX/nav, CSS reduced to what matters: italics, bold, centered,
+  indents, line breaks), FB2 and `.fb2.zip`, TXT (UTF-8/UTF-16/CP1252/Latin-1 detected), HTML, Markdown.
+  No PDF (`pdftotext` remains in the Terminal).
+- **Layout**: real pages (not scrolling), justified with hyphenation, widow/orphan control,
+  optional drop cap, adjustable margins/line spacing/size/font. Position saved as
+  (chapter, offset in text): stays correct if the font changes. Layout per chapter, on demand.
+- **Themes**: White, Sepia, Dark, Black, **E-ink** (16 grays, paper, dithered images, page turn with a refresh
+  flash like an e-reader, full refresh every N pages, slight page "shadow" beforehand, no
+  animation), **Monochrome** (1 bit, thresholded text, images with Atkinson dithering).
+- **Page turning**: tap right/left, swipe, keys (arrows, PgUp/PgDn, space), slide / cover /
+  none animations; in e-ink and mono only the flash.
+- **Navigation**: chapter table of contents, progress bar with chapters, go to %, search in the book, bookmarks,
+  footnotes in a window (EPUB3 `noteref`), internal links, back.
+- **Library**: `/home/books`, "Continue reading", sort orders (recent, title, author, progress),
+  extracted covers, language filters, delete, reading statistics.
+- **Catalog**: index from Pages (cached in `/appdata`), categories, languages, title/author search, book card with
+  source and license, download (`nv_dl` queue, continues with the app closed), downloaded/reading state.
+- **Read aloud** (`nv_speak`, offline voice): sentence by sentence with highlighting. After F4.
+- **Full keyboard and mouse** support (skill `keyboard-support`), interface in 5 languages.
 
-## 4. Fasi
+## 4. Phases
 
-| Fase | Contenuto | Fatto quando |
+| Phase | Content | Done when |
 |---|---|---|
-| F0 | questo piano | approvato |
-| F1 | motore: ZIP+EPUB+FB2+TXT, impaginazione giustificata, temi, sfogliare, indice; test sul PC (ASan/UBSan, fuzzer ZIP/OPF/FB2, screenshot) | 20 EPUB reali aprono e impaginano senza errori sul PC |
-| F2 | biblioteca, impostazioni, segnalibri, note, cerca, sillabazione; app sulla scheda | provata sulla scheda: apertura, sfogliata, cambio tema misurati |
-| F3 | catalogo + download (`nv_dl`), schede libro | download vero sulla scheda da un indice di prova |
-| F4 | pipeline del catalogo `tools/books/` (fonti, filtri diritti/qualità, dedup, categorie, Release, indici) | indici e Release pronti in locale, rivisti con l'utente |
-| F5 | pubblicazione: app nello Store (categoria Libri), Release libri, `books/` su Pages | OK dell'utente, provato dalla scheda |
-| F6 | firmware: riquadro Libri in Scopri + apertura/installazione dell'app, `.epub` in File | OTA pubblicato con OK dell'utente |
-| F7 | lettura ad alta voce, evidenziazioni, dizionario offline (pacchetti `dict-*`) | dopo F5 |
+| F0 | this plan | approved |
+| F1 | engine: ZIP+EPUB+FB2+TXT, justified layout, themes, page turning, table of contents; tests on the PC (ASan/UBSan, ZIP/OPF/FB2 fuzzer, screenshots) | 20 real EPUBs open and lay out without errors on the PC |
+| F2 | library, settings, bookmarks, notes, search, hyphenation; app on the board | tested on the board: opening, page turning, theme change measured |
+| F3 | catalog + download (`nv_dl`), book cards | real download on the board from a test index |
+| F4 | catalog pipeline `tools/books/` (sources, rights/quality filters, dedup, categories, Releases, indexes) | indexes and Releases ready locally, reviewed with the user |
+| F5 | publication: app in the Store (Books category), book Releases, `books/` on Pages | user OK, tested from the board |
+| F6 | firmware: Books tile in Discover + app opening/installation, `.epub` in Files | OTA published with user OK |
+| F7 | read aloud, highlights, offline dictionary (`dict-*` packs) | after F5 |
 
-F4 è indipendente dall'app (rispetta solo il §2): può andare in parallelo.
+F4 is independent of the app (it only respects §2): it can go in parallel.
 
-## 5. Regole del lavoro
+## 5. Working rules
 
-- Worktree `D:\nv_books`, commit con file espliciti, autore solo l'utente, niente firme di Claude.
-- Export dello Store mai completo dal tree condiviso: export in scratch + innesto solo delle righe nostre
-  (vedi `kb-packs-store`); avvisare le altre sessioni prima.
-- Screenshot per lo Store 512x300 senza barra di stato con rete/città.
-- Pubblicazioni (Store, Release, OTA) solo con OK esplicito dell'utente.
+- Worktree `D:\nv_books`, commits with explicit files, author only the user, no Claude signatures.
+- Never a full Store export from the shared tree: export in scratch + graft only our rows
+  (see `kb-packs-store`); warn the other sessions beforehand.
+- Store screenshots 512x300 without the status bar showing network/city.
+- Publications (Store, Releases, OTA) only with the user's explicit OK.

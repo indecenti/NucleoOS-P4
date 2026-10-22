@@ -165,7 +165,7 @@ cabinet. Guide: [`docs/DMD.md`](docs/DMD.md).
 
 ### Media
 - **Camera** (OV02C10 module): auto exposure and white balance, photos, MJPEG video.
-- **Music**: MP3, WAV, AAC, FLAC, M4A, with background playback and USB-audio output.
+- **Music**: MP3, WAV, AAC, FLAC, M4A, with USB-audio output.
 - **Video**: MJPEG `.avi` and MPEG-1 `.mpg`, tear-free. **Gallery** has hardware-JPEG thumbnails.
   **Recorder** records WAV (experimental).
 

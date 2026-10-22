@@ -1,4 +1,4 @@
-// nucleo_sdk.h — NucleoOS Anima WASM app SDK (host ABI v15).
+// nucleo_sdk.h — NucleoOS Anima WASM app SDK (host ABI v19).
 //
 // Write apps in plain C (freestanding, no libc): include this header, mark the entry point with
 // NV_EXPORT, call the nv_* imports below. Build with sdk/build_app.ps1 (clang --target=wasm32,
@@ -16,9 +16,10 @@
 extern "C" {
 #endif
 
-// Host ABI generation this SDK targets; put the same value in the manifest "abi" field.
-// (A game that uses the nv_gfx_* surface below must set "abi": 2 + permission "gfx".)
-#define NUCLEO_SDK_ABI 15
+// The newest host ABI this SDK declares. In the manifest "abi" field put the LOWEST version whose
+// calls the app uses (each section below says which): an older system refuses an app that asks for
+// more than it has. (A game that uses the nv_gfx_* surface below needs at least "abi": 2 + "gfx".)
+#define NUCLEO_SDK_ABI 19
 
 #ifdef NV_SIM   // native build against the PC simulator (tools/vertice): plain C declarations
 #define NV_IMPORT(mod, sym)

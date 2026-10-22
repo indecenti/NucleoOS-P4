@@ -1,145 +1,145 @@
-# ANIMA: modalità d'uso e scala di ripiego
+# ANIMA: usage modes and fallback ladder
 
-Questo documento definisce il contratto tra le modalità di ANIMA e quello che ogni turno usa davvero.
-Il codice di riferimento è `nucleo_anima_route()` / `nucleo_anima_query()` in
-`components/nv_anima/nucleo_anima.c`; i test sono la sezione "FALLBACK LADDER" di
+This document defines the contract between ANIMA's modes and what each turn actually uses.
+The reference code is `nucleo_anima_route()` / `nucleo_anima_query()` in
+`components/nv_anima/nucleo_anima.c`; the tests are the "FALLBACK LADDER" section of
 `tests/host/unit/test_anima.cpp`.
 
-## Principio
+## Principle
 
-La modalità scelta dall'utente è un **desiderio**: ogni turno lavora con quello che c'è in quel momento.
-ANIMA non smette mai di funzionare. Se manca un pezzo scende di un gradino invece di fermarsi:
+The mode the user picks is a **wish**: each turn works with what is available at that moment.
+ANIMA never stops working. If a piece is missing it steps down a rung instead of stopping:
 
-1. **Modello linguistico** (cloud o LAN): conversazione, agente, codice.
-2. **Web**: Wikipedia, Wikidata, meteo, notizie, cambi, festività. Serve internet, non un modello.
-3. **Dispositivo**: L0 (comandi e strumenti), risolutore matematico, L1 (conoscenza su SD), HDC.
-   Funziona sempre, anche senza rete.
+1. **Language model** (cloud or LAN): conversation, agent, code.
+2. **Web**: Wikipedia, Wikidata, weather, news, exchange rates, holidays. Needs internet, not a model.
+3. **Device**: L0 (commands and tools), math solver, L1 (knowledge on SD), HDC.
+   Always works, even without a network.
 
-## Le tre risorse, controllate a ogni turno
+## The three resources, checked on every turn
 
-| Risorsa | Vera quando |
+| Resource | True when |
 |---|---|
-| `network` | il dispositivo ha un IP e la modalità non è *offline* |
-| `web` | `network`, e la modalità non è *locale* (in locale nulla esce dalla LAN) |
-| `model` | c'è un modello configurato per la modalità (in *locale* solo server LAN), il dispositivo è online, e il primo endpoint non è in pausa dopo un errore |
+| `network` | the device has an IP and the mode is not *offline* |
+| `web` | `network`, and the mode is not *local* (in local mode nothing leaves the LAN) |
+| `model` | a model is configured for the mode (in *local* only a LAN server), the device is online, and the first endpoint is not paused after an error |
 
-Le pause dopo un errore (circuit breaker in `nucleo_anima_online.c`) sono queste:
-- chiave o modello sbagliati (400/401/403/404): 10 minuti;
-- quota esaurita (429): 1 minuto;
-- server irraggiungibile o 5xx: 15 secondi.
+The pauses after an error (circuit breaker in `nucleo_anima_online.c`) are:
+- wrong key or model (400/401/403/404): 10 minutes;
+- quota exhausted (429): 1 minute;
+- server unreachable or 5xx: 15 seconds.
 
-Modificare `teacher.json` azzera le pause.
+Editing `teacher.json` resets the pauses.
 
-## Le modalità (`anima.net`)
+## The modes (`anima.net`)
 
-| Modalità | Con modello utilizzabile | Senza modello (assente, in pausa, o non risponde) | Senza rete |
+| Mode | With a usable model | Without a model (missing, paused, or not responding) | Without a network |
 |---|---|---|---|
-| **offline** | — | dispositivo | dispositivo |
-| **locale** | dispositivo + modello LAN come ultima risorsa | dispositivo | dispositivo |
-| **ibrida** (predefinita) | dispositivo + web + modello come ultima risorsa | dispositivo + web | dispositivo |
-| **llm (agente)** | il modello guida il turno, **tranne ciò che il dispositivo fa con esattezza** | dispositivo + web, **comandi inclusi** | dispositivo, comandi inclusi |
+| **offline** | — | device | device |
+| **local** | device + LAN model as a last resort | device | device |
+| **hybrid** (default) | device + web + model as a last resort | device + web | device |
+| **llm (agent)** | the model drives the turn, **except what the device does exactly** | device + web, **commands included** | device, commands included |
 
-`nucleo_anima_route()` restituisce il gradino del prossimo turno (`anima_run_t`):
+`nucleo_anima_route()` returns the rung for the next turn (`anima_run_t`):
 
-| `run` | Significato |
+| `run` | Meaning |
 |---|---|
-| `ANIMA_RUN_DEVICE` | solo dispositivo |
-| `ANIMA_RUN_WEB` | dispositivo + web, nessun modello |
-| `ANIMA_RUN_LOCAL_LLM` | dispositivo + modello LAN come ultima risorsa |
-| `ANIMA_RUN_HYBRID` | dispositivo + web + modello come ultima risorsa |
-| `ANIMA_RUN_AGENT` | il modello guida |
+| `ANIMA_RUN_DEVICE` | device only |
+| `ANIMA_RUN_WEB` | device + web, no model |
+| `ANIMA_RUN_LOCAL_LLM` | device + LAN model as a last resort |
+| `ANIMA_RUN_HYBRID` | device + web + model as a last resort |
+| `ANIMA_RUN_AGENT` | the model drives |
 
-`degraded` è vero quando la modalità è *llm* ma il modello non è utilizzabile.
+`degraded` is true when the mode is *llm* but the model is not usable.
 
-## Prima il dispositivo, anche in modalità agente
+## Device first, even in agent mode
 
-Ciò che il dispositivo sa fare con esattezza non passa mai al modello, nemmeno quando il modello c'è
-(`l0_exact` e `facts_answer`, prima del blocco agente in `nucleo_anima.c`):
-- i calcoli e i loro seguiti ("12+34", poi "per 4" fa 184; il modello locale aveva risposto 11.5);
-- ora, data, stato del sistema, "cosa sai fare", "cos'è NucleoOS";
-- aprire e chiudere le app, timer, sveglie, volume, luminosità;
-- i fatti Wikidata dei pacchetti ("quando è nato X").
+What the device does exactly never goes to the model, not even when the model is there
+(`l0_exact` and `facts_answer`, before the agent block in `nucleo_anima.c`):
+- calculations and their follow-ups ("12+34", then "per 4" gives 184; the local model had answered 11.5);
+- time, date, system status, "what can you do", "what is NucleoOS";
+- opening and closing apps, timers, alarms, volume, brightness;
+- the Wikidata facts in the packs ("quando è nato X").
 
-Sono risposte istantanee, sempre giuste e sempre uguali. Al modello restano la conversazione e le azioni
-da interpretare: "scrivi uno e due in t.txt" (cosa scrivere lo capisce lui) e le domande con un'immagine
-allegata (solo lui la vede). Senza modello la risposta del dispositivo porta comunque `(offline)` o
-`(senza modello)`.
+These are instant answers, always right and always the same. What is left to the model is conversation and actions
+that need interpreting: "scrivi uno e due in t.txt" (it works out what to write) and questions with an attached
+image (only it sees the image). Without a model, the device's answer still carries `(offline)` or
+`(no model)`.
 
-## Regole del ripiego
+## Fallback rules
 
-1. **Non si aspetta un modello che non c'è.** Se non è configurato, se il dispositivo è offline o se è in pausa,
-   il turno parte subito dai gradini del dispositivo, senza tentare la connessione.
-2. **Un solo tentativo per turno.** Se il modello fallisce durante il turno, il resto del turno lo vede come
-   assente (`nucleo_anima_online_model_off`). Traduzione, verifica Wikipedia e insegnante non lo richiamano.
-3. **I comandi funzionano anche in modalità agente.** Se il modello non risponde, "apri la musica" o
-   "alza il volume" vengono eseguiti da L0: l'utente li ha chiesti, e dal lato del modello non è stato eseguito niente.
-4. **La risposta dice da dove viene.** In modalità *llm* una risposta testuale data dal dispositivo è
-   prefissata con `(senza modello)` se la rete c'è, oppure con `(offline)` se manca. I comandi restano puliti.
-   Il campo `degraded` del risultato (e `"degraded"` nel JSON web) permette all'interfaccia di mostrarlo.
-5. **Un "non lo so" spiega il motivo.** Riporta il problema del modello (chiave non valida, quota, server
-   irraggiungibile), oppure "nessun modello linguistico disponibile".
-6. **Stesse regole su ogni superficie:**
-   - app nativa, Telegram, `/api/anima` e `/api/anima/query` passano da `nucleo_anima_query`;
-   - la chat conversazionale web (`/api/anima/chat`, `nucleo_anima_conv_chat`), se il modello manca o non
-     risponde, passa da `nucleo_anima_query_no_model`: il dispositivo risponde, l'eventuale comando viene
-     eseguito, e il turno resta nella conversazione.
+1. **Don't wait for a model that isn't there.** If it is not configured, if the device is offline or if it is paused,
+   the turn starts straight from the device rungs, without trying to connect.
+2. **One attempt per turn.** If the model fails during the turn, the rest of the turn sees it as
+   missing (`nucleo_anima_online_model_off`). Translation, Wikipedia verification and the teacher do not call it again.
+3. **Commands work in agent mode too.** If the model does not respond, "apri la musica" or
+   "alza il volume" are executed by L0: the user asked for them, and on the model side nothing was executed.
+4. **The answer says where it comes from.** In *llm* mode a text answer given by the device is
+   prefixed with `(no model)` if the network is there, or with `(offline)` if it is missing. Commands stay clean.
+   The result's `degraded` field (and `"degraded"` in the web JSON) lets the interface show it.
+5. **An "I don't know" explains why.** It reports the model's problem (invalid key, quota, server
+   unreachable), or "no language model available".
+6. **Same rules on every surface:**
+   - the native app, Telegram, `/api/anima` and `/api/anima/query` go through `nucleo_anima_query`;
+   - the web conversational chat (`/api/anima/chat`, `nucleo_anima_conv_chat`), if the model is missing or does not
+     respond, goes through `nucleo_anima_query_no_model`: the device answers, any command is
+     executed, and the turn stays in the conversation.
 
-## Forma del turno: chi possiede una richiesta
+## Shape of the turn: who owns a request
 
-Prima che qualunque livello risponda, `turn_gate()` (in `nucleo_anima.c`) guarda la **forma** di una richiesta
-che chiede di *fare* qualcosa. Una parola-comando dentro una frase non basta più a farla eseguire.
-Il principio è la certezza: un'azione sbagliata o fatta a metà è peggio di nessuna azione.
+Before any level answers, `turn_gate()` (in `nucleo_anima.c`) looks at the **shape** of a request
+that asks to *do* something. A command word inside a sentence is no longer enough to get it executed.
+The principle is certainty: a wrong or half-done action is worse than no action.
 
-| Forma | Esempio | Cosa succede |
+| Shape | Example | What happens |
 |---|---|---|
-| composta | "chiudi la musica e apri le note" | se L0 capisce **ogni** parte → un solo **piano** eseguito in ordine; altrimenti non si esegue niente |
-| differita | "apri la musica tra 10 minuti", "…alle 18", "…domani" | mai eseguita subito |
-| condizionale | "se domani piove ricordami…" | mai eseguita subito |
-| ricorrente | "ogni mattina alle 8 dimmi il meteo" | mai eseguita subito |
-| come si fa | "come si alza il volume?" | spiegata e offerta: un "sì" la esegue, un "no" la annulla |
-| negata | "non aprire la musica" | "Va bene, non faccio niente." |
-| lamentela | "il volume è troppo alto", "lo schermo è troppo luminoso" | un passo di correzione (−10 / +10) |
+| compound | "chiudi la musica e apri le note" | if L0 understands **every** part → a single **plan** executed in order; otherwise nothing is executed |
+| deferred | "apri la musica tra 10 minuti", "…alle 18", "…domani" | never executed right away |
+| conditional | "se domani piove ricordami…" | never executed right away |
+| recurring | "ogni mattina alle 8 dimmi il meteo" | never executed right away |
+| how-to | "come si alza il volume?" | explained and offered: a "sì" executes it, a "no" cancels it |
+| negated | "non aprire la musica" | "OK, I won't do anything." ("Va bene, non faccio niente." in Italian) |
+| complaint | "il volume è troppo alto", "lo schermo è troppo luminoso" | one correction step (−10 / +10) |
 
-**Cosa L0 non sa fare con certezza va al modello.** Vale per i composti che L0 non sa pianificare e per le
-richieste differite, condizionali e ricorrenti. In modalità *ibrida* e *locale* il modello si usa solo se è
-utilizzabile, come ultima risorsa, e risponde con righe `ACT` che vengono validate. Se il modello manca, la
-risposta spiega onestamente cosa funziona oggi (per esempio un promemoria). Se L0 sa pianificare un composto,
-il modello non viene interpellato.
+**What L0 cannot do with certainty goes to the model.** This applies to compounds that L0 cannot plan and to
+deferred, conditional and recurring requests. In *hybrid* and *local* mode the model is used only if it is
+usable, as a last resort, and answers with `ACT` lines that are validated. If the model is missing, the
+answer honestly explains what works today (for example a reminder). If L0 can plan a compound,
+the model is not asked.
 
-Non vengono mai spezzati:
-- il testo di una nota o di un promemoria ("crea una nota con scritto apri la porta e chiudi la finestra");
-- un elenco dentro un promemoria ("ricordami di comprare il pane e il latte");
-- le domande ("chi erano Romolo e Remo").
+These are never split:
+- the text of a note or a reminder ("crea una nota con scritto apri la porta e chiudi la finestra");
+- a list inside a reminder ("ricordami di comprare il pane e il latte");
+- questions ("chi erano Romolo e Remo").
 
-Una forma di cortesia ("se puoi apri la musica") è una richiesta semplice. Un pronome riferito a un'altra
-parte della frase ("alza il volume e poi abbassalo", "chiudi la musica e riaprila") è ambiguo dentro un
-piano: non si esegue niente e la risposta chiede di dirlo per esteso.
+A courtesy form ("se puoi apri la musica") is a simple request. A pronoun that refers to another
+part of the sentence ("alza il volume e poi abbassalo", "chiudi la musica e riaprila") is ambiguous inside a
+plan: nothing is executed and the answer asks you to say it in full.
 
-### Piani
+### Plans
 
-Un piano è una lista validata di azioni sul dispositivo (`anima_result_t.steps`, al massimo `ANIMA_PLAN_MAX` = 3):
-- al massimo **un'app** da aprire (il sistema ne tiene aperta una alla volta). Due richieste per la stessa
-  app ("apri la galleria e mostrami le foto") valgono come una;
-- al massimo **una** nota o un promemoria (condividono il contenuto composto);
-- niente contraddizioni (aprire e chiudere la stessa app);
-- solo azioni sul dispositivo: app, volume, luminosità, chiusura della musica, note, promemoria.
+A plan is a validated list of device actions (`anima_result_t.steps`, at most `ANIMA_PLAN_MAX` = 3):
+- at most **one app** to open (the system keeps one open at a time). Two requests for the same
+  app ("apri la galleria e mostrami le foto") count as one;
+- at most **one** note or reminder (they share the composed content);
+- no contradictions (opening and closing the same app);
+- device actions only: apps, volume, brightness, closing the music, notes, reminders.
 
-Lo stesso validatore vale per L0 e per il modello. Un modello che risponde con più righe `ACT` produce lo
-stesso piano. I permessi (`permissions.json`) prendono il passo più restrittivo, e un solo "procedo?" copre
-tutto il piano. Un piano non valido proposto dal modello non viene eseguito.
+The same validator applies to L0 and to the model. A model that answers with several `ACT` lines produces the
+same plan. Permissions (`permissions.json`) take the most restrictive step, and a single "procedo?" covers
+the whole plan. An invalid plan proposed by the model is not executed.
 
-Esecuzione: `nv_anima_os_run` esegue l'azione principale (se è uno strumento) e poi ogni passo, nell'ordine
-chiesto. L'app del piano viene aperta per ultima dalla superficie, come ogni altra apertura. La risposta unisce
-le parti ("Alzo il volume, apro Note e abbasso la luminosità."), e le superfici mostrano il nome localizzato
-di ogni app citata (`nv_anima_pretty_reply`). Il JSON web aggiunge `"steps":[{"intent","arg"}…]`.
+Execution: `nv_anima_os_run` executes the main action (if it is a tool) and then each step, in the order
+requested. The plan's app is opened last by the surface, like any other opening. The answer joins
+the parts ("Alzo il volume, apro Note e abbasso la luminosità."), and the surfaces show the localized name
+of every app mentioned (`nv_anima_pretty_reply`). The web JSON adds `"steps":[{"intent","arg"}…]`.
 
-## Dove si vede
+## Where it shows
 
-- `GET /api/anima/net` restituisce `mode`, `run`, `label`, `label_en`, `network`, `web`, `model` e `degraded`.
-- App ANIMA nativa: `/mode` mostra la riga "adesso: …" con il gradino effettivo.
+- `GET /api/anima/net` returns `mode`, `run`, `label`, `label_en`, `network`, `web`, `model` and `degraded`.
+- Native ANIMA app: `/mode` shows the "now: …" line with the effective rung.
 
-## Cosa NON cambia
+## What does NOT change
 
-- In modalità *ibrida* il modello resta l'ultima risorsa, solo per domande (`a_is_askable`): comandi e dati
-  non arrivano mai a un generatore.
-- Le conferme in sospeso, le immagini allegate e i chiarimenti vengono risolti prima di scegliere il gradino.
+- In *hybrid* mode the model stays the last resort, for questions only (`a_is_askable`): commands and data
+  never reach a generator.
+- Pending confirmations, attached images and clarifications are resolved before the rung is chosen.

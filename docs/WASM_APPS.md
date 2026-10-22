@@ -1,20 +1,20 @@
-# Sviluppare app WASM per NucleoOS (ESP32-P4)
+# Developing WASM apps for NucleoOS (ESP32-P4)
 
-Guida condensata — la fonte di verità per gli import è `sdk/include/nucleo_sdk.h`; app di
-riferimento `apps/abc123`. Le app girano nell'interprete WAMR con canvas full-screen 1024×600
-(ABI v2 "gfx"). Si compilano **sul PC** (clang wasm32) e si caricano via Wi-Fi: il device esegue
-solo il `.wasm`.
+Condensed guide. The source of truth for the imports is `sdk/include/nucleo_sdk.h`; the reference
+app is `apps/abc123`. Apps run in the WAMR interpreter with a full-screen 1024×600 canvas
+(ABI v2 "gfx"). They are built **on the PC** (clang wasm32) and loaded over Wi-Fi: the device runs
+only the `.wasm`.
 
-## Struttura
+## Layout
 
 ```
 apps/<id>/manifest.json   { "id":"myapp", "name":"My App", "version":"1.0", "entry":"run",
                             "abi":2, "ram_budget":65536, "stack_kb":16, "timeout_ms":120000,
                             "permissions":["gfx"], "canvas_w":1024, "canvas_h":600 }
-apps/<id>/main.c          loop immediate-mode (forma OBBLIGATORIA, vedi sotto)
-apps/<id>/img/*.565       asset RGB565 opzionali (tools/build_abc_assets.py)
-apps/<id>/snd/*.wav       SFX 48 kHz mono 16-bit opzionali
-apps/<id>/icon.argb       icona launcher 80×80 ARGB8888 opzionale (tools/make_app_icon.py)
+apps/<id>/main.c          immediate-mode loop (this shape is REQUIRED, see below)
+apps/<id>/img/*.565       optional RGB565 assets (tools/build_abc_assets.py)
+apps/<id>/snd/*.wav       optional SFX, 48 kHz mono 16-bit
+apps/<id>/icon.argb       optional launcher icon, 80×80 ARGB8888 (tools/make_app_icon.py)
 ```
 
 ## Skeleton main.c
@@ -25,44 +25,50 @@ NV_EXPORT("run")
 void run(void) {
     int W = nv_gfx_width(), H = nv_gfx_height();
     int redraw = 2, prev_down = 0;
-    while (nv_gfx_present()) {                 // pacing frame; 0 = l'OS chiude l'app
+    while (nv_gfx_present()) {                 // frame pacing; 0 = the OS is closing the app
         int x, y, down = nv_touch(&x, &y);
         int tap = (!down && prev_down); prev_down = down;
-        if (nv_gfx_back()) break;              // gesture back dell'OS alla tua radice
-        if (tap) { /* gestisci il tap */ redraw = 2; }
-        if (redraw > 0) { /* ridisegna TUTTO */ redraw--; }  // 2 frame: double buffer
+        if (nv_gfx_back()) break;              // OS back gesture, at your root screen
+        if (tap) { /* handle the tap */ redraw = 2; }
+        if (redraw > 0) { /* redraw EVERYTHING */ redraw--; }  // 2 frames: double buffer
     }
 }
 ```
 
-## ABI (modulo "nv", permesso "gfx")
+## ABI (module "nv", permission "gfx")
 
 - Frame: `nv_gfx_present` `nv_gfx_width/height` `nv_gfx_clear(col)` `nv_gfx_back`
 - Draw: `nv_gfx_rect` `nv_gfx_circle` `nv_gfx_line` `nv_gfx_tri` `nv_gfx_text(x,y,s,col,scale)` `nv_gfx_image(name,x,y,w,h)` `nv_gfx_blit`
-- Input: `nv_touch(&x,&y)` → premuto 1/0 (il TAP è il fronte di rilascio); multi-touch ABI v3 `nv_gfx_touch_count/_point`
-- Audio: `nv_gfx_tone(hz,ms)` `nv_sound(name)` (WAV in snd/) `nv_speak(text,lang)` (voce offline)
-- ABI v4 (`"abi":4`): `nv_gfx_text_width(s,scale)` + helper `nv_gfx_text_center(y,s,col,scale)`; `nv_backlight(0..100)` (torcia; l'OS ripristina la luminosità utente all'uscita)
-- ABI v5 (`"abi":5`, permesso `net`): UDP LAN — `nv_net_open/close/send/bcast/recv/from_ip/from_port/ip` (IP = token opaqui, li rigiri; un socket per app, chiuso all'uscita). Fondamenta multiplayer.
-- **ABI v6 (`"abi":6`) — motore dirty-rect** (chiave per FPS alti su P4, banda PSRAM è il collo): `nv_gfx_persist(1)` una volta → l'OS tiene UN buffer persistente (no swap/clear) e **riblitta solo i pixel che disegni** (auto-tracked, flush PPA). Pattern: disegna la scena statica una volta → `nv_gfx_bg_save()`; ogni frame **cancella** gli oggetti mobili con `nv_gfx_bg_restore(x,y,w,h)` (ricopia lo sfondo salvato) e ridisegnali. Un repaint full-screen (banda-bound, ~2 fps) diventa pochi blit piccoli. Riferimento: `apps/tanks` (scena statica + overlay barrel/traiettoria/proiettile). Perché serve: framebuffer 1024×600 in PSRAM → ridisegnare tutto ogni frame non regge; i giochi seri fanno dirty-rect/sprite + 2D hardware (PPA).
-- ABI v7 (`"abi":7`, nessun permesso): aprire file — `nv_open_path/size/read`, vedi sotto.
-- **ABI v9 (`"abi":9`) — motore 3D Vertice** (`nv.vx_*`): scena 3D renderizzata sui due core nel canvas, poi 2D sopra. Manifest `"requires": {"vertice": "1.0"}`, `canvas_scale` `fit`/`stretch`/`zoom`. Input `nv_gfx_pad()` (tastiera + gamepad, maschera SNES). Dipendenze tra pacchetti (`requires`, `"kind": "library"`, asset `"<id>:<nome>"`). Tutto in [VERTICE.md](VERTICE.md); esempio `apps/vxgp`.
-- **ABI v15 (`"abi":15`) — UI 2D e suono** (permesso `gfx`): `nv_gfx_sprite(nome, sx, sy, sw, sh, x, y, w, h, tinta)` disegna una cella di un'immagine img/ (sprite sheet, atlante di font, icone: un asset, una chiamata per cella; `tinta` RGB565 moltiplica ogni canale, 0xFFFF = com'è) — font veri con contorno al posto del 5x7; `nv_gfx_panel(x, y, w, h, raggio, colore_alto, colore_basso, alpha)` = rettangolo arrotondato con sfumatura verticale e trasparenza (pannelli, pulsanti, barre, HUD traslucido) in una chiamata. **Mixer audio**: `nv_snd_play(nome, vol, pitch, NV_SND_LOOP|NV_SND_STREAM)` → voce (fino a 12 insieme: effetti, loop, musica letta dalla SD mentre suona), `nv_snd_set(voce, vol, pitch)` per seguirla dal gioco (motore, mulinello), `nv_snd_stop(voce, fade_ms)`, `nv_snd_preload`, `nv_snd_master`; il mixer gira in un task suo, staccato dal ciclo del gioco (un frame lento non fa mai gracchiare l'audio). Da ABI 15 anche `nv_sound` passa dal mixer (i suoni si sovrappongono invece di tagliarsi). Esempio completo: `apps/bass`.
-- **ABI v11 (`"abi":11`) — controller** (`nv.pad_*`, permesso `gfx`): ogni controller è un giocatore separato, già nel layout standard Xbox (A B X Y, LB RB, LT RT analogici, due stick, Back/Start/Guide) qualunque sia il modello. USB HID generico mappato con SDL_GameControllerDB (~1000 modelli + euristica + righe utente in `/sdcard/data/pads.txt`, stesso formato di `gamecontrollerdb.txt`), USB XInput (Xbox 360/One/Series e cloni), Switch Pro e NSO via USB, DualShock 4 / DualSense via USB (vibrazione + light bar), Bluetooth LE HID (Xbox Series/One S, 8BitDo, Stadia...). `nv_pad_count()`, `nv_pad_state(i, &st, sizeof st)`, `nv_pad_name(i, buf, len)`, `nv_pad_rumble(i, low, high, ms)`; struttura `nv_pad_state_t` in `nucleo_sdk.h`. `nv_gfx_pad()` continua a funzionare e fonde tutti i controller. I pad Bluetooth Classic (DualShock 4, DualSense, Switch Pro, Joy-Con) vanno solo via cavo: il C6 è solo BLE.
-- **ABI v19 (`"abi":19`) — canvas ruotato** (permesso `gfx`, solo con `canvas_scale` `fit`/`stretch`/`zoom`): `nv_gfx_set_rotation(q)` (q = quarti di giro 0..3) fa ruotare il canvas alla PPA mentre lo scala sul pannello, senza costo per l'app (ruotare i pixel in WASM costa ~95 ms a frame pieno, limite di banda PSRAM). Con q dispari i lati si scambiano: un canvas 1024×600 diventa 600×1024 (`nv_gfx_width/height` lo dicono), l'app disegna dritta e il dispositivo tenuto col lato sinistro in alto la mostra dritta, come la modalità verticale del sistema. Il pixel (x,y) del canvas W×H finisce sul pannello in q=1 (y, W-1-x), q=2 (W-1-x, H-1-y), q=3 (H-1-y, x). Tocco, mouse e tap remoti arrivano in pixel del canvas dritto. Al cambio il canvas è nero: ridisegnare tutto. Ogni avvio parte da 0; il manifest dichiara sempre il canvas orizzontale (≤ 1024×600). Restituisce q, o -1 se rifiutato (niente `gfx`, canvas 1:1, cartucce WASM-4, Vertice già legato al canvas). Prova sulla board: `tests/apps/rotest` + `tools/hil/rotation.py`.
-- **ABI v19 — decoder JPEG hardware** (permesso `gfx`): `nv_jpeg_decode(jpg, len, out, cap, w, h)` decodifica un JPEG baseline (8 bit, grigio o YCbCr 4:4:4/4:2:2/4:2:0, fino a 4096 per lato) col decoder del P4 e lo riduce (media d'area, CPU) a esattamente w×h in `out` (RGB565 nell'ordine del canvas, righe di w pixel, `cap` ≥ w·h·2, `out` allineato a 2). Restituisce 0, oppure -1 niente `gfx`, -2 argomenti, -3 non decodificabile in hardware (progressivo, 12 bit, CMYK...), -4 memoria, -5 file rovinato: in quei casi l'app usa il suo decoder software. `nv_jpeg_info(jpg, len, &w, &h)` dice se l'hardware lo prende senza decodificarlo. Prova sulla board: `tests/apps/jpgtest` + `tools/hil/jpeg.py`.
-- Stato: `nv_save/nv_load(name,buf,len)` ≤8 KB; `nv_millis` `nv_rand` `nv_lang`
-- `NV_RGB(r,g,b)` → RGB565. Font 5×7: ` 0-9 A-Z - . : % / < > ! + x ' , = ? ( ) # *`, advance 6*scale.
+- Input: `nv_touch(&x,&y)` → pressed 1/0 (the TAP is the release edge); multi-touch since ABI v3: `nv_gfx_touch_count/_point`
+- Audio: `nv_gfx_tone(hz,ms)` `nv_sound(name)` (WAV in snd/) `nv_speak(text,lang)` (offline voice)
+- ABI v4 (`"abi":4`): `nv_gfx_text_width(s,scale)` + helper `nv_gfx_text_center(y,s,col,scale)`; `nv_backlight(0..100)` (flashlight; the OS restores the user's brightness on exit)
+- ABI v5 (`"abi":5`, permission `net`): UDP LAN — `nv_net_open/close/send/bcast/recv/from_ip/from_port/ip` (IPs are opaque tokens, you just pass them back; one socket per app, closed on exit). Foundation for multiplayer.
+- **ABI v6 (`"abi":6`) — dirty-rect engine** (the key to high FPS on the P4, where PSRAM bandwidth is the bottleneck): call `nv_gfx_persist(1)` once → the OS keeps ONE persistent buffer (no swap/clear) and **re-blits only the pixels you draw** (auto-tracked, PPA flush). Pattern: draw the static scene once → `nv_gfx_bg_save()`; each frame **erase** the moving objects with `nv_gfx_bg_restore(x,y,w,h)` (copies the saved background back) and redraw them. A full-screen repaint (bandwidth-bound, ~2 fps) becomes a few small blits. Reference: `apps/tanks` (static scene + barrel/trajectory/projectile overlay). Why it is needed: the 1024×600 framebuffer lives in PSRAM, so redrawing everything every frame does not keep up; serious games use dirty-rect/sprites + 2D hardware (PPA).
+- ABI v7 (`"abi":7`, no permission): opening files — `nv_open_path/size/read`, see below.
+- **ABI v9 (`"abi":9`) — Vertice 3D engine** (`nv.vx_*`): a 3D scene rendered on both cores into the canvas, 2D on top. Manifest `"requires": {"vertice": "1.0"}`, `canvas_scale` `fit`/`stretch`/`zoom`. Input `nv_gfx_pad()` (keyboard + gamepad, SNES mask). Dependencies between packages (`requires`, `"kind": "library"`, assets `"<id>:<name>"`). All in [VERTICE.md](VERTICE.md); example `apps/vxgp`.
+- ABI v10 (`"abi":10`, permission `gfx`) — raw audio stream: the app generates 16-bit signed PCM itself and feeds the speaker (synths, trackers, emulators). `nv_audio_open(rate, channels)` (rate 8000..48000, 1 or 2 channels; 1 = ok, 0 = speaker busy or unavailable), `nv_audio_write(pcm, bytes)`, `nv_audio_backlog()` (write only while the queued bytes are under your latency target), `nv_audio_close()`. One stream per run, closed by the OS when the app exits.
+- **ABI v11 (`"abi":11`) — controllers** (`nv.pad_*`, permission `gfx`): every controller is a separate player, already in the standard Xbox layout (A B X Y, LB RB, analog LT RT, two sticks, Back/Start/Guide) whatever the model. Generic USB HID mapped with SDL_GameControllerDB (~1000 models + heuristic + user lines in `/sdcard/data/pads.txt`, same format as `gamecontrollerdb.txt`), USB XInput (Xbox 360/One/Series and clones), Switch Pro and NSO over USB, DualShock 4 / DualSense over USB (rumble + light bar), Bluetooth LE HID (Xbox Series/One S, 8BitDo, Stadia...). `nv_pad_count()`, `nv_pad_state(i, &st, sizeof st)`, `nv_pad_name(i, buf, len)`, `nv_pad_rumble(i, low, high, ms)`; the `nv_pad_state_t` struct is in `nucleo_sdk.h`. `nv_gfx_pad()` keeps working and merges all controllers. Bluetooth Classic pads (DualShock 4, DualSense, Switch Pro, Joy-Con) work only over a cable: the C6 is BLE-only.
+- ABI v12 (`"abi":12`) — network (`http_*`, `ws_*`, `mqtt_*`, `ha_*`): see "Networking for apps (ABI v12)" below. ABI v13 adds `nv_mdns_browse(service, proto)`: mDNS discovery on the home network (permission `lan`), an HTTP-style handle whose body has one line per device, `instance|hostname|ipv4|port|key=value;key=value`, ~2.5 s.
+- ABI v14 (`"abi":14`, permission `gfx`) — raw keyboard + mouse, for games, emulators and ports that need real keys (Ctrl, Alt, digits, F-keys) or mouse motion rather than the SNES-style `nv_gfx_pad`; USB and Bluetooth devices are merged. `nv_kbd_state(buf, len)` (`buf[0]` = HID modifier bits, `buf[1..6]` = HID usages of the keys held now; returns how many usages were written, -1 = no keyboard), `nv_mouse_read(&m, len)` (`nv_mouse_t`: motion since the previous call plus the buttons held; 1 = mouse present, 0 = none; the first call hides the OS pointer and stops it clicking the UI for the rest of the run, touch keeps working). Manifest: `"engine": "<id>"` runs package `<id>`'s module for this package (list it in `requires` too); `"args": ["..."]` = argv[1..] of a WASI app.
+- **ABI v15 (`"abi":15`) — 2D UI and sound** (permission `gfx`): `nv_gfx_sprite(name, sx, sy, sw, sh, x, y, w, h, tint)` draws one cell of an img/ image (sprite sheet, font atlas, icons: one asset, one call per cell; `tint` is an RGB565 that multiplies each channel, 0xFFFF = as painted) — real fonts with outlines instead of the 5x7; `nv_gfx_panel(x, y, w, h, radius, color_top, color_bottom, alpha)` = rounded rectangle with a vertical gradient and transparency (panels, buttons, bars, translucent HUD) in one call. **Audio mixer**: `nv_snd_play(name, vol, pitch, NV_SND_LOOP|NV_SND_STREAM)` → voice (up to 12 at once: effects, loops, music read from the SD while it plays), `nv_snd_set(voice, vol, pitch)` to follow it from the game (engine, reel), `nv_snd_stop(voice, fade_ms)`, `nv_snd_preload`, `nv_snd_master`; the mixer runs in its own task, detached from the game loop (a slow frame never makes the audio crackle). From ABI 15 `nv_sound` also goes through the mixer (sounds overlap instead of cutting each other off). Full example: `apps/bass`.
+- ABI v16 (`"abi":16`) — Vertice 1.5 (`"requires": {"vertice": "1.5"}`): `vx_project` (world point → canvas pixel with the camera of the last `vx_render`, for a HUD over the 3D frame), `vx_texture_size`, `vx_obj_get_pos`, `vx_obj_fade`/`vx_obj_appear` (distance fades), `vx_emitter_clear`, `vx_config`, `vx_obj_material`, `vx_obj_alpha`, `vx_mat_set`, `vx_obj_parent`, `vx_obj_shadow`. Details in [VERTICE.md](VERTICE.md).
+- ABI v17 (`"abi":17`) — full-screen terminal programs (`"tty": true`): see "Full-screen programs (curses, ABI 17)" below.
+- ABI v18 (`"abi":18`, permission `net`) — system downloader: big files in the background, checked piece by piece and resumed after a dropped connection or a restart; a download goes on after the app closes (the OS posts a notification at the end, a tap opens the app). `nv_dl_start(spec_json)` (a `meta4` Metalink 4, or a plain `url` with the exact `size` and `sha256`; returns an id > 0), `nv_dl_info(id, buf, len)`, `nv_dl_list(buf, len)`, `nv_dl_pause(id, on)`, `nv_dl_cancel(id)`, `nv_dl_free()` (MiB a new download may use). The file lands where the app sees it (`home`: the shared workspace, else `fs`: its data folder) as `<name>.part` until it is complete and checked, and never over an existing file. An app only sees its own downloads.
+- **ABI v19 (`"abi":19`) — rotated canvas** (permission `gfx`, only with `canvas_scale` `fit`/`stretch`/`zoom`): `nv_gfx_set_rotation(q)` (q = quarter turns 0..3) makes the PPA rotate the canvas while it scales it to the panel, at no cost to the app (rotating pixels in WASM costs ~95 ms per full frame, a PSRAM bandwidth limit). With an odd q the sides swap: a 1024×600 canvas becomes 600×1024 (`nv_gfx_width/height` report it), the app draws upright, and the device held with its left edge up shows it upright, like the system's portrait mode. Canvas pixel (x,y) of a W×H canvas lands on the panel at q=1 (y, W-1-x), q=2 (W-1-x, H-1-y), q=3 (H-1-y, x). Touch, mouse and remote taps arrive in upright canvas pixels. The canvas is black after a change: redraw everything. Every run starts at 0; the manifest always declares the landscape canvas (≤ 1024×600). Returns q, or -1 if refused (no `gfx`, a 1:1 canvas, WASM-4 cartridges, Vertice already bound to the canvas). Board test: `tests/apps/rotest` + `tools/hil/rotation.py`.
+- **ABI v19 — hardware JPEG decoder** (permission `gfx`): `nv_jpeg_decode(jpg, len, out, cap, w, h)` decodes a baseline JPEG (8-bit, grey or YCbCr 4:4:4/4:2:2/4:2:0, up to 4096 per side) with the P4 decoder and scales it down (area average, CPU) to exactly w×h in `out` (RGB565 in canvas order, rows of w pixels, `cap` ≥ w·h·2, `out` 2-byte aligned). Returns 0, or -1 no `gfx`, -2 bad arguments, -3 not decodable in hardware (progressive, 12-bit, CMYK...), -4 memory, -5 corrupt file: in those cases the app uses its own software decoder. `nv_jpeg_info(jpg, len, &w, &h)` tells you whether the hardware takes it, without decoding. Board test: `tests/apps/jpgtest` + `tools/hil/jpeg.py`.
+- State: `nv_save/nv_load(name,buf,len)` ≤8 KB; `nv_millis` `nv_rand` `nv_lang`
+- `NV_RGB(r,g,b)` → RGB565. 5×7 font: ` 0-9 A-Z - . : % / < > ! + x ' , = ? ( ) # *`, advance 6*scale.
 
-## Opening files (ABI v7) — aprire file
+## Opening files (ABI v7)
 
-Un'app può farsi aprire dai file: compare in **File → Apri con** e tra le **app predefinite**
-(Impostazioni), accanto ai viewer di sistema. Due campi manifest opzionali:
+An app can have files opened with it: it appears in **Files → Open with** and among the **default apps**
+(Settings → Default apps), next to the system viewers. Two optional manifest fields:
 
-- `"opens"`: i MIME che l'app apre — `type/subtype` o `type/*` (minuscolo, `[a-z0-9.+-]`, max 8;
-  `*/*` vietato). I pattern malformati vengono scartati con un log, non troncati.
-- `"file_types"`: fino a 4 estensioni nuove che l'app insegna all'OS — `ext` `[a-z0-9]{1,11}` senza
-  punto, `mime` senza `*`, `kind` fra `text image audio video app archive other` (default `other`).
-  Un'estensione già nota tiene il tipo di sistema.
+- `"opens"`: the MIME types the app opens — `type/subtype` or `type/*` (lowercase, `[a-z0-9.+-]`, max 8;
+  `*/*` is forbidden). Malformed patterns are discarded with a log line, not truncated.
+- `"file_types"`: up to 4 new extensions the app teaches the OS — `ext` `[a-z0-9]{1,11}` without the
+  dot, `mime` without `*`, `kind` one of `text image audio video app archive other` (default `other`).
+  An already known extension keeps its system type.
 
 ```json
 { "id":"mdview", "name":"MD Viewer", "version":"1.0", "entry":"run", "abi":7,
@@ -71,127 +77,128 @@ Un'app può farsi aprire dai file: compare in **File → Apri con** e tra le **a
   "file_types":[ { "ext":"mdn", "mime":"application/x-mdnote", "kind":"text" } ] }
 ```
 
-**Modello a concessione.** Nessun permesso `fs`: la scelta dell'utente ("apri QUESTO file con QUESTA
-app") è il permesso. L'app legge **solo quel file, in sola lettura** — nessun altro path è
-raggiungibile. Aperta dalla Home, `nv_open_path` ritorna 0 e gli altri -1. La concessione finisce
-quando la run termina (e decade se la SD viene rimontata).
+**Grant model.** There is no `fs` permission: the user's choice ("open THIS file with THIS app") is
+the permission. The app reads **only that file, read-only** — no other path is reachable. When it is
+launched from Home, `nv_open_path` returns 0 and the others return -1. The grant ends when the run
+ends (and lapses if the SD is remounted).
 
-- `nv_open_path(buf,len)` → path assoluto (troncato a `len`, sempre NUL); ritorna la lunghezza piena, 0 = nessun file
-- `nv_open_size()` → byte; -1 se nessun file / illeggibile
-- `nv_open_read(off,buf,len)` → byte letti (max 64 KB per chiamata), 0 a EOF, -1 errore. Si legge a
-  pezzi: il file non deve stare nei 64 KB di memoria lineare.
+- `nv_open_path(buf,len)` → absolute path (truncated to `len`, always NUL-terminated); returns the full length, 0 = no file
+- `nv_open_size()` → bytes; -1 if no file / unreadable
+- `nv_open_read(off,buf,len)` → bytes read (max 64 KB per call), 0 at EOF, -1 on error. Read in
+  chunks: the file does not have to fit in the 64 KB of linear memory.
 
 ```c
 #include "nucleo_sdk.h"
 static char chunk[4096];
 NV_EXPORT("run")
 void run(void) {
-    char path[256];                                 // i path concessi sono < 256 byte
-    if (nv_open_path(path, sizeof path) == 0) { /* aperta dalla Home: UI normale */ return; }
+    char path[256];                                 // granted paths are < 256 bytes
+    if (nv_open_path(path, sizeof path) == 0) { /* launched from Home: normal UI */ return; }
     int32_t size = nv_open_size(), off = 0, n;
     while ((n = nv_open_read(off, chunk, sizeof chunk)) > 0) {
-        /* elabora chunk[0..n) */
+        /* process chunk[0..n) */
         off += n;
     }
-    if (n < 0) nv_print("errore di lettura");
-    nv_printf("%s: %d/%d byte", path, off, size);
+    if (n < 0) nv_print("read error");
+    nv_printf("%s: %d/%d bytes", path, off, size);
 }
 ```
 
-Le app gfx partono subito sul file; le app console mostrano la loro scheda e il file è concesso alla
-pressione di Esegui. Le associazioni si registrano al boot insieme ai tile (un'app appena installata
-dallo store compare in *Apri con* dopo il riavvio); disinstallarla la toglie subito. Ogni chiamata
-riapre il file (sicuro con lo swap a caldo della SD): meglio pezzi da 4-64 KB che mille letture da
-pochi byte.
+gfx apps start on the file right away; console apps show their card and the file is granted when Run
+is pressed. Associations are registered at boot together with the tiles (an app just installed
+from the store appears in *Open with* after a restart); uninstalling it removes it immediately. Every
+call reopens the file (safe with hot-swapping the SD): prefer 4-64 KB chunks over a thousand reads of
+a few bytes.
 
-## Regole d'oro (lag = numero di chiamate draw per frame)
+## Golden rules (lag = number of draw calls per frame)
 
-1. **Frame-skip**: schermata ferma = ~0 chiamate host. Ridisegna 2 frame solo quando cambia qualcosa.
-2. **Niente float nei path caldi** (l'interprete è lento sui float): fixed-point + LUT seno (abc123 `SINQ`).
-3. **Poche primitive**: un'immagine `.565` = 1 chiamata; un gradiente = N rect = N chiamate. Meglio flat.
-4. **Audio in sequenza**: voce e SFX non devono sovrapporsi — clock di timeline app-side
-   (`g_speak_until`, `schedule_sfx`; vedi abc123). Numeri per nv_speak = PAROLE ("TRE" non "3").
-5. **Buffer grossi dentro i 64 KB di memoria lineare**, non enormi array statici.
+1. **Frame-skip**: a still screen = ~0 host calls. Redraw for 2 frames only when something changes.
+2. **No floats in hot paths** (the interpreter is slow on floats): fixed-point + sine LUT (abc123 `SINQ`).
+3. **Few primitives**: a `.565` image = 1 call; a gradient = N rects = N calls. Flat is better.
+4. **Sequenced audio**: voice and SFX must not overlap — an app-side timeline clock
+   (`g_speak_until`, `schedule_sfx`; see abc123). Numbers for nv_speak = WORDS ("TRE", not "3").
+5. **Big buffers inside the 64 KB of linear memory**, not huge static arrays.
 
 ## Build + push (PC)
 
 ```powershell
 .\.claude\skills\wasm-app\scripts\build_push.ps1 -AppDir apps\myapp          # build+push wasm+manifest
-.\.claude\skills\wasm-app\scripts\build_push.ps1 -AppDir apps\myapp -Assets  # anche img/ e snd/
+.\.claude\skills\wasm-app\scripts\build_push.ps1 -AppDir apps\myapp -Assets  # also img/ and snd/
 ```
 (clang `--target=wasm32 -mcpu=mvp -O2 -ffreestanding -nostdlib`, 64 KB linear memory, 8 KB stack;
-upload `curl --data-binary` su `POST /api/fs/write?path=/sdcard/apps/<id>/...`.)
-Un'istanza in esecuzione tiene il VECCHIO wasm: riapri l'app. Debug senza cavo: `GET /api/screen`,
+upload `curl --data-binary` to `POST /api/fs/write?path=/sdcard/apps/<id>/...`.)
+A running instance keeps the OLD wasm: reopen the app. Debugging without a cable: `GET /api/screen`,
 `GET /api/logs`, `POST /api/app/run?id=<id>`.
 
-## Distribuzione: store remoto (Wi-Fi)
+## Distribution: remote store (Wi-Fi)
 
-Oltre al push dev, le app si installano da un **server remoto** senza cavo né reflash.
+Besides the dev push, apps can be installed from a **remote server** with no cable and no reflash.
 
-- **Server** (`server/appstore/`, solo stdlib Python): `python appstore_server.py` serve la cartella
-  `apps/` del repo su `:8090`. Espone `GET /store.json?lang=&region=` (catalogo **categorizzato,
-  multilingua, geolocalizzato**) e `GET /apps/<id>/{manifest.json,app.wasm,icon.argb}`. Metadati store
-  curati in `server/appstore/catalog.json` (categoria, nomi/descrizioni per lingua, featured, rating,
-  `regions[]`) uniti sopra i manifest. Vedi `server/appstore/README.md`.
-- **Device**: Impostazioni → Aggiornamento → *App store* = `http://<PC>:8090` → SAVE, e scegli la
-  *Regione*. Poi Apps → tab **Store**: chip categorie (Tutte/In evidenza/Giochi/Bambini…), card con
-  rating + descrizione localizzata, INSTALL/UPDATE. La lingua della UI (`nv_lang`) e la regione vanno
-  in querystring → lo store risponde localizzato e filtrato. Modulo in `/sdcard/apps/<id>/` (tile Home
-  dopo reboot/scan). Firmware: `components/nv_appstore` + stringhe in `nv_i18n`.
-- Il device valida magic wasm + cap 2 MB prima di scrivere; WAMR isola il guest e limita i permessi.
-  Campi manifest opzionali per lo store: `author`, `description`.
-- **Firma (firmware ≥ 1.1.132)**: ogni app dello store ha `apps/<id>/package.sig` (sha256 + size di
-  ogni file, firmato con la chiave STORE — non quella OTA — in `%USERPROFILE%\.nucleo\store-signing-key.pem`).
-  `export_static.py` e `appstore_server.py` lo generano da soli; `python tools/store_sign.py
-  verify <dir>` lo controlla. Il device scarica tutto in `.tmp`, verifica, e solo alla fine rinomina
-  (manifest per ultimo). App non firmate: rifiutate, salvo Impostazioni → Sicurezza → *Consenti app
-  dello store non firmate (sviluppatore)*. Il push dev (`push_app.ps1`) non passa dallo store.
-- **Permessi sensibili** (`net`, `lan`, `ws`, `mqtt`, `ha`, `fs`, `camera`, `mic`): il catalogo li
-  porta in `perms`, la scheda dell'app li elenca e l'installazione chiede un secondo tocco
-  ("Accetta e installa"); un aggiornamento che ne aggiunge li evidenzia. Revoca per app in
-  Impostazioni → Sicurezza → *Permessi delle app* (`/sdcard/nucleos/perms.json`).
+- **Server** (`server/appstore/`, Python stdlib only): `python appstore_server.py` serves the repo's
+  `apps/` folder on `:8090`. It exposes `GET /store.json?lang=&region=` (a **categorized,
+  multilingual, geolocated** catalog) and `GET /apps/<id>/{manifest.json,app.wasm,icon.argb}`. Curated
+  store metadata lives in `server/appstore/catalog.json` (category, per-language names/descriptions,
+  featured, rating, `regions[]`) and is merged on top of the manifests. See `server/appstore/README.md`.
+- **Device**: Settings → System update → *App store* = `http://<PC>:8090` → SAVE STORE URL, and pick the
+  *Region*. Then Apps → **Store** tab: category chips (All/Featured/Games/Kids…), cards with
+  rating + localized description, Install/Update. The UI language (`nv_lang`) and the region go in
+  the query string → the store answers localized and filtered. The module goes to `/sdcard/apps/<id>/`
+  (Home tile after reboot/scan). Firmware: `components/nv_appstore` + strings in `nv_i18n`.
+- The device validates the wasm magic + a 2 MB cap before writing; WAMR isolates the guest and limits
+  its permissions. Optional manifest fields for the store: `author`, `description`.
+- **Signature (firmware ≥ 1.1.132)**: every store app has `apps/<id>/package.sig` (sha256 + size of
+  each file, signed with the STORE key — not the OTA one — in `%USERPROFILE%\.nucleo\store-signing-key.pem`).
+  `export_static.py` and `appstore_server.py` generate it on their own; `python tools/store_sign.py
+  verify <dir>` checks it. The device downloads everything into `.tmp`, verifies, and only at the end
+  renames (manifest last). Unsigned apps are rejected, unless Settings → Security →
+  *Allow unsigned store apps (developer)* is on. The dev push (`push_app.ps1`) does not go through
+  the store.
+- **Sensitive permissions** (`net`, `lan`, `ws`, `mqtt`, `ha`, `fs`, `camera`, `mic`): the catalog
+  carries them in `perms`, the app's card lists them and installation asks for a second tap
+  ("Accept and install"); an update that adds some highlights them. Revoke per app in
+  Settings → Security → *App permissions* (`/sdcard/nucleos/perms.json`).
 
-## Rete per le app (ABI v12)
+## Networking for apps (ABI v12)
 
-`"abi": 12`. Niente blocca: ogni richiesta restituisce un handle, l'app lo interroga dal suo loop.
-Permessi: `net` = Internet pubblico, `lan` = rete di casa (IP privati, `*.local`), `ws` = WebSocket,
-`mqtt` = broker di sistema (Impostazioni → Casa), `ha` = Home Assistant con il token di sistema
-(l'app non lo vede mai). L'host risolve il nome e classifica l'IP prima di connettersi, i redirect
-non vengono seguiti. Dettagli e codici d'errore in `nucleo_sdk.h` (sezione ABI v12); esempio
-completo `apps/net12` + `tools/net12_server.py`.
+`"abi": 12`. Nothing blocks: every request returns a handle, and the app polls it from its loop.
+Permissions: `net` = public Internet, `lan` = home network (private IPs, `*.local`), `ws` = WebSocket,
+`mqtt` = system broker (Settings → Home), `ha` = Home Assistant with the system token
+(the app never sees it). The host resolves the name and classifies the IP before connecting, and
+redirects are not followed. Details and error codes in `nucleo_sdk.h` (ABI v12 section); full
+example `apps/net12` + `tools/net12_server.py`.
 
 ```c
 char spec[160];
 nv_snprintf(spec, sizeof spec, "{\"url\":\"http://%s/rpc/Switch.Set?id=0&on=true\"}", shelly_ip);
-int h = nv_http_req(spec, 0, 0);                 // subito: handle
-... nel loop: if (nv_http_state(h) == 1) { n = nv_http_read(h, buf, sizeof buf); nv_http_close(h); }
+int h = nv_http_req(spec, 0, 0);                 // returns a handle at once
+... in the loop: if (nv_http_state(h) == 1) { n = nv_http_read(h, buf, sizeof buf); nv_http_close(h); }
 int ha = nv_ha_req("POST", "/api/services/light/toggle", "{\"entity_id\":\"light.cucina\"}", 29);
 nv_mqtt_sub("zigbee2mqtt/+/state");  ...  n = nv_mqtt_recv(topic, sizeof topic, buf, sizeof buf);
 ```
 
-## Programmi da terminale (WASI, ABI 8)
+## Terminal programs (WASI, ABI 8)
 
-App WASI con `"console": true` nel manifest: le lancia il **Terminale** (`lua`, `js file.js`,
-`sqlite3 note.db`: prima parola = id app, il resto = argv), la tile in Home apre un Terminale che le
-esegue. stdin = righe digitate (bottone EOF = fine input, STOP = kill), stdout/stderr nello
-scrollback (testo semplice, escape ANSI scartati). Niente timeout né tetto opcode. Permesso `home` =
-`/sdcard/home` come `/`. Port pronti in `ports/` (Lua 5.4, QuickJS-ng, SQLite): `bash ports/build.sh`,
-test su PC `bash ports/test.sh`; nello Store stanno nella categoria **Terminale**. Lua usa
-`nv.try_call`/`nv.throw` al posto di setjmp/longjmp (`ports/common/nv_sjlj.h`).
+WASI apps with `"console": true` in the manifest: launched by the **Terminal** (`lua`, `js file.js`,
+`sqlite3 note.db`: first word = app id, the rest = argv); the Home tile opens a Terminal that
+runs them. stdin = typed lines (EOF button = end of input, STOP = kill), stdout/stderr go to the
+scrollback (plain text, ANSI escapes discarded). No timeout and no opcode cap. The `home` permission =
+`/sdcard/home` as `/`. Ready-made ports in `ports/` (Lua 5.4, QuickJS-ng, SQLite): `bash ports/build.sh`,
+PC tests with `bash ports/test.sh`; in the Store they are in the **Terminal** category. Lua uses
+`nv.try_call`/`nv.throw` in place of setjmp/longjmp (`ports/common/nv_sjlj.h`).
 
-### Programmi a schermo intero (curses, ABI 17)
+### Full-screen programs (curses, ABI 17)
 
-Con anche `"tty": true` il programma possiede lo schermo (sc-im, WordGrinder): riceve
-`TERM=xterm-256color`, `LANG=C.UTF-8`, `COLUMNS`/`LINES` della griglia; sullo schermo alternativo il
-Terminale è raw (tasti come sequenze xterm) e non traduce l'output; `poll()`/`select()` su stdin
-aspettano con timeout (ESC vs frecce); un cambio di griglia (tastiera a schermo, rotazione) arriva
-in-band su stdin come in xterm mode 2048 (`CSI 48;righe;colonne;h;w t`); se il programma chiede il
-mouse un tocco è un clic e un trascinamento verticale la rotella. La tile in Home resta anche per le
-app di sistema; aperto da File con "Apri con", il programma riceve il percorso e vede la cartella del
-file. Lato programma: ncurses 6.5 e lo shim `ports/tui/compat` (termios, resize → `SIGWINCH`,
-`TIOCGWINSZ`, ora locale): vedi `ports/README.md`, sezione *Full-screen programs*.
+With `"tty": true` as well, the program owns the screen (sc-im, WordGrinder): it gets
+`TERM=xterm-256color`, `LANG=C.UTF-8`, and the grid's `COLUMNS`/`LINES`; on the alternate screen the
+Terminal is raw (keys as xterm sequences) and does not translate the output; `poll()`/`select()` on
+stdin wait with a timeout (ESC vs arrow keys); a grid change (on-screen keyboard, rotation) arrives
+in-band on stdin as in xterm mode 2048 (`CSI 48;rows;cols;h;w t`); if the program asks for the
+mouse, a touch is a click and a vertical drag is the wheel. The Home tile stays for system apps too;
+when opened from Files with "Open with", the program receives the path and sees the file's folder.
+Program side: ncurses 6.5 and the `ports/tui/compat` shim (termios, resize → `SIGWINCH`,
+`TIOCGWINSZ`, local time): see `ports/README.md`, section *Full-screen programs*.
 
-## Checklist "finita"
+## "Done" checklist
 
-1. Compila pulita `-Wall -Wextra`. 2. Idle ≈ 0 draw calls. 3. Animazioni con finestra temporale.
-4. Audio sequenziato. 5. Push con curl e dimensioni verificate. 6. Riapri l'app sul device.
+1. Compiles clean with `-Wall -Wextra`. 2. Idle ≈ 0 draw calls. 3. Animations with a time window.
+4. Sequenced audio. 5. Pushed with curl and sizes verified. 6. Reopen the app on the device.
