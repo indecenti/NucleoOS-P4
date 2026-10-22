@@ -2042,18 +2042,29 @@ bool largest_walk(walker_heap_into_t, walker_block_info_t b, void *user) {
 const char *place_top(size_t code, size_t mem, void **code_out, void **mem_out) {
     LargestFree l = {};
     heap_caps_walk(MALLOC_CAP_SPIRAM, largest_walk, &l);
-    // TLSF searches for a block one size class above the request (1/32 of its power of two: 128 KB
-    // for 4-8 MB) and the headers come on top: that much stays free above the last block.
-    const size_t slack = (code ? code : mem) / 16 + 4096;
-    const size_t need = mem + code + slack;
-    if (l.size < need + 64 * 1024) return "too small";
+    // TLSF sorts free blocks into size classes 1/32 of a power of two wide (128 KB at 4-8 MB,
+    // 512 KB at 16-32 MB) and searches one class above a request: one class of the last block plus
+    // the headers stays free above it.
+    auto tlsf_step = [](size_t n) { size_t p = 1; while (p <= n / 2) p <<= 1; return p / 32; };
+    const size_t last = code ? code : mem;
+    const size_t need = mem + code + tlsf_step(last) + 8192;
     const uint32_t caps = MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT;
-    void *low = heap_caps_aligned_alloc(128, l.size - need, caps);   // holds the bottom end meanwhile
+    // Take the largest block whole - no other is big enough, so TLSF has to give exactly that one
+    // (down to its class's lower edge, the most a search can ask for) - then shrink it in place:
+    // TLSF trims the tail without moving, and that tail, the top end, is the one free block big
+    // enough for the memory. Asking for the bottom end alone did not work: a request that size went to the
+    // smallest hole it fitted in, elsewhere.
+    const size_t whole = l.size / tlsf_step(l.size) * tlsf_step(l.size) - 4096;
+    if (whole < need + 64 * 1024) return "too small";
+    void *low = heap_caps_malloc(whole, caps);
     if (!low) return "no bottom";
     void *c = nullptr, *m = nullptr;
     const char *why = nullptr;
     if ((uintptr_t)low < l.addr || (uintptr_t)low >= l.addr + l.size) {
         why = "bottom elsewhere";
+    } else if (void *same = heap_caps_realloc(low, whole - need, caps); same != low) {
+        why = "bottom moved";   // never for a shrink
+        if (same) low = same;
     } else {
         m = heap_caps_aligned_alloc(128, mem, caps);
         c = m && code ? heap_caps_aligned_alloc(128, code, caps) : nullptr;
