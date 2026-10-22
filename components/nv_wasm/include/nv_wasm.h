@@ -370,6 +370,9 @@ static inline bool nv_wasm_app_on_home(const nv_wasm_app_t *a, bool system_app) 
 
 enum { NV_WASM_SCALE_NONE = 0, NV_WASM_SCALE_FIT = 1, NV_WASM_SCALE_STRETCH = 2, NV_WASM_SCALE_ZOOM = 3 };
 #define NV_WASM_DEPS_MAX 4
+// Installed apps a scan returns (Home tiles, Settings, Terminal, dependents). With the natives they
+// must fit nv_ui's registry (kMaxApps) and the launcher order string (kMaxEntries * 32 < 4000).
+#define NV_WASM_MAX_APPS 84
 
 // Components built into this OS that an app may require, and their versions:
 //   "vertice" (the 3D engine, ABI v9), "wasi", "wasm4". NULL when `id` is not built in.

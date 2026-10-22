@@ -136,6 +136,14 @@ respawn:
             py = to->y - isin(a) * 120;
             ph = to->h;
         }
+        {   /* clear of the ground along the first leg: the plane starts above whatever lies before the ring */
+            int k;
+            for (k = 0; k <= 8; k++) {
+                int x = px + (int)(((long long)(to->x - px) * k) >> 3), y = py + (int)(((long long)(to->y - py) * k) >> 3);
+                int g = vs_height(x, y) + (25 << 4);
+                if (g > ph) ph = g;
+            }
+        }
         yaw = iatan2((to->y - py) >> 8, (to->x - px) >> 8);
         bank = 0; vs = 0;
         last = nv_millis();

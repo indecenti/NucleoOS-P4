@@ -86,6 +86,8 @@ void vs_setup(vs_view *v)
             f = (t * t * (768 - 2 * t)) >> 19;                                  /* smoothstep * 32 */
         }
         v->fog[n] = (uint8_t)(f > 32 ? 32 : f);
+        /* water's sky share (Fresnel, by distance): 10/32 at the bow, 26/32 from ~600 cells on */
+        v->fres[n] = (uint8_t)(10 + (z >= (600 << 8) ? 16 : (int32_t)(((int64_t)z * 16) / (600 << 8))));
         /* footprint of a sample: the step along the ray or the column spacing, whichever is wider */
         fp = z / v->focal;                                                    /* Q8 cells per column */
         if (fp < dz) fp = dz;
@@ -370,14 +372,21 @@ void vs_render_strip(const vs_view *v, const vs_world *wd, const vs_sky *sky, co
                     VS_PROF(3, 1);
                     if (c & (VS_CELL_WATER << 24)) {
                         VS_PROF(4, j - yb);
-                        /* water: the sky mirrored about the horizon, rippled, half and half */
+                        /* water: the sky mirrored about the horizon, rippled; Fresnel: the farther (the
+                         * more grazing) the more mirror, the nearer the more of the water's own colour.
+                         * Weights fixed per span, so a pixel costs one multiply-add on spread RGB. */
                         const int32_t tw = ((i << 7) + cam->time_ms) & 4095;          /* ripple: triangle wave */
                         const int32_t wob = ((tw < 2048 ? tw : 4095 - tw) >> 9) - 2;   /* -2..1 rows */
                         const uint16_t *sc = r->sc;
-                        for (; yb < j; yb++) {
-                            int32_t d = (int32_t)(((int64_t)(jh - yb + wob) * sky_scale) >> 16);
-                            uint32_t s = d < 0 ? sc[0] : d < sky->h ? sc[d] : sky->top;
-                            col[yb] = mix565(half565(c & 0xFFFF, s), fogc, f);
+                        const uint32_t fr = v->fres[i];
+                        const uint32_t wsk = (fr * (32 - f)) >> 5, wc = ((32 - fr) * (32 - f)) >> 5;
+                        const uint32_t K = spread(c) * wc + spread(fogc) * (32 - wc - wsk);
+                        int32_t dq = (jh - yb + wob) * sky_scale;                     /* sky row, Q16 */
+                        for (; yb < j; yb++, dq -= sky_scale) {
+                            const int32_t d = dq >> 16;
+                            const uint32_t sp = ((K + spread(d < 0 ? sc[0] : d < sky->h ? sc[d] : sky->top) * wsk) >> 5)
+                                                & 0x07E0F81Fu;
+                            col[yb] = (uint16_t)(sp | (sp >> 16));
                         }
                     } else if (i < nnear) {
                         /* per pixel, cheaply: the colour runs from the previous sample to this one down
@@ -430,9 +439,9 @@ void vs_render_strip(const vs_view *v, const vs_world *wd, const vs_sky *sky, co
                 psky += (uint32_t)(H - yb);
                 VS_PROF(7, H - yb);
                 for (; yb < H && yb <= jh; yb++) r->col[yb] = fogc;      /* haze below the horizon */
-                for (; yb < H; yb++) {
-                    int32_t q = (int32_t)(((int64_t)(yb - jh) * sky_scale) >> 16);
-                    r->col[yb] = q < sky->h ? r->sc[q] : sky->top;
+                {
+                    int32_t q = (yb - jh) * sky_scale;                       /* sky row, Q16 */
+                    for (; yb < H; yb++, q += sky_scale) r->col[yb] = (q >> 16) < sky->h ? r->sc[q >> 16] : sky->top;
                 }
             }
         }

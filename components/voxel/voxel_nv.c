@@ -248,7 +248,10 @@ int32_t voxel_render(uint16_t *fb, int cols, int rows)
             s_v.view_rows = rows;
             s_v.xscale = xs;
             if (resized) mt_setup(rows);
-            if (resized && s_v.target_ms) vs_governor_init(&s_v.gov, s_v.target_ms, 128);
+            if (resized && s_v.target_ms) {
+                vs_governor_init(&s_v.gov, s_v.target_ms, 128);
+                if (cols >= 800) s_v.gov.scale_q8 = 128;   /* wide screens start interpolated: near lossless */
+            }
         }
         s_mt.xscale = xs;
     }
@@ -300,7 +303,10 @@ int32_t voxel_config(int32_t key, int32_t value)
     case VOXEL_CFG_TARGET_MS:
         if (value >= 0 && value <= 1000) {
             s_v.target_ms = value;
-            if (value) vs_governor_init(&s_v.gov, value, 128);
+            if (value) {
+                vs_governor_init(&s_v.gov, value, 128);
+                if (s_v.view_cols >= 800) s_v.gov.scale_q8 = 128;
+            }
         }
         return s_v.target_ms;
     case VOXEL_CFG_CORES:

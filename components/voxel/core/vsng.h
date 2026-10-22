@@ -85,6 +85,7 @@ typedef struct {
     int32_t dz_q8[VS_MAX_STEPS];         /* step length, Q8 cells */
     int32_t kz[VS_MAX_STEPS];            /* focal * vscale / z, Q8 */
     uint8_t fog[VS_MAX_STEPS];           /* 0..32 */
+    uint8_t fres[VS_MAX_STEPS];          /* water's sky share by distance (Fresnel), 0..32 */
     uint8_t lod[VS_MAX_STEPS];           /* mip level wanted at this step */
     int32_t col_dx_q16[VS_MAX_W];        /* (x - cx) / focal, Q16 */
     int16_t col_ang[VS_MAX_W];           /* atan((x - cx) / focal) in 4096ths of a turn */

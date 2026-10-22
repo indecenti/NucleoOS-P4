@@ -2400,7 +2400,7 @@ int b_apps(Ctx &c) {
         if (only_apps) return 0;
         outf(c, "\nTerminal programs:\n");
     }
-    constexpr int kMax = 64;
+    constexpr int kMax = NV_WASM_MAX_APPS;
     auto *apps = (nv_wasm_app_t *)ps_alloc(sizeof(nv_wasm_app_t) * kMax);
     if (!apps) return 1;
     const int n = nv_wasm_scan(apps, kMax);
@@ -8173,7 +8173,7 @@ int sh_complete(const char *line, size_t cursor, char *ins, size_t ins_cap, char
         for (const Builtin &b : kBuiltins)
             if (!strncmp(b.name, prefix, pl) && n < kMaxC) { dirs[n] = false; cand[n++] = b.name; }
         if (S->nprogs < 0) {
-            constexpr int kMax = 64;
+            constexpr int kMax = NV_WASM_MAX_APPS;
             auto *apps = (nv_wasm_app_t *)ps_alloc(sizeof(nv_wasm_app_t) * kMax);
             S->nprogs = 0;
             if (apps) {

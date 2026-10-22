@@ -3137,7 +3137,7 @@ bool nv_wasm_requires_met(const nv_wasm_app_t *a, char *err, size_t n) {
 
 int nv_wasm_dependents(const char *id, char *who, size_t n) {
     if (who && n) who[0] = '\0';
-    constexpr int kMax = 64;
+    constexpr int kMax = NV_WASM_MAX_APPS;
     auto *apps = (nv_wasm_app_t *)heap_caps_malloc(sizeof(nv_wasm_app_t) * kMax, MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
     if (!apps) return 0;
     const int cnt = nv_wasm_scan(apps, kMax);
