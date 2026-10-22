@@ -949,8 +949,10 @@ using Handler = esp_err_t (*)(httpd_req_t *);
 // Sent with every response. Literals only: httpd keeps the pointers until the response goes out.
 void sec_headers(httpd_req_t *req) {
     httpd_resp_set_hdr(req, "X-Content-Type-Options", "nosniff");
-    httpd_resp_set_hdr(req, "X-Frame-Options", "DENY");                      // no clickjacking frames
-    httpd_resp_set_hdr(req, "Content-Security-Policy", "frame-ancestors 'none'");
+    // No clickjacking frames from other sites. Same-origin frames stay allowed: every window of the
+    // web desktop is an <iframe> of the board's own pages (sd/web/wm.js), and DENY blanked them all.
+    httpd_resp_set_hdr(req, "X-Frame-Options", "SAMEORIGIN");
+    httpd_resp_set_hdr(req, "Content-Security-Policy", "frame-ancestors 'self'");
     httpd_resp_set_hdr(req, "Referrer-Policy", "no-referrer");
 }
 
