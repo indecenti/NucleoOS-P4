@@ -611,7 +611,7 @@ void build_list_panel(lv_obj_t *root){
     lv_obj_clear_flag(s_list_panel, LV_OBJ_FLAG_SCROLLABLE);
 
     lv_obj_t *title = lv_label_create(s_list_panel);
-    lv_label_set_text(title, "Elenco");
+    lv_label_set_text(title, nv_tr(NV_STR_VID_LIST));
     lv_obj_set_style_text_color(title, th->text_strong, 0);
     lv_obj_set_style_text_font(title, &nv_font_20, 0);
 
@@ -653,32 +653,32 @@ void build_settings(lv_obj_t *root){
     lv_obj_set_style_border_color(s_settings, th->surface3, 0);
 
     lv_obj_t *title = lv_label_create(s_settings);
-    lv_label_set_text(title, "Player");
+    lv_label_set_text(title, nv_tr(NV_STR_VID_PLAYER));
     lv_obj_set_style_text_color(title, th->text_strong, 0);
     lv_obj_set_style_text_font(title, &nv_font_20, 0);
 
     // Repeat
-    seg_label(s_settings, "Ripeti");
+    seg_label(s_settings, nv_tr(NV_STR_VID_REPEAT));
     lv_obj_t *rr = seg_row(s_settings);
-    s_rep_pills[0] = pill(rr, "Off", repeat_pick_cb, 0);
-    s_rep_pills[1] = pill(rr, "Tutti", repeat_pick_cb, 1);
-    s_rep_pills[2] = pill(rr, "Uno", repeat_pick_cb, 2);
+    s_rep_pills[0] = pill(rr, nv_tr(NV_STR_VID_REP_OFF), repeat_pick_cb, 0);
+    s_rep_pills[1] = pill(rr, nv_tr(NV_STR_VID_REP_ALL), repeat_pick_cb, 1);
+    s_rep_pills[2] = pill(rr, nv_tr(NV_STR_VID_REP_ONE), repeat_pick_cb, 2);
     repeat_paint();
 
     // Aspect
-    seg_label(s_settings, "Proporzioni");
+    seg_label(s_settings, nv_tr(NV_STR_VID_ASPECT));
     lv_obj_t *ar = seg_row(s_settings);
-    s_asp_pills[0] = pill(ar, "Adatta", aspect_pick_cb, 0);
-    s_asp_pills[1] = pill(ar, "Estendi", aspect_pick_cb, 1);
-    s_asp_pills[2] = pill(ar, "Zoom", aspect_pick_cb, 2);
+    s_asp_pills[0] = pill(ar, nv_tr(NV_STR_VID_FIT), aspect_pick_cb, 0);
+    s_asp_pills[1] = pill(ar, nv_tr(NV_STR_VID_STRETCH), aspect_pick_cb, 1);
+    s_asp_pills[2] = pill(ar, nv_tr(NV_STR_VID_ZOOM), aspect_pick_cb, 2);
     aspect_paint();
 
     // Keep screen on
-    nv_kit_switch_row(s_settings, "Schermo sempre acceso",
+    nv_kit_switch_row(s_settings, nv_tr(NV_STR_VID_AWAKE),
                       nv_config_get_bool("vid_awake", true), keepawake_cb);
 
     // Show the codec·fps badge (off by default — clean picture)
-    nv_kit_switch_row(s_settings, "Mostra FPS",
+    nv_kit_switch_row(s_settings, nv_tr(NV_STR_VID_FPS),
                       nv_config_get_bool("vid_fps", false), fps_cb);
 
     lv_obj_add_flag(s_settings, LV_OBJ_FLAG_HIDDEN);
@@ -706,7 +706,7 @@ void tick(lv_timer_t *){
             const char *why = nv_vplayer_err_reason();
             char msg[160];
             lv_snprintf(msg, sizeof msg, "%s\n\nFormati: MJPEG-AVI (fotocamera) e MPEG-1 (Converti Video Nucleo).",
-                        (why && why[0]) ? why : "Formato video non supportato");
+                        (why && why[0]) ? why : nv_tr(NV_STR_VID_UNSUPPORTED));
             nv_kit_label_set(s_err_msg, msg);
             lv_obj_clear_flag(s_err_msg, LV_OBJ_FLAG_HIDDEN);
         } else {
@@ -972,7 +972,7 @@ void video_build(lv_obj_t *content){
     lv_obj_set_width(s_err_msg, lv_pct(80));
     lv_label_set_long_mode(s_err_msg, LV_LABEL_LONG_WRAP);
     lv_obj_set_style_text_align(s_err_msg, LV_TEXT_ALIGN_CENTER, 0);
-    lv_label_set_text(s_err_msg, "Formato video non supportato");
+    lv_label_set_text(s_err_msg, nv_tr(NV_STR_VID_UNSUPPORTED));
     lv_obj_set_style_text_color(s_err_msg, th->text_dim, 0);
     lv_obj_align_to(s_err_msg, s_canvas, LV_ALIGN_CENTER, 0, 0);
     lv_obj_add_flag(s_err_msg, LV_OBJ_FLAG_HIDDEN);

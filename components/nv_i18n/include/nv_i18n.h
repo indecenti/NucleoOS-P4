@@ -872,6 +872,19 @@ typedef enum {
     NV_STR_DL_TITLE,                    // notification title: the system downloader (nv_dl)
     NV_STR_DL_DONE_FMT,                 // notification: %s = what was downloaded
     NV_STR_DL_FAILED_FMT,               // notification: %s = what failed (details in the app)
+    NV_STR_VID_PLAYER,                  // video settings panel title
+    NV_STR_VID_REPEAT,                  // video settings: repeat mode
+    NV_STR_VID_REP_OFF,                 // repeat: off
+    NV_STR_VID_REP_ALL,                 // repeat: every video
+    NV_STR_VID_REP_ONE,                 // repeat: this video
+    NV_STR_VID_ASPECT,                  // video settings: aspect ratio
+    NV_STR_VID_FIT,                     // aspect: fit inside the screen
+    NV_STR_VID_STRETCH,                 // aspect: stretch to the screen
+    NV_STR_VID_ZOOM,                    // aspect: zoom to fill
+    NV_STR_VID_AWAKE,                   // video settings: keep the screen on while playing
+    NV_STR_VID_FPS,                     // video settings: show the codec/fps badge
+    NV_STR_VID_LIST,                    // video: the clip list panel title
+    NV_STR_VID_UNSUPPORTED,             // video: the file's format cannot be played
     NV_STR_COUNT
 } nv_str_id_t;
 
