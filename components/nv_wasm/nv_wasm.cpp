@@ -13,6 +13,7 @@
 #include "nv_wasm_wasi.h" // WASI preview1 guests (wasi-sdk): stdio, sandboxed data folder, sleep
 #include "nv_hid_host.h"   // ABI v9 nv.gfx_pad: USB keyboard for games
 #include "nv_pad.h"        // ABI v9/v11: game controllers (USB HID, XInput, Bluetooth LE)
+#include "voxel_nv.h"     // ABI v20 VoxelSpaceNG terrain engine (nv.vs_*, nv_wasm_vs.cpp)
 #include "vertice.h"      // ABI v9 Vertice 3D engine (nv.vx_*)
 #include "nv_wasm_w4.h"   // WASM-4 carts: env drawing/sound imports, touch gamepad, frame loop helpers
 #include "nv_wasm_net.h"  // ABI v12 network imports (http_req, ws_*, mqtt_*, ha_*)
@@ -2544,6 +2545,7 @@ void *run_worker(void *p) {
         // ABI v9: the 3D scene belongs to this run. Freed here, on the worker, after the guest can
         // no longer call in — the only thread that ever touches the engine.
         vx_close();
+        voxel_close();     // ABI v20: the terrain world belongs to the run too
         app_pcm_close();   // ABI v10: a stream the guest left open ends with the run
         nv_wsnd_shutdown(); // ABI v15: the run's voices and decoded sounds go with it
         for (int i = 0; i < NV_PAD_MAX; i++) nv_pad_rumble(i, 0, 0, 0);   // ABI v11: no motor left running
@@ -2605,6 +2607,19 @@ void req_defaults(RunReq *r) {
 }
 
 }  // namespace
+
+// ABI v20 helpers for nv_wasm_vs.cpp (declared in nv_wasm_net.h).
+bool nv_wasm_app_asset(const char *name, const char *sub, const char *ext, char *out, size_t n) {
+    return asset_path(name, sub, ext, out, n);
+}
+
+uint16_t *nv_wasm_gfx_frame_target(int *w, int *h, int *rot) {
+    if (!s_gfx.open || !s_gfx.buf[s_gfx.draw_idx]) return nullptr;
+    mark_dirty(0, 0, s_gfx.w, s_gfx.h);
+    *w = s_gfx.w; *h = s_gfx.h; *rot = s_gfx.rot;
+    return gfx_dst();
+}
+
 
 // ABI v12 (nv_wasm_net.cpp): the permissions of the run executing `env`.
 uint32_t nv_wasm_env_perms(wasm_exec_env_t env) {
@@ -2702,6 +2717,7 @@ bool nv_wasm_init(void) {
         NV_LOGW(TAG, "register_natives(nv) failed");
     nv_wasm_net_register();   // ABI v12: http_req / ws_* / mqtt_* / ha_* (nv_wasm_net.cpp)
     nv_wasm_dl_register();    // ABI v18: dl_* (nv_wasm_dl.cpp, the system downloader nv_dl)
+    nv_wasm_vs_register();    // ABI v20: vs_* (nv_wasm_vs.cpp, the VoxelSpaceNG terrain engine)
     nv_wasm_jpeg_register();  // ABI v19: jpeg_info / jpeg_decode (nv_wasm_jpeg.cpp, the hardware decoder)
 
 

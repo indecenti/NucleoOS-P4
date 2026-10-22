@@ -1,0 +1,21 @@
+{
+  "id": "vsng",
+  "name": "VoxelSpace NG",
+  "version": "0.2.0",
+  "entry": "run",
+  "abi": 20,
+  "ram_budget": 262144,
+  "stack_kb": 32,
+  "timeout_ms": 120000,
+  "permissions": [
+    "gfx",
+    "log"
+  ],
+  "canvas_w": 1024,
+  "canvas_h": 600,
+  "canvas_scale": "fit",
+  "system_gestures": false,
+  "category": "games",
+  "author": "NucleoOS",
+  "description": "Voxel Space terrain engine: fly over a procedural world rendered on both cores at full resolution."
+}

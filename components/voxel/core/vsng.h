@@ -1,0 +1,130 @@
+/* VoxelSpaceNG core: heightfield terrain renderer, portable C99, integer-only frame loop.
+ *
+ * Output is COLUMN-MAJOR and bottom-up: column x of the screen is out[x * h .. x * h + h - 1], and
+ * element j of a column is screen row (h - 1 - j). The march writes each column as one contiguous
+ * run (good for caches and PSRAM), and on the ESP32-P4 the PPA turns that buffer upright for free.
+ *
+ * World: square map of 2^n x 2^n cells, wraps, stored in 4x4-cell tiles (vs_tidx: one 64-byte cache
+ * line holds a 4x4 patch, so a ray in any direction reuses what it fetched), plus a mip pyramid
+ * (vs_build_mips) the march switches to with distance. Cell = 0xFFHHCCCC: CCCC = RGB565 colour
+ * (lighting baked), HH = height 0..255, FF = flags: bit 0 water, bits 4..7 material (selects the
+ * detail texture drawn up close).
+ *
+ * Threads: vs_render_strip renders columns [x0, x1) into out, where out holds exactly those columns
+ * (column x at out + (x - x0) * h). Columns are independent, so cores share a frame by taking strips
+ * from a counter. Because the frame is column-major, a strip is ONE contiguous block of the frame:
+ * render it into fast internal RAM and move it with a single linear (DMA) copy (see vsng_mt.h).
+ */
+#ifndef VSNG_H
+#define VSNG_H
+
+#include <stdint.h>
+
+#define VS_CELL_WATER 0x01u
+#define VS_MAT_SHIFT  4                  /* material id in flag bits 4..7 */
+
+#define VS_ANG_BITS 12                   /* angles are 0..4095 for a full turn */
+#define VS_ANG_FULL (1 << VS_ANG_BITS)
+#define VS_ANG_MASK (VS_ANG_FULL - 1)
+
+#define VS_MAX_STEPS 640
+#define VS_MAX_W     2048
+#define VS_MAX_H     2048
+#define VS_MAX_MIPS  7
+
+#define VS_DETAIL_N    64                /* detail tile side, texels */
+#define VS_DETAIL_MATS 16
+
+/* Index of cell (x, y) in a tiled map of side 1 << log2 (x, y already wrapped). */
+static inline uint32_t vs_tidx(uint32_t x, uint32_t y, int log2)
+{
+    return ((y >> 2) << (log2 + 2)) | ((x >> 2) << 4) | ((y & 3) << 2) | (x & 3);
+}
+
+typedef struct {
+    const uint32_t *mip[VS_MAX_MIPS];    /* mip[0] = the map, mip[l] is (size >> l) a side, tiled */
+    int nmips;
+    int log2size;                        /* map is (1 << log2size) cells a side */
+    int water;                           /* water level, height units (0..255) */
+    int maxh;                            /* highest cell, height units (early ray exit) */
+    const int8_t *detail;                /* VS_DETAIL_MATS tiles of 64x64 signed luminance, or NULL */
+} vs_world;
+
+typedef struct {
+    const uint16_t *px;                  /* column-major: px[col * h + row], row 0 = horizon */
+    int w, h;                            /* w columns = 360 degrees */
+    uint16_t top;                        /* colour above the panorama */
+    uint16_t fog;                        /* horizon haze colour (fog blends into it) */
+    int focal;                           /* px per radian the band was baked for (rows scale to the view) */
+} vs_sky;
+
+typedef struct {
+    int32_t x, y;                        /* position, Q16 cells */
+    int32_t h;                           /* eye height, Q4 height units */
+    int32_t yaw;                         /* 0..4095; 0 looks along +x, 1024 along +y */
+    int32_t pitch;                       /* horizon shift in px, + = look down */
+    int32_t roll;                        /* horizon tilt, Q16 px per px from the centre column */
+    int32_t time_ms;                     /* animates the water */
+} vs_cam;
+
+typedef struct {
+    int w, h;                            /* screen size, w <= VS_MAX_W, h <= VS_MAX_H */
+    int focal;                           /* px; horizontal fov = 2 * atan(w / 2 / focal) */
+    int zfar;                            /* cells */
+    int vscale_q8;                       /* height unit vs cell size, Q8 (256 = 1 cell) */
+    int fog_start;                       /* cells where haze starts */
+    int near_z;                          /* cells: per-pixel texturing (bilinear + detail) nearer */
+    int smooth_z;                        /* cells: bilinear samples (colour + height) nearer; flat beyond */
+    int lod_q8;                          /* mip bias, Q8: 256 = level l once a step spans 2^l cells */
+    int detail_q8;                       /* detail texture strength, Q8 (0 = off) */
+    int quality;                         /* step density, Q8 (256 = default; lower = faster) */
+    /* filled by vs_setup */
+    int nsteps, nnear, nsmooth;
+    int32_t dz_q8[VS_MAX_STEPS];         /* step length, Q8 cells */
+    int32_t kz[VS_MAX_STEPS];            /* focal * vscale / z, Q8 */
+    uint8_t fog[VS_MAX_STEPS];           /* 0..32 */
+    uint8_t lod[VS_MAX_STEPS];           /* mip level wanted at this step */
+    int32_t col_dx_q16[VS_MAX_W];        /* (x - cx) / focal, Q16 */
+    int16_t col_ang[VS_MAX_W];           /* atan((x - cx) / focal) in 4096ths of a turn */
+    uint16_t recip[VS_MAX_H + 1];        /* 65535 / n */
+} vs_view;
+
+typedef struct {
+    uint32_t samples;                    /* map reads (steps) */
+    uint32_t pixels_near;                /* per-pixel textured */
+    uint32_t pixels_sky;
+} vs_stats;
+
+void vs_init_tables(void);
+void vs_setup(vs_view *v);
+
+/* Any screen: fills a view for w x h with a horizontal fov (degrees) and sane defaults scaled to the
+ * resolution, then vs_setup. Call again whenever the size (or render scale) changes. */
+void vs_view_fit(vs_view *v, int w, int h, int fov_deg);
+
+/* Adaptive quality: feed the last frame time; it moves view quality/zfar/near_z (and suggests a
+ * render scale in *scale_q8, 256 = native, the platform applies it) to hold target_ms. Returns 1 when
+ * the view changed (vs_setup already called). Cheap: call once per frame. */
+typedef struct {
+    int target_ms;                       /* frame budget */
+    int scale_q8, scale_min_q8;          /* render scale suggested / lowest allowed */
+    int32_t avg_ms_q4;                   /* smoothed frame time, Q4 */
+    int cooldown;                        /* frames before the next change */
+} vs_governor;
+void vs_governor_init(vs_governor *g, int target_ms, int scale_min_q8);
+int vs_tune(vs_governor *g, vs_view *v, int frame_ms);
+
+/* Mip pyramid: fills wd->mip[1..] from mip[0] into buf (vs_mip_cells(log2size) cells, caller owns). */
+uint32_t vs_mip_cells(int log2size);
+void vs_build_mips(vs_world *wd, uint32_t *buf);
+
+void vs_render_strip(const vs_view *v, const vs_world *wd, const vs_sky *sky, const vs_cam *cam,
+                     uint16_t *out, int x0, int x1, vs_stats *st);
+#define vs_render(v, wd, sky, cam, out, st) vs_render_strip(v, wd, sky, cam, out, 0, (v)->w, st)
+
+/* Queries (gameplay / physics). */
+int32_t vs_height_at(const vs_world *wd, int32_t x_q16, int32_t y_q16);   /* Q4, bilinear */
+int32_t vs_sin(int32_t ang);             /* Q16 */
+int32_t vs_cos(int32_t ang);
+
+#endif
