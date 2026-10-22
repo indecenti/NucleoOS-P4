@@ -1,7 +1,15 @@
 # H.264 decoding on the ESP32-P4 — what is actually possible
 
-Status: **decoding is possible and officially supported**; it is disabled in NucleoOS by choice.
-This file records the evidence so the question does not get re-litigated from memory.
+**NucleoOS does not play H.264 / MP4 video.** Use MJPEG `.avi` or MPEG-1 `.mpg`.
+
+- The ESP32-P4 has an H.264 hardware **encoder** (the camera uses it) but **no hardware decoder**.
+- Espressif's software decoder (tinyH264) reads only the **Constrained Baseline** profile, while
+  phones, cameras and most downloaded MP4 files use Main or High: those would not open at all.
+- On this board the software path measured about **3.5 fps at 480x270**, and in our tests playback
+  hung in the colour conversion. So the player keeps it off (`CONFIG_NV_VPLAYER_H264=n`).
+
+The rest of this file is the engineering record behind that, so the question does not get
+re-litigated from memory.
 
 Verified 2026-09-10 against `managed_components/espressif__esp_h264` v1.3.6 and ESP-IDF v5.5.2.
 

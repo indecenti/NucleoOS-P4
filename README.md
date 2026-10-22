@@ -36,6 +36,33 @@ minutes; no toolchain needed.
 *Live captures from the device, 1024×600. What is verified on the board and what is still
 experimental is listed feature by feature in [`docs/STATUS.md`](docs/STATUS.md).*
 
+## Highlights
+
+No Linux, no Android: NucleoOS is its own operating system, written for a microcontroller with two
+360 MHz RISC-V cores and 32 MB of PSRAM. On that chip it runs:
+
+- **An AI agent that works offline first.** ANIMA answers on the device with no network. When it
+  needs a language model, it can use one on your LAN that it finds by itself (Ollama, LM Studio,
+  llama.cpp) or a cloud API. With a model it sees pictures and runs the shell, and it can read and
+  drive the screen like a person. You can reach it from Telegram, and from Claude Desktop, Claude
+  Code or Cursor through MCP. API keys are sealed to the chip and never leave it.
+- **A desktop in your browser, served by the board itself**: about 40 windowed apps (files,
+  spreadsheet, SSH, mail, AI chat and multi-agent builders, a DJ mixer, dictation), an AI command
+  bar on Ctrl+Space, and installation as a PWA.
+- **An App Store with over 400 signed apps and games**: whole consoles (WASM-4, Game Boy, Arduboy,
+  CHIP-8), Doom, ScummVM, LÖVE, interactive fiction, programming languages, office and smart-home
+  apps. WebAssembly compiled ahead of time to native RISC-V code.
+- **A real-time 3D engine in the firmware** that renders on both cores, with games built on it.
+- **Two shells**: a touch launcher and a classic desktop with a Start menu, windows and right-click.
+  It can switch on by itself when you plug in a mouse and a keyboard.
+- **An ebook reader with thousands of free books**, offline Wikipedia, a spreadsheet that opens and
+  saves xlsx, and a word processor.
+- **It connects to your other devices**: a second screen for Windows, Mac, Linux or Android, the
+  DMD display of a virtual pinball cabinet, and a Home Assistant dashboard that also publishes the
+  board itself into Home Assistant.
+- **Signed updates with a safety net**: signed OTA updates, a recovery app, a safe mode and a
+  last-known-good copy. CI checks memory budgets on every commit, and fuzzers cover every parser.
+
 ## Install in 3 steps
 
 1. **Open the [web flasher](https://indecenti.github.io/nucleoos-p4-store/flash/)** in Chrome or
@@ -83,11 +110,26 @@ has a single factory image:
 | Terminal | Lua 5.4, JavaScript (QuickJS-ng), MicroPython, BASIC, Berry, Wren, Tcl, Scheme, pForth, SQLite, jq, bc, GNU units, Eigenmath, pdfio, zstd, FIGlet… |
 | Apps | Weather, Air quality, Home, Devices, Synth, Pianino, Timer, Pomodoro Desk Hub, Puzzles (40 games by Simon Tatham), Chess, Library, WordGrinder… |
 
-Every package is **signed**: the device refuses unsigned or altered ones, and shows an app's
-permissions (network, LAN, files) before you install it. The Store has categories, platforms,
-search, featured lists and 5 languages; its catalog is static on GitHub Pages:
-[browse it](https://indecenti.github.io/nucleoos-p4-store/). System tools (Lua, JavaScript,
-Python, SQLite, the office programs) are installed and kept up to date automatically.
+What the Store does:
+- **Discover**: featured, most downloaded, new and recently updated, plus categories, a
+  **Consoles** view with each platform's game count, and search, in 5 languages.
+- **An app page like on a phone**: screenshots, author, version, size, license, what's new, a
+  **guide with a QR code** to read on your phone, and the packages it needs, which are installed
+  with it.
+- **Permissions before you install**: a sheet lists what the app may do (Internet, devices on your
+  network, MQTT or Home Assistant, files, camera, microphone). An update that asks for more
+  highlights the new permissions, and you can take any of them back in Settings.
+- **Signed packages**: the board checks every file of a package against the Store's key and refuses
+  anything unsigned or altered.
+- **Installed in seconds over Wi-Fi**, with the icon on Home straight away. The board notices
+  updates in the background and notifies you. System tools (Lua, JavaScript, Python, SQLite, the
+  office engines) install and update themselves.
+- **More than apps**: offline knowledge packs for ANIMA, dictionaries for offline translation in
+  5 languages, and Doom WADs.
+- **Open and free to host**: the catalog is static on GitHub Pages, so you can
+  [browse it in a browser](https://indecenti.github.io/nucleoos-p4-store/). The Terminal has it
+  too: `store search`, `store install`.
+
 
 ### Reading: Books and Library
 - **Books** is a full ebook reader: EPUB 2/3 (fixed layout too), FB2, CBZ comics, TXT, HTML,
@@ -122,19 +164,42 @@ Python, SQLite, the office programs) are installed and kept up to date automatic
 - An on-screen gamepad for touch, plus USB and Bluetooth gamepads (experimental).
 
 ### ANIMA, the assistant that works offline first
-ANIMA answers on the device whenever it can and says "I don't know" instead of guessing:
-- **On the device, with no network**: arithmetic, time and date, unit conversions, timers and
-  alarms, opening apps, volume and brightness, system status, and knowledge cards from offline
-  Wikipedia and Wikidata packs in five languages.
-- **Four modes**: *offline*; *local*, with a model on your LAN (Ollama, LM Studio, llama.cpp),
-  so nothing leaves your home; *hybrid*, the default, which adds the web; and *agent*, where a
-  model leads the turn but everything the device can do exactly stays on the device.
-- **Agent tools**: the shell, files, apps, timers, memory (up to 48 facts it learns about you),
-  image input, skills, a permissions file that says what it may do, and periodic checks.
-- **Bring your own model**: Groq/OpenAI-style APIs, Anthropic, Gemini, or a server on your
-  network found automatically. **API keys never leave the device**: they are sealed to the chip.
-- **Also from your phone and PC**: a Telegram bot, an MCP server for desktop AI clients, and the
-  web chat. Optional offline **wake word** (ESP-SR WakeNet, off by default in the build).
+ANIMA answers on the device whenever it can, calls a language model only when it has to, and says
+"I don't know" instead of guessing.
+
+**With no network at all**: calculations with follow-ups ("6 times 6", then "plus 5"), time and
+date, unit conversions, timers and alarms, notes and reminders, opening apps, volume and brightness, system status, compound requests ("close the music and
+open the notes") run as one plan, knowledge cards from offline Wikipedia and Wikidata packs, and
+definitions, synonyms and translations from offline dictionaries, in five languages. Answers can be
+spoken by the offline voice.
+
+**Connect it to any model**:
+- **On your LAN, found by itself**: Ollama, LM Studio or llama.cpp on your PC. In *local* mode nothing
+  leaves your home.
+- **In the cloud**: OpenAI-compatible APIs (Groq, OpenAI, OpenRouter…), Anthropic and Gemini.
+- **A fallback ladder**: if a model fails it waits and tries the next one. If none answers, the
+  device's own answer is still there. Your API keys are sealed to the chip and never leave it.
+- **Four modes**: *offline*, *local*, *hybrid* (the default: the device first, then the web and a
+  model), and *agent*, where the model leads but what the device can do exactly stays on the device.
+
+**An agent on a microcontroller**:
+- **Tools**: native tool calling over the shell, files, apps, timers, the calendar, Home Assistant
+  and the LAN devices. A permissions file says what it may do without asking.
+- **It reads and drives the screen** the way computer-use agents drive a browser: it gets the screen
+  as a list of controls, then taps, types and swipes, and checks the result after each step.
+- **It sees**: photos and screenshots go to a model that can see. A model that can't gets a written
+  description from a separate vision model.
+- **It writes code and runs it**: Lua and Python on the board, in a write → check → run → fix loop.
+- **Memory, skills and routines**: it remembers up to 48 facts about you and recalls them by
+  relevance. It reads skills in the Agent Skills format, runs event rules ("every morning at 8…",
+  "when this app opens…"), and does a periodic check that stays silent unless something needs you.
+- **Long conversations**: conversations are kept on the SD card, grouped by workspace, and
+  compacted when they get long.
+
+**Reach it from anywhere**: the ANIMA app; a **Telegram bot**, which also takes photos; the web
+desktop's chat and command bar; and an **MCP server** ([`tools/anima_mcp.py`](tools/anima_mcp.py)),
+so Claude Desktop, Claude Code, Cursor or OpenCode can ask ANIMA and drive the board. Optional
+offline **wake word** (ESP-SR WakeNet, off by default in the build).
 
 ### Second Screen: the board as a display for your computer
 Pick your computer and the board guides you step by step:
@@ -170,14 +235,22 @@ cabinet. Guide: [`docs/DMD.md`](docs/DMD.md).
   **Recorder** records WAV (experimental).
 
 ### A desktop in your browser
-Open the board's address in any browser, pair it with the 6-digit code shown on the screen, and
-you get a windowed web OS with 40 apps: files, spreadsheet, SSH, mail, a DJ mixer, a media player,
-a terminal, AI chat and agents, a system monitor and more. Everything runs against the device's
-REST API.
+The board serves a whole desktop to any browser on your network. Open its address and type the
+6-digit code it shows. You get a windowed web OS with a taskbar, search, notifications and about
+40 apps, all working on the board's own files and hardware:
+- **Work**: File Commander on the SD card, Spreadsheet, Notepad, Tasks, Calendar, Contacts, Mail,
+  an SSH client, Code Runner, an archive manager, an authenticator and a QR code maker.
+- **AI**: a chat; **Agents**, an online multi-agent workspace that builds, reviews and publishes
+  apps, asking before anything destructive; dictation with Whisper; voice commands; and a
+  **command bar on Ctrl+Space** that talks to ANIMA and opens apps and files for you.
+- **Media**: a media player, a photo viewer, a video player, a voice recorder, internet radio and
+  **DJ Mix**, which mixes your music with an energy curve (warm-up, peak, cool-down).
+- **The board**: a terminal, a system monitor, a log viewer, a Wi-Fi scanner, an IR remote,
+  updates, and settings, including ANIMA's AI, Telegram, voice and workspace pages.
 
-<p align="center">
-  <img src="docs/screenshots/webos.gif" alt="NucleoOS P4 web companion: a desktop OS in the browser served by the ESP32-P4" width="640">
-</p>
+It installs as an app (PWA). The apps run on the board's paired REST API and need no cloud
+account; only the AI apps call the model you set up. It is plain HTTP on your LAN, protected by
+the pairing.
 
 ### The system underneath
 - **Wi-Fi 6 through the ESP32-C6**, Bluetooth LE for keyboards, mice and gamepads; USB host for

@@ -901,6 +901,10 @@ Calculator, Unit Converter, Media Player, Photo Viewer, Video Player, Voice Reco
 agents, a browser, mail, an SSH client, a QR code maker, Wi-Fi Scanner, Log Viewer, Updates, Weather and
 games. Files you open there are the files on the board's SD card.
 
+Press **Ctrl+Space** anywhere (or the spark button on the taskbar) for the command bar: it asks ANIMA
+and opens the apps and files the answer points to. The browser can also install the desktop as an
+app (PWA), so it opens in its own window.
+
 ---
 
 ## 14. Updates and safety
