@@ -1,0 +1,30 @@
+# Portrait: the library turned upright (a tap on the rotate button), a book read upright, its
+# controls, the appearance in one column, a comic page, back to landscape. Taps are on the canvas,
+# as the panel reports them: an upright point (x, y) of the 600 x 1024 screen is canvas (y, 599 - x).
+wait 60
+shot 01_landscape
+key 0x12 0x01
+wait 60
+shot 02_portrait_library
+tap 176 505
+wait 20
+shot 03_portrait_page
+key 0x4F
+wait 4
+shot 04_portrait_next
+tap 512 300
+wait 3
+shot 05_portrait_chrome
+key 0x29
+wait 3
+key 0x04
+wait 4
+shot 06_portrait_look
+key 0x29
+wait 3
+key 0x29
+wait 6
+shot 07_portrait_home
+key 0x12 0x01
+wait 30
+shot 08_landscape_again

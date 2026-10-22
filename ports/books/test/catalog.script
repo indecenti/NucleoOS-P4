@@ -1,0 +1,42 @@
+# The catalog: opened from the library, the index and the books of Italian and English, a cover,
+# search (accents folded), a category, a book's sheet, a download that joins the library, reading it
+wait 30
+shot 01_library_empty
+tap 920 32
+wait 40
+shot 02_catalog
+tap 300 94
+wait 3
+type promessi
+wait 6
+shot 03_search
+tap 980 300
+wait 2
+key 0x2A
+key 0x2A
+key 0x2A
+key 0x2A
+key 0x2A
+key 0x2A
+key 0x2A
+key 0x2A
+wait 4
+tap 760 94
+wait 4
+shot 04_categories
+tap 400 200
+wait 6
+shot 05_poetry
+tap 94 230
+wait 10
+shot 06_sheet
+tap 820 512
+wait 30
+shot 07_downloading
+wait 60
+shot 08_done
+tap 512 300
+wait 3
+key 0x29
+wait 6
+shot 09_library_with_book

@@ -1,0 +1,23 @@
+# Memory: the catalog browsed in portrait (covers and title covers in memory), then a book opened
+# upright: the pages' two surfaces must still fit (they did not on the board: "could not be opened").
+# Run with the published catalog's copy: BK_DATA=<storedata> bash test.sh memory
+wait 60
+key 0x12 0x01
+wait 40
+tap 32 95
+wait 60
+drag 850 299 350 299 20
+wait 30
+drag 850 299 350 299 20
+wait 30
+drag 850 299 350 299 20
+wait 30
+drag 850 299 350 299 20
+wait 30
+drag 850 299 350 299 20
+wait 60
+key 0x29
+wait 20
+tap 176 505
+wait 60
+shot 01_portrait_page

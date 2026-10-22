@@ -1,0 +1,36 @@
+Libri — NucleoOS ebook reader. PolyForm Noncommercial 1.0.0 (a commercial license is available from the author).
+
+This app contains the following third-party software and data, used under their licenses.
+
+Noto Serif, Noto Sans, Noto Sans Mono — Copyright 2022 The Noto Project Authors (https://github.com/notofonts). SIL Open Font License 1.1.
+
+stb_truetype, stb_image — Sean Barrett. MIT license or public domain.
+
+LodePNG — Copyright (c) 2005-2024 Lode Vandevenne. zlib license.
+
+NanoSVG — Copyright (c) 2013-14 Mikko Mononen. zlib license.
+
+libwebp — Copyright (c) 2010, Google Inc. All rights reserved. BSD 3-Clause license: redistribution and use in source and binary forms, with or without modification, are permitted provided that the conditions of the license are met; THIS SOFTWARE IS PROVIDED BY THE COPYRIGHT HOLDERS AND CONTRIBUTORS "AS IS" AND ANY EXPRESS OR IMPLIED WARRANTIES ARE DISCLAIMED.
+
+TJpgDec — Copyright (C) 2021, ChaN, all right reserved. Free software with no warranty; no restriction on use.
+
+miniz — Copyright 2013-2014 RAD Game Tools and Valve Software; Copyright 2010-2014 Rich Geldreich and Tenacious Software LLC. MIT license.
+
+Hyphenation patterns (TeX hyph-utf8, https://github.com/hyphenation/tex-hyphen; LibreOffice dictionaries):
+Italian — Copyright (C) 2008-2011 Claudio Beccari. MIT license.
+English (US) — Copyright (C) 1990, 2004, 2005 Gerard D.C. Kuiken. Copying and distribution, with or without modification, are permitted in any medium without royalty provided the copyright notice and this notice are preserved.
+Spanish — Copyright (C) 1993, 1997, 2001-2019 Javier Bezos, CervanTeX. MIT license.
+French — Copyright (C) 1994-2002 Daniel Flipo, Bernard Gaulle, 2016 Arthur Reutenauer. MIT license.
+German — Copyright (c) 2013-2024 the trennmuster project (Stephan Hennig, Werner Lemberg and contributors). MIT license.
+Portuguese — Copyright (C) 1987, 1994, 1996, 2015 Pedro J. de Rezende, 1996, 2015 J. Joao Dias Almeida, 2024 Leonardo Araujo and Aline Benevides. BSD 3-Clause license; provided "as is", without warranty.
+Dutch — Copyright (C) 1996 Piet Tutelaers. MIT license.
+Danish — Copyright (C) 1994 Frank Jensen. MIT license.
+Polish — Copyright (C) 1987-1995 Hanna Kolodziejska, Boguslaw Jackowski, Marek Rycko. MIT license.
+Latin — Copyright (C) 1999-2016 Claudio Beccari. MIT license.
+Swedish — Copyright (C) 2013 Niklas Johansson. Mozilla Public License; source: https://github.com/LibreOffice/dictionaries (sv_SE/hyph_sv.dic).
+
+MIT license: Permission is hereby granted, free of charge, to any person obtaining a copy of this software and associated documentation files, to deal in the Software without restriction, including without limitation the rights to use, copy, modify, merge, publish, distribute, sublicense, and/or sell copies of the Software, subject to the condition that the above copyright notice and this permission notice shall be included in all copies or substantial portions of the Software. THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND.
+
+The pattern sources and their full notices: ports/books/hyph/ in the NucleoOS-P4 repository (https://github.com/indecenti/NucleoOS-P4).
+
+Books in the catalog keep their own license and source, shown on each book's sheet.

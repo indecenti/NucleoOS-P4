@@ -1,0 +1,68 @@
+# Standard Ebooks' Pride and Prejudice: open, turn pages (keys, taps, a drag), the controls, the
+# contents, a chapter, the appearance (themes, size, columns), a bookmark, search, back home
+wait 20
+shot 01_library
+tap 94 176
+wait 20
+shot 02_first_page
+key 0x4F
+wait 4
+key 0x4F
+wait 4
+shot 03_turned
+tap 900 300
+wait 6
+shot 04_tap_next
+drag 800 300 200 300 14
+wait 6
+shot 05_dragged
+tap 512 300
+wait 3
+shot 06_chrome
+tap 740 32
+wait 4
+shot 07_contents
+tap 200 400
+wait 10
+shot 08_chapter
+tap 512 300
+wait 2
+tap 852 32
+wait 3
+shot 09_look
+tap 214 280
+wait 6
+shot 10_sepia
+tap 340 280
+wait 6
+shot 11_dark
+tap 590 280
+wait 6
+shot 12_eink
+tap 718 280
+wait 6
+shot 13_mono
+tap 86 280
+wait 6
+tap 590 420
+wait 10
+shot 14_size_up
+key 0x29
+wait 3
+key 0x05
+wait 4
+shot 15_bookmarked
+key 0x09 0x01
+wait 3
+type elizabeth
+key 0x28
+wait 40
+shot 16_search
+tap 400 160
+wait 10
+shot 17_result
+key 0x29
+wait 3
+key 0x29
+wait 6
+shot 18_home

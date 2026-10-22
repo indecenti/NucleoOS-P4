@@ -1,0 +1,67 @@
+{
+  "id": "libri",
+  "name": "Libri",
+  "names": {
+    "en": "Books",
+    "it": "Libri",
+    "es": "Libros",
+    "fr": "Livres",
+    "de": "Bücher"
+  },
+  "version": "1.0.0",
+  "entry": "run",
+  "abi": 18,
+  "requires": {
+    "wasi": "1.1"
+  },
+  "ram_budget": 11534336,
+  "stack_kb": 128,
+  "timeout_ms": 120000,
+  "permissions": [
+    "gfx",
+    "fs",
+    "home",
+    "net",
+    "log"
+  ],
+  "canvas_w": 1024,
+  "canvas_h": 600,
+  "canvas_scale": "fit",
+  "category": "books",
+  "file_types": [
+    {
+      "ext": "epub",
+      "mime": "application/epub+zip",
+      "kind": "text"
+    },
+    {
+      "ext": "fb2",
+      "mime": "application/x-fictionbook+xml",
+      "kind": "text"
+    },
+    {
+      "ext": "cbz",
+      "mime": "application/vnd.comicbook+zip",
+      "kind": "image"
+    }
+  ],
+  "opens": [
+    "application/epub+zip",
+    "application/x-fictionbook+xml",
+    "application/vnd.comicbook+zip",
+    "text/plain",
+    "text/markdown",
+    "text/html"
+  ],
+  "author": "NucleoOS (Libri, nvhtml); Google (libwebp, Noto fonts); Sean Barrett (stb_truetype); Lode Vandevenne (LodePNG); Mikko Mononen (NanoSVG); ChaN (TJpgDec); Rich Geldreich (miniz)",
+  "license": "PolyForm-Noncommercial-1.0.0 (Libri, nvhtml); BSD-3-Clause (libwebp); MIT or public domain (stb_truetype, stb_image); zlib (LodePNG, NanoSVG); MIT (miniz); TJpgDec license (free use, notice kept); SIL OFL 1.1 (Noto Sans, Noto Serif, Noto Sans Mono)",
+  "source": "https://github.com/indecenti/NucleoOS-P4/tree/main/ports/books",
+  "description": "An ebook reader: EPUB (also fixed layout and colour), FB2, comics (CBZ), TXT, HTML and Markdown. Real pages with justified text, chapters and contents, bookmarks, search, notes in a popup, pictures with zoom. White, sepia, dark and black themes, an e-ink look and a 1-bit mode; serif or sans, size, spacing, margins, two pages side by side, landscape or portrait. Free books in many languages from the store's catalog.",
+  "descriptions": {
+    "en": "An ebook reader: EPUB (also fixed layout and colour), FB2, comics (CBZ), TXT, HTML and Markdown. Real pages with justified text, chapters and contents, bookmarks, search, notes in a popup, pictures with zoom. White, sepia, dark and black themes, an e-ink look and a 1-bit mode; serif or sans, size, spacing, margins, two pages side by side, landscape or portrait. Free books in many languages from the store's catalog.",
+    "it": "Un lettore di ebook: EPUB (anche a layout fisso e a colori), FB2, fumetti (CBZ), TXT, HTML e Markdown. Pagine vere con testo giustificato, capitoli e indice, segnalibri, ricerca, note in finestra, immagini con zoom. Temi bianco, seppia, scuro e nero, aspetto e-ink e modalità 1 bit; serif o sans, dimensione, interlinea, margini, due pagine affiancate, orizzontale o verticale. Libri gratuiti in molte lingue dal catalogo dello Store.",
+    "es": "Un lector de libros electrónicos: EPUB (también de diseño fijo y en color), FB2, cómics (CBZ), TXT, HTML y Markdown. Páginas reales con texto justificado, capítulos e índice, marcadores, búsqueda, notas en ventana, imágenes con zoom. Temas blanco, sepia, oscuro y negro, aspecto e-ink y modo de 1 bit; serif o sans, tamaño, interlineado, márgenes, dos páginas lado a lado, horizontal o vertical. Libros gratuitos en muchos idiomas del catálogo de la Store.",
+    "fr": "Une liseuse : EPUB (aussi à mise en page fixe et en couleur), FB2, bandes dessinées (CBZ), TXT, HTML et Markdown. De vraies pages au texte justifié, chapitres et sommaire, signets, recherche, notes dans une fenêtre, images avec zoom. Thèmes blanc, sépia, sombre et noir, aspect e-ink et mode 1 bit ; serif ou sans, taille, interligne, marges, deux pages côte à côte, paysage ou portrait. Des livres gratuits en nombreuses langues dans le catalogue du Store.",
+    "de": "Ein E-Book-Reader: EPUB (auch festes Layout und Farbe), FB2, Comics (CBZ), TXT, HTML und Markdown. Echte Seiten mit Blocksatz, Kapitel und Inhaltsverzeichnis, Lesezeichen, Suche, Anmerkungen im Fenster, Bilder mit Zoom. Weiß, Sepia, Dunkel und Schwarz, E-Ink-Look und 1-Bit-Modus; Serif oder Sans, Größe, Zeilenabstand, Ränder, Doppelseiten, quer oder hochkant. Kostenlose Bücher in vielen Sprachen aus dem Katalog des Stores."
+  }
+}

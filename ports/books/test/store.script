@@ -1,0 +1,141 @@
+# The store's screenshots (no status bar, no personal data): real books, the published Italian catalog
+# (test/copy_live_catalog.py into BK_DATA). Run: BK_DATA=<wsl path> bash ports/books/test.sh store
+# Library sorted by title: Alice (pg11), Alice (Rackham), Don Quijote, Faust, Divina Commedia,
+# Les Misérables, Pride and Prejudice.
+wait 200
+tap 823 32
+wait 3
+tap 700 140
+wait 60
+shot s01_library
+# Pride and Prejudice (Standard Ebooks), a few pages in
+tap 94 450
+wait 30
+shot s02_pride_0
+key 0x4F
+key 0x4F
+key 0x4F
+wait 10
+shot s02_pride_3
+key 0x4F
+key 0x4F
+key 0x4F
+wait 10
+shot s02_pride_6
+key 0x4F
+key 0x4F
+key 0x4F
+key 0x4F
+wait 10
+shot s02_pride_10
+tap 512 300
+wait 3
+shot s03_chrome
+tap 740 32
+wait 4
+shot s04_contents
+key 0x29
+wait 3
+# themes: dark (with the sheet open), e-ink, sepia, back to white
+tap 512 300
+wait 2
+tap 852 32
+wait 3
+tap 340 280
+wait 8
+shot s05_look_dark
+key 0x29
+wait 4
+shot s06_dark
+tap 512 300
+wait 2
+tap 852 32
+wait 3
+tap 590 280
+wait 8
+key 0x29
+wait 4
+shot s07_eink
+tap 512 300
+wait 2
+tap 852 32
+wait 3
+tap 214 280
+wait 8
+key 0x29
+wait 4
+shot s08_sepia
+tap 512 300
+wait 2
+tap 852 32
+wait 3
+tap 86 280
+wait 6
+key 0x29
+wait 3
+# Alice with Rackham's pictures: chapter II (End: the next chapter), page by page; Esc goes back
+key 0x29
+wait 10
+tap 261 176
+wait 30
+key 0x4D
+wait 15
+key 0x4D
+wait 15
+key 0x4D
+wait 15
+shot s09_alice_0
+key 0x4F
+wait 30
+shot s09_alice_1
+key 0x4F
+wait 30
+shot s09_alice_2
+key 0x4F
+wait 30
+shot s09_alice_3
+key 0x4F
+wait 30
+shot s09_alice_4
+key 0x4F
+wait 30
+shot s09_alice_5
+key 0x4F
+wait 30
+shot s09_alice_6
+key 0x4F
+wait 30
+shot s09_alice_7
+key 0x4F
+wait 30
+shot s09_alice_8
+key 0x4F
+wait 30
+shot s09_alice_9
+key 0x4F
+wait 30
+# the catalog and a book's sheet
+key 0x29
+wait 10
+tap 920 32
+wait 90
+shot s10_catalog
+tap 761 230
+wait 30
+shot s11_book_sheet
+key 0x29
+wait 3
+key 0x29
+wait 10
+# portrait: the library and a page of Pride and Prejudice (upright (x, y) = canvas (y, 599 - x))
+key 0x12 0x01
+wait 60
+shot s12_portrait_library
+tap 724 505
+wait 30
+key 0x4F
+key 0x4F
+key 0x4F
+key 0x4F
+wait 10
+shot s13_portrait_page

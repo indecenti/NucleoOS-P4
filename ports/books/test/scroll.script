@@ -1,0 +1,37 @@
+# Scrolling the catalog draws only the band that comes in (the screen's rows turn): what it shows
+# must be what a full redraw shows at the same place. Landscape, then portrait.
+wait 30
+tap 920 32
+wait 60
+drag 500 560 500 200 24
+wait 90
+shot 01_band_down
+tap 970 94
+wait 6
+key 0x29
+wait 6
+shot 02_full_down
+same 01_band_down 02_full_down 125
+drag 500 200 500 520 12
+wait 90
+shot 03_band_up
+tap 970 94
+wait 6
+key 0x29
+wait 6
+shot 04_full_up
+same 03_band_up 04_full_up 125
+key 0x29
+wait 6
+key 0x12 0x01
+wait 40
+tap 32 95
+wait 60
+drag 850 299 350 299 20
+wait 90
+shot 05_portrait_band
+key 0x12 0x01
+wait 10
+key 0x12 0x01
+wait 30
+shot 06_portrait_full

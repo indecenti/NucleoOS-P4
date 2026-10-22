@@ -18,6 +18,7 @@ typedef struct {
     int no_title;           // drop the page title (the h1)
     int back_matter;        // keep Notes, References, External links... (dropped by default)
     int rich;               // the reader's text: the same lines with the NVHTML_* markers below
+    int book;               // a book's page, not a wiki article: no class is dropped, no infobox moved
 } nvhtml_opts_t;
 
 // Rich text (opts.rich): control bytes, never present in the converted text otherwise (the input's
