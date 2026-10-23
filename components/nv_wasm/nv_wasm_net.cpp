@@ -304,7 +304,9 @@ void run_http(Handle &h)
     esp_http_client_cleanup(c);
     if (h.state.load() < 0) return;                       // E_TOOBIG from the data handler
     if (err == ESP_ERR_HTTP_EAGAIN || err == ESP_ERR_TIMEOUT) { h.state.store(E_TIMEOUT); return; }
-    if (err != ESP_OK) { h.state.store(E_CONNECT); return; }
+    // A 401 with no WWW-Authenticate (Home Assistant's answer to a bad token) makes perform() fail
+    // with ESP_ERR_NOT_SUPPORTED: it is still a reply, and the app must see the 401, not "no route".
+    if (err != ESP_OK && !(err == ESP_ERR_NOT_SUPPORTED && h.status == 401)) { h.state.store(E_CONNECT); return; }
     h.state.store(S_DONE);
 }
 
@@ -381,10 +383,13 @@ void ws_deliver(Handle &h, int opcode, const uint8_t *p, int len)
 // Read what is waiting (bounded per round so one socket can't starve the others).
 void ws_service(Handle &h)
 {
-    // outgoing: [opcode][payload]
+    // outgoing: [opcode][payload]. Home Assistant: held until the host's auth exchange is over —
+    // an app message sent during it reached HA as the auth reply ("extra keys not allowed") and
+    // HA closed the socket.
     size_t n = 0;
     uint8_t *b;
-    while (h.state.load() == S_OPEN && (b = static_cast<uint8_t *>(xRingbufferReceive(h.tx, &n, 0))) != nullptr) {
+    while (h.state.load() == S_OPEN && !(h.ha && !h.ha_authed) &&
+           (b = static_cast<uint8_t *>(xRingbufferReceive(h.tx, &n, 0))) != nullptr) {
         ws_send_now(h, b[0], b + 1, (int)n - 1);
         vRingbufferReturnItem(h.tx, b);
     }
