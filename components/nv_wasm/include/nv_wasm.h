@@ -385,6 +385,14 @@ int nv_wasm_scan(nv_wasm_app_t *out, int max);
 // Lets callers run an app pushed after the boot scan (web console hot-reload).
 bool nv_wasm_load_manifest(const char *id, nv_wasm_app_t *out);
 
+// app.aot is native RISC-V code: it runs outside the WASM sandbox. Before an app's app.aot runs,
+// the launcher hands its bytes (exactly as read, so nothing can swap the file in between) to this
+// check; false = the app runs from app.wasm in the interpreter instead. nv_appstore registers the
+// check (the store key's signature over the app's package.sig). With none registered no app.aot
+// runs, except in developer mode (nv_config "store_unsigned"), which also lets an unsigned one run.
+typedef bool (*nv_wasm_aot_verifier_t)(const char *id, const char *dir, const uint8_t *aot, size_t len);
+void nv_wasm_set_aot_verifier(nv_wasm_aot_verifier_t fn);
+
 // Human list of permission names ("log, ui") into buf; returns buf.
 const char *nv_wasm_perm_str(uint32_t perms, char *buf, size_t n);
 

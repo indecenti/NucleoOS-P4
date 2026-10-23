@@ -65,7 +65,10 @@ int main() {
     CHECK(!np_mqtt_pub_ok("homeassistant/light/x/config") && !np_mqtt_pub_ok("nucleo/n/screen/set"));
     CHECK(!np_mqtt_pub_ok("$SYS/x") && !np_mqtt_pub_ok("a/+") && !np_mqtt_pub_ok("a/#") && !np_mqtt_pub_ok(""));
     CHECK(!np_mqtt_pub_ok(std::string(128, 'a').c_str()) && np_mqtt_pub_ok(std::string(127, 'a').c_str()));
-    CHECK(np_mqtt_filter_ok("zigbee2mqtt/+/state") && np_mqtt_filter_ok("a/#") && np_mqtt_filter_ok("+"));
+    CHECK(np_mqtt_filter_ok("zigbee2mqtt/+/state") && np_mqtt_filter_ok("a/#"));
+    CHECK(!np_mqtt_filter_ok("+") && !np_mqtt_filter_ok("+/#") && !np_mqtt_filter_ok("+/n1/cmd"));   // span nucleo/
+    CHECK(!np_mqtt_filter_ok("nucleo/#") && !np_mqtt_filter_ok("nucleo/n1/+/set") && !np_mqtt_filter_ok("nucleo"));
+    CHECK(np_mqtt_filter_ok("nucleon/x"));                             // only the exact level is the system's
     CHECK(np_mqtt_filter_ok("homeassistant/+/+/+/config"));             // reading is allowed
     CHECK(!np_mqtt_filter_ok("#") && !np_mqtt_filter_ok("$SYS/#") && !np_mqtt_filter_ok("a+/b"));
     CHECK(!np_mqtt_filter_ok("a/#/b") && !np_mqtt_filter_ok("a#") && !np_mqtt_filter_ok(""));

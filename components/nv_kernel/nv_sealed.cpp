@@ -180,6 +180,10 @@ bool nv_sealed_is(const char *path, const char *secret) {
     return path && secret && same_path(path, secret);
 }
 
+bool nv_sealed_under(const char *path, const char *dir) {
+    return path && dir && match_path(dir, path, true);
+}
+
 bool nv_sealed_within(const char *path) {
     if (!path) return false;
     for (const char *s : kSecret)

@@ -300,11 +300,47 @@ static int resolve_at(int dirfd, const char *rel, char *out, bool *ro) {
     return join_path(base, rel, out, PATH_CAP);
 }
 
-// resolve_at for a call that changes the file system: EROFS through a read-only descriptor.
+// System folders no terminal program reaches, whatever folder it was given: a program opened on a
+// file at the card's root sees the whole card, and these hold the saved settings with the Wi-Fi
+// passwords (nucleos/settings.nvb) and the user's permission revocations (perms.json), the web
+// desktop's code, ANIMA's conversations and memory, and system configuration.
+static const char *const kNoAccess[] = {
+    "/sdcard/nucleos", "/sdcard/system", "/sdcard/web", "/sdcard/data/anima",
+};
+
+// "/sdcard/apps/<id>/data" or inside it: the only place under /sdcard/apps a program may change.
+// The packages themselves (manifest.json with its permissions, app.wasm, assets) are the store's.
+static bool app_data_path(const char *full) {
+    const char *p = full, *b = NULL;
+    size_t len = 0;
+    for (int idx = 0; *p;) {
+        while (*p == '/' || *p == '\\') p++;
+        const char *s = p;
+        while (*p && *p != '/' && *p != '\\') p++;
+        const size_t l = (size_t)(p - s);
+        if (!l || (l == 1 && s[0] == '.')) continue;
+        if (idx++ == 2) { b = s; len = l; break; }
+    }
+    if (!b || len >= 40) return false;
+    char d[72];
+    snprintf(d, sizeof d, "/sdcard/apps/%.*s/data", (int)len, b);
+    return nv_sealed_under(full, d);
+}
+
+// EACCES for a path a program may not touch at all, or not change (`write`).
+static bool wasi_denied(const char *full, bool write) {
+    for (size_t i = 0; i < sizeof kNoAccess / sizeof kNoAccess[0]; i++)
+        if (nv_sealed_under(full, kNoAccess[i])) return true;
+    return write && nv_sealed_under(full, "/sdcard/apps") && !app_data_path(full);
+}
+
+// resolve_at for a call that changes the file system: EROFS through a read-only descriptor, EACCES
+// in a system folder.
 static int resolve_rw(int dirfd, const char *rel, char *out) {
     bool ro = false;
     if (resolve_at(dirfd, rel, out, &ro) != 0) return -1;
     if (ro) { errno = EROFS; return -1; }
+    if (wasi_denied(out, true)) { errno = EACCES; return -1; }
     return 0;
 }
 
@@ -473,6 +509,7 @@ int __wrap_openat(int dirfd, const char *path, int flags, ...) {
     // Secret files (nv_sealed: the API keys, the Telegram token, the authenticator seeds) are not for
     // terminal programs: ANIMA drives them too, and without settings encryption the files are plain.
     if (nv_sealed_path(full)) { errno = EACCES; return -1; }
+    if (wasi_denied(full, nv_wasi_open_writes(flags))) { errno = EACCES; return -1; }
     struct stat st;
     const bool exists = stat(full, &st) == 0;
     const bool is_dir = exists && S_ISDIR(st.st_mode);

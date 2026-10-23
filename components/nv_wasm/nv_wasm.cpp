@@ -1,6 +1,8 @@
 // nv_wasm — WAMR bring-up, host-import ABI v1, manifest v2, async runner. See nv_wasm.h.
 #include "nv_wasm.h"
 #include "nv_log.h"
+#include "nv_config.h"     // developer mode ("store_unsigned"): an unsigned app.aot may run
+#include "nv_seclog.h"     // a refused app.aot is a security event
 #include "nv_sd.h"
 #include "nv_i18n.h"
 #include "nv_audio.h"
@@ -2084,6 +2086,30 @@ bool aot_path_for(const char *wasm_path, char *out, size_t n) {
     return stat(out, &st) == 0 && st.st_size > 0;
 }
 
+// An app.aot runs as native code with the firmware's own privileges: anything that can write the
+// app's folder (the SD card in a PC, a paired web client, the Terminal, a WASI program's folder
+// grant) could otherwise drop one in. Only the bytes the store signed run natively; the rest run
+// from app.wasm, inside the sandbox. Developer mode (Settings > Security, unsigned apps) allows it.
+nv_wasm_aot_verifier_t s_aot_verifier = nullptr;
+
+bool aot_trusted(const nv_wasm_app_t *app, const uint8_t *bytes, size_t n) {
+    if (s_aot_verifier) {
+        // The module's own package signs it: an app with an "engine" runs that package's module.
+        const char *owner = app->engine[0] ? app->engine : app->id;
+        char dir[sizeof app->wasm_path];
+        snprintf(dir, sizeof dir, "%s", app->wasm_path);
+        if (char *slash = strrchr(dir, '/')) *slash = '\0';
+        if (s_aot_verifier(owner, dir, bytes, n)) return true;
+    }
+    if (nv_config_get_bool("store_unsigned", false)) {
+        NV_LOGW(TAG, "'%s': app.aot not signed, run natively (developer mode)", app->id);
+        return true;
+    }
+    NV_LOGW(TAG, "'%s': app.aot not signed by the store, running app.wasm instead", app->id);
+    nv_seclog_add(NV_SEC_APP_REFUSED, app->id);
+    return false;
+}
+
 // WAMR writes an export's results back into argv. A NULL argv (fine for a void function) crashes
 // the host when an untrusted module's export does return values (seen in real WASM-4 carts whose
 // _start returns one), and results wider than the caller's buffer overrun it — RunReq::argv sits
@@ -2353,6 +2379,10 @@ void *run_worker(void *p) {
         memset(&ia, 0, sizeof ia);
         ia.default_stack_size     = r->stack_size;
         ia.host_managed_heap_size = r->heap_size;
+        // An nv-ABI module may still memory.grow up to its own declared maximum (up to 4 GB): the
+        // ram_budget the broker reserved caps it too. WAMR keeps the module's initial size when
+        // that is larger, and adds the host heap on top of both.
+        ia.max_memory_pages       = (r->heap_size + 65535) / 65536;
 #if CONFIG_WAMR_ENABLE_LIBC_WASI
         // wasi-libc brings its own malloc inside linear memory, so no host-managed app heap; the
         // manifest ram_budget caps memory.grow instead (never below the module's initial size).
@@ -3119,6 +3149,8 @@ bool nv_wasm_uninstall(const char *id, char *err, size_t err_n) {
     return true;
 }
 
+void nv_wasm_set_aot_verifier(nv_wasm_aot_verifier_t fn) { s_aot_verifier = fn; }
+
 bool nv_wasm_load_manifest(const char *id, nv_wasm_app_t *out) {
     if (!id || !out || !nv_sd_is_mounted()) return false;
     return read_manifest(kAppsDir, id, out);
@@ -3537,6 +3569,13 @@ nv_wrun_id_t nv_wasm_exec_start(const nv_wasm_app_t *app, char *err, size_t err_
         exec_unclaim();
         set_err(err, err_n, "not enough memory");
         return NV_WRUN_NONE;
+    }
+    if (!why && aot && !aot_trusted(app, bytes, sz)) {
+        free(bytes);
+        bytes = nullptr;
+        if (code_blk) { heap_caps_free(code_blk); code_blk = nullptr; }
+        code_size = 0;
+        why = "app.aot not signed";
     }
     if (why) {
         aot = false;

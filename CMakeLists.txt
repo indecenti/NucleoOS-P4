@@ -105,3 +105,13 @@ foreach(comp wamr nv_wasm)
     target_compile_options(${comp_lib} PRIVATE -O2 -Wno-error=maybe-uninitialized
                            -Wno-error=array-bounds -Wno-error=stringop-overflow)
 endforeach()
+
+# -fstack-protector-strong on the code that parses what other people send: network services, file
+# formats, store packages, WASM guests. The global setting stays -fstack-protector (NORM), which only
+# guards char arrays: STRONG everywhere put +3.9 KB of canary code into IRAM (ISRs, flash-safe code)
+# and the internal RAM budget had 0.3 KB left. These components keep their hot paths in flash.
+foreach(comp wamr nv_wasm nv_web nv_secondscreen nv_media nv_vplayer nv_dmd nv_anima nv_appstore
+             nv_ota nv_fwup nv_dl nv_mqtt nv_keydeck nv_apps nv_content nv_auth nv_bt nv_usb)
+    idf_component_get_property(comp_lib ${comp} COMPONENT_LIB)
+    target_compile_options(${comp_lib} PRIVATE -fstack-protector-strong)
+endforeach()

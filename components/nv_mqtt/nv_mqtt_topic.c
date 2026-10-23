@@ -28,6 +28,9 @@ bool np_mqtt_filter_ok(const char *f)
     const size_t n = strnlen(f, 128);
     if (n == 0 || n > 127 || !topic_chars_ok(f, n) || f[0] == '$') return false;
     if (n == 1 && f[0] == '#') return false;                  // everything: too broad for an app
+    // The board's own tree (nucleo/<node>/..., where Home Assistant sends it commands) is the
+    // system's: not by name, and not through a wildcard first level ("+", "+/#") that spans it.
+    if (f[0] == '+' || strncmp(f, "nucleo/", 7) == 0 || strcmp(f, "nucleo") == 0) return false;
     for (size_t i = 0; i < n; i++) {
         if (f[i] == '+') {
             if ((i > 0 && f[i - 1] != '/') || (i + 1 < n && f[i + 1] != '/')) return false;

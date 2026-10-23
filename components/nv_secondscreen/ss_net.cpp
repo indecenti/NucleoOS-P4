@@ -82,70 +82,20 @@ bool ss_read_exact(SsConn &c, void *buf, size_t n, int deadline_ms) {
 }
 
 // ---------------------------------------------------------------- HTTP
-static bool header_is(const char *line, const char *name, const char **val) {
-    const size_t n = strlen(name);
-    if (strncasecmp(line, name, n) != 0 || line[n] != ':') return false;
-    const char *v = line + n + 1;
-    while (*v == ' ' || *v == '\t') v++;
-    *val = v;
-    return true;
-}
-
-static void copy_trim(char *dst, size_t n, const char *src) {
-    size_t i = 0;
-    while (src[i] && src[i] != '\r' && src[i] != '\n' && i + 1 < n) { dst[i] = src[i]; i++; }
-    dst[i] = 0;
-}
-
 bool ss_http_read_head(SsConn &c, SsHttpReq &r, int timeout_ms) {
-    char buf[4096];
-    size_t len = 0;
+    SsHttpHead h;
     const int64_t t0 = esp_timer_get_time();
-    // Read byte-chunks until the blank line. Requests are tiny GETs; any body is ignored.
-    while (len < sizeof buf - 1) {
-        int n = c.recv(buf + len, sizeof buf - 1 - len);
+    // Read byte-chunks until the blank line (or a full buffer).
+    while (h.room_len() > 0) {
+        int n = c.recv(h.room(), h.room_len());
         if (n > 0) {
-            len += (size_t)n;
-            buf[len] = 0;
-            if (strstr(buf, "\r\n\r\n")) break;
+            if (h.push((size_t)n)) break;
             continue;
         }
         if (n == -2 && (esp_timer_get_time() - t0) / 1000 < timeout_ms) continue;
         return false;
     }
-    buf[len] = 0;
-    // request line
-    char *sp1 = strchr(buf, ' ');
-    if (!sp1) return false;
-    *sp1 = 0;
-    snprintf(r.method, sizeof r.method, "%s", buf);
-    char *uri = sp1 + 1;
-    char *sp2 = strchr(uri, ' ');
-    if (!sp2) return false;
-    *sp2 = 0;
-    char *q = strchr(uri, '?');
-    if (q) { *q = 0; snprintf(r.query, sizeof r.query, "%s", q + 1); }
-    snprintf(r.path, sizeof r.path, "%s", uri);
-    // headers
-    char *line = strstr(sp2 + 1, "\r\n");
-    bool upgrade = false, conn_upgrade = false;
-    while (line) {
-        line += 2;
-        if (*line == '\r' || !*line) break;
-        const char *v;
-        if (header_is(line, "Host", &v)) copy_trim(r.host, sizeof r.host, v);
-        else if (header_is(line, "User-Agent", &v)) copy_trim(r.ua, sizeof r.ua, v);
-        else if (header_is(line, "Sec-WebSocket-Key", &v)) copy_trim(r.ws_key, sizeof r.ws_key, v);
-        else if (header_is(line, "Upgrade", &v)) upgrade = strncasecmp(v, "websocket", 9) == 0;
-        else if (header_is(line, "Connection", &v)) {
-            char tmp[64]; copy_trim(tmp, sizeof tmp, v);
-            for (char *p = tmp; *p; p++) *p = (char)tolower((unsigned char)*p);
-            conn_upgrade = strstr(tmp, "upgrade") != nullptr;
-        }
-        line = strstr(line, "\r\n");
-    }
-    r.upgrade_ws = upgrade && conn_upgrade && r.ws_key[0];
-    return true;
+    return ss_http_parse_head(h, r);
 }
 
 static const char *status_text(int code) {
@@ -245,29 +195,15 @@ bool ss_ws_send(SsConn &c, SsWsOp op, const void *data, size_t len) {
 bool ss_ws_send_text(SsConn &c, const char *s) { return ss_ws_send(c, WS_TEXT, s, strlen(s)); }
 
 int ss_ws_read_header(SsConn &c, SsWsFrame &f, int idle_ms) {
-    uint8_t h[2];
+    uint8_t h[kSsWsHeaderMax];
     // First byte: distinguish "idle" (no frame started) from a broken link.
     int r = c.recv(h, 1);
     if (r == -2) return -2;
     if (r <= 0) return 0;
     if (!ss_read_exact(c, h + 1, 1, idle_ms)) return 0;
-    f.fin = (h[0] & 0x80) != 0;
-    f.op = h[0] & 0x0F;
-    f.masked = (h[1] & 0x80) != 0;
-    uint64_t len = h[1] & 0x7F;
-    if (len == 126) {
-        uint8_t e[2];
-        if (!ss_read_exact(c, e, 2, idle_ms)) return 0;
-        len = ((uint64_t)e[0] << 8) | e[1];
-    } else if (len == 127) {
-        uint8_t e[8];
-        if (!ss_read_exact(c, e, 8, idle_ms)) return 0;
-        len = 0;
-        for (int i = 0; i < 8; i++) len = (len << 8) | e[i];
-    }
-    f.len = len;
-    if (f.masked && !ss_read_exact(c, f.mask, 4, idle_ms)) return 0;
-    return 1;
+    const size_t n = ss_ws_header_len(h);   // extended length + mask key
+    if (!ss_read_exact(c, h + 2, n - 2, idle_ms)) return 0;
+    return ss_ws_parse_header(h, n, f) ? 1 : 0;
 }
 
 bool ss_ws_read_payload(SsConn &c, const SsWsFrame &f, uint64_t offset, uint8_t *dst, size_t n) {

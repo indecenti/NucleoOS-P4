@@ -24,6 +24,8 @@ bool nv_sealed_path(const char *path);
 bool nv_sealed_within(const char *path);
 // true when `path` names the file `secret` (same FatFs-style comparison as nv_sealed_path).
 bool nv_sealed_is(const char *path, const char *secret);
+// true when `path` is the folder `dir` or anything inside it (same FatFs-style comparison).
+bool nv_sealed_under(const char *path, const char *dir);
 
 // Whole file as a NUL-terminated buffer (PSRAM; release with free()). `len` (optional) gets the
 // plaintext length. NULL when absent, empty, over `max` bytes, or sealed by another chip / damaged.

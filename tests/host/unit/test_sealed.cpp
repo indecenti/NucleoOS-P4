@@ -86,6 +86,20 @@ int main()
     CHECK(!nv_sealed_is("/sdcard/data/anima/teacher.json.tmp", "/sdcard/data/anima/teacher.json"));
     CHECK(!nv_sealed_is("/sdcard/system/config/authenticator.json.tmp", "/sdcard/system/config/authenticator.json"));
 
+    // A folder and what is inside it, by any spelling (the WASI sandbox's system folders).
+    CHECK(nv_sealed_under("/sdcard/nucleos", "/sdcard/nucleos"));
+    CHECK(nv_sealed_under("/sdcard/nucleos/settings.nvb", "/sdcard/nucleos"));
+    CHECK(nv_sealed_under("/sdcard/NUCLEOS./perms.json", "/sdcard/nucleos"));
+    CHECK(nv_sealed_under("/sdcard\\nucleos\\perms.json", "/sdcard/nucleos"));
+    CHECK(nv_sealed_under("/sdcard/./nucleos", "/sdcard/nucleos"));
+    CHECK(nv_sealed_under("/sdcard/apps/doom/data/x", "/sdcard/apps/doom/data"));
+    CHECK(nv_sealed_under("/sdcard/apps/DOOM/Data", "/sdcard/apps/doom/data"));
+    CHECK(!nv_sealed_under("/sdcard/nucleos2/x", "/sdcard/nucleos"));
+    CHECK(!nv_sealed_under("/sdcard", "/sdcard/nucleos"));
+    CHECK(!nv_sealed_under("/sdcard/apps/doom/app.aot", "/sdcard/apps/doom/data"));
+    CHECK(!nv_sealed_under("/sdcard/apps/doom/datas", "/sdcard/apps/doom/data"));
+    CHECK(!nv_sealed_under(nullptr, "/sdcard") && !nv_sealed_under("/sdcard", nullptr));
+
     // The write path: a secret's .tmp copy is never written as a file; ordinary files are, atomically.
     CHECK(!nv_sealed_write("/sdcard/data/anima/teacher.json.tmp", "x", 1));
     CHECK(!nv_sealed_write("/sdcard/data/anima/TEACHE~1.TMP", "x", 1));

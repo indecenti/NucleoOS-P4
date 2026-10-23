@@ -141,6 +141,7 @@ extern "C" void app_main(void) {
     nv_config_init();
     nv_sd_mount();     // early + non-fatal: settings restore reads the card before UI config is read
     nv_appstore_content_recover();   // finish a content folder swap a power cut interrupted (web, ANIMA)
+    nv_appstore_security_init();     // app.aot runs natively only when the store signed those bytes
     nv_backup_init();  // if NVS was wiped, restore prefs from the SD backup; then auto-back-up
     nv_auth_init();    // paired web clients (after the restore, before a service checks a token)
     nv_i18n_init();    // load saved language before any UI string is resolved

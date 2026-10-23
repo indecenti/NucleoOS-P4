@@ -253,6 +253,10 @@ bool nv_appstore_content_installed(const char *id, char *version, size_t n);
 // Finish or undo a folder swap a reboot interrupted. Call once at boot, after the SD is mounted and
 // before anything reads content (the web server, ANIMA).
 void nv_appstore_content_recover(void);
+
+// Boot, before any app can run: an installed app.aot runs natively only when the package.sig kept
+// beside it verifies under the store key and lists exactly its bytes (nv_wasm_set_aot_verifier).
+void nv_appstore_security_init(void);
 // Called on the worker task around a tree swap (before = true: about to replace /sdcard/<dest>/<name>,
 // close what you hold open in it; false: the new tree is live, reload) and once with name = nullptr,
 // before = false after a whole pack installed. One hook; nullptr to clear.

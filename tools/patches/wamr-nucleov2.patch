@@ -71,6 +71,92 @@ index 8df9f9f8..191afa51 100644
  #endif
  #ifdef NEED_SOFT_DP
      REG_SYM(__adddf3),
+diff --git a/core/iwasm/common/wasm_runtime_common.c b/core/iwasm/common/wasm_runtime_common.c
+index 6590684c..9f8c52ba 100644
+--- a/core/iwasm/common/wasm_runtime_common.c
++++ b/core/iwasm/common/wasm_runtime_common.c
+@@ -6402,6 +6402,68 @@ fail:
+                  || defined(BUILD_TARGET_RISCV64_LP64D) \
+                  || defined(BUILD_TARGET_RISCV64_LP64) */
+ 
++/* NucleoV2: a native caller hands argv[argc] for both the parameters and
++   the results, but the element is chosen by the guest and nothing checks its
++   type: a function with more parameter cells reads past argv, one with more
++   result cells writes past it (host stack). Refuse any element whose type does
++   not fit argc. Elements that are out of range or empty are left to the
++   regular path, which raises the proper exception. */
++static bool
++call_indirect_type_fits(WASMExecEnv *exec_env, uint32 element_index,
++                        uint32 argc)
++{
++    WASMModuleInstanceCommon *inst = exec_env->module_inst;
++    uint32 param_cells = 0, ret_cells = 0, func_idx;
++    table_elem_type_t elem;
++
++#if WASM_ENABLE_INTERP != 0
++    if (inst->module_type == Wasm_Module_Bytecode) {
++        WASMModuleInstance *mi = (WASMModuleInstance *)inst;
++        WASMTableInstance *tbl = mi->table_count ? mi->tables[0] : NULL;
++        WASMFunctionInstance *fi;
++        if (!tbl || element_index >= tbl->cur_size)
++            return true;
++        elem = ((table_elem_type_t *)tbl->elems)[element_index];
++        if (elem == NULL_REF)
++            return true;
++#if WASM_ENABLE_GC == 0
++        func_idx = (uint32)elem;
++#else
++        func_idx = wasm_func_obj_get_func_idx_bound((WASMFuncObjectRef)elem);
++#endif
++        if (func_idx >= mi->e->function_count)
++            return true;
++        fi = mi->e->functions + func_idx;
++        param_cells = fi->param_cell_num;
++        ret_cells = fi->ret_cell_num;
++    }
++#endif
++#if WASM_ENABLE_AOT != 0
++    if (inst->module_type == Wasm_Module_AoT) {
++        AOTModuleInstance *mi = (AOTModuleInstance *)inst;
++        AOTModule *am = (AOTModule *)mi->module;
++        AOTTableInstance *tbl = mi->table_count ? mi->tables[0] : NULL;
++        AOTFuncType *ft;
++        if (!tbl || element_index >= tbl->cur_size)
++            return true;
++        elem = ((table_elem_type_t *)tbl->elems)[element_index];
++        if (elem == NULL_REF)
++            return true;
++#if WASM_ENABLE_GC == 0
++        func_idx = (uint32)elem;
++#else
++        func_idx = wasm_func_obj_get_func_idx_bound((WASMFuncObjectRef)elem);
++#endif
++        if (func_idx >= am->import_func_count + am->func_count)
++            return true;
++        ft = (AOTFuncType *)am->types[mi->func_type_indexes[func_idx]];
++        param_cells = ft->param_cell_num;
++        ret_cells = ft->ret_cell_num;
++    }
++#endif
++    return param_cells == argc && ret_cells <= argc;
++}
++
+ bool
+ wasm_runtime_call_indirect(WASMExecEnv *exec_env, uint32 element_index,
+                            uint32 argc, uint32 argv[])
+@@ -6413,6 +6475,12 @@ wasm_runtime_call_indirect(WASMExecEnv *exec_env, uint32 element_index,
+         return false;
+     }
+ 
++    if (!call_indirect_type_fits(exec_env, element_index, argc)) {
++        wasm_runtime_set_exception(exec_env->module_inst,
++                                   "indirect call type mismatch");
++        return false;
++    }
++
+     /* this function is called from native code, so exec_env->handle and
+        exec_env->native_stack_boundary must have been set, we don't set
+        it again */
 diff --git a/core/iwasm/libraries/libc-wasi/sandboxed-system-primitives/src/posix.c b/core/iwasm/libraries/libc-wasi/sandboxed-system-primitives/src/posix.c
 index 949e5747..b8f82e34 100644
 --- a/core/iwasm/libraries/libc-wasi/sandboxed-system-primitives/src/posix.c

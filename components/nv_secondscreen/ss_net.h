@@ -6,6 +6,8 @@
 #include <stddef.h>
 #include <stdbool.h>
 
+#include "ss_parse.h"   // SsHttpReq, SsWsFrame and the pure parsers behind the readers below
+
 struct SsConn {
     int fd = -1;
     void *tls = nullptr;          // mbedtls_ssl_context* when TLS, else nullptr
@@ -24,15 +26,6 @@ struct SsConn {
 bool ss_read_exact(SsConn &c, void *buf, size_t n, int deadline_ms);
 
 // ---- HTTP -----------------------------------------------------------------------------------
-struct SsHttpReq {
-    char method[8] = "";
-    char path[160] = "";          // without the query
-    char query[160] = "";
-    char host[64] = "";
-    char ua[160] = "";
-    char ws_key[40] = "";         // Sec-WebSocket-Key (upgrade requests)
-    bool upgrade_ws = false;
-};
 // Read and parse a request head (up to 4 KB). false on timeout / garbage.
 bool ss_http_read_head(SsConn &c, SsHttpReq &r, int timeout_ms);
 bool ss_http_send(SsConn &c, int code, const char *ctype, const void *body, size_t len,
@@ -48,14 +41,6 @@ bool ss_ws_accept(SsConn &c, const SsHttpReq &r);             // send the 101 ha
 bool ss_ws_send(SsConn &c, SsWsOp op, const void *data, size_t len);
 bool ss_ws_send_text(SsConn &c, const char *s);
 
-// Frame header parsed off the wire (payload not yet read).
-struct SsWsFrame {
-    bool fin = false;
-    uint8_t op = 0;
-    bool masked = false;
-    uint8_t mask[4] = {};
-    uint64_t len = 0;
-};
 // Read a frame header. Returns 1 = got one, 0 = closed/error, -2 = idle timeout (no bytes at all).
 int ss_ws_read_header(SsConn &c, SsWsFrame &f, int idle_ms);
 // Read `n` payload bytes into dst, unmasking with the frame key; `offset` = bytes of this frame's

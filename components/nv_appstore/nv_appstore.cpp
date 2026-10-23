@@ -261,7 +261,10 @@ bool sig_verify(const uint8_t *msg, size_t len, const uint8_t *sig, int sig_len)
 enum PkgResult { PKG_OK, PKG_MISSING, PKG_BAD };
 
 // Fetch + parse + verify apps/<id>/package.sig into `out`. PKG_MISSING only for a clean 404.
-PkgResult fetch_package(const char *base, const nv_store_entry_t *e, nv_store_pkg::Package *out) {
+// With `text`: on PKG_OK it receives the verified text (PSRAM, caller frees) and `text_n` its length,
+// kept in the app's folder so the launcher can check app.aot against it (aot_verify).
+PkgResult fetch_package(const char *base, const nv_store_entry_t *e, nv_store_pkg::Package *out,
+                        char **text = nullptr, size_t *text_n = nullptr) {
     char url[320];
     snprintf(url, sizeof url, "%s/apps/%s/package.sig", base, e->id);
     char *body = (char *)heap_caps_malloc(kPkgCap + 1, MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
@@ -285,8 +288,108 @@ PkgResult fetch_package(const char *base, const nv_store_entry_t *e, nv_store_pk
     } else {
         r = PKG_OK;
     }
+    if (r == PKG_OK && text) {
+        *text = body;
+        *text_n = (size_t)got;
+        return r;
+    }
     free(body);
     return r;
+}
+
+// <dir>/package.sig: the verified text, whole (signature line included). Via a .tmp + rename, so a
+// power cut leaves the old one or the new one, never half of one.
+bool save_package_sig(const char *dir, const char *text, size_t n) {
+    char p[200], tmp[208];
+    snprintf(p, sizeof p, "%s/package.sig", dir);
+    snprintf(tmp, sizeof tmp, "%s.tmp", p);
+    FILE *f = fopen(tmp, "wb");
+    if (!f) return false;
+    bool ok = fwrite(text, 1, n, f) == n && fflush(f) == 0 && fsync(fileno(f)) == 0;
+    ok = fclose(f) == 0 && ok;
+    if (ok) {
+        unlink(p);                                         // FAT rename won't overwrite
+        ok = rename(tmp, p) == 0;
+    }
+    if (!ok) unlink(tmp);
+    return ok;
+}
+
+// The launcher's check before it runs an app.aot natively (nv_wasm_set_aot_verifier): the app's
+// kept package.sig must verify under the store key, name this app, and list app.aot with exactly
+// these bytes. The hash is over the bytes nv_wasm already holds, not the file, so a file swapped
+// after the check changes nothing.
+bool aot_verify(const char *id, const char *dir, const uint8_t *aot, size_t len) {
+    char p[200];
+    snprintf(p, sizeof p, "%s/package.sig", dir);
+    FILE *f = fopen(p, "rb");
+    if (!f) return false;
+    char *text = (char *)heap_caps_malloc(nv_store_pkg::kTextMax + 1, MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
+    auto *pkg = (nv_store_pkg::Package *)heap_caps_malloc(sizeof(nv_store_pkg::Package),
+                                                          MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
+    size_t n = text ? fread(text, 1, nv_store_pkg::kTextMax + 1, f) : 0;
+    fclose(f);
+    bool ok = false;
+    const char *why = "unreadable";
+    if (text && pkg && n > 0 && n <= nv_store_pkg::kTextMax) {
+        uint8_t h[32];
+        const nv_store_pkg::File *e = nullptr;
+        if (!nv_store_pkg::parse(text, n, pkg))                                  why = "malformed";
+        else if (strcmp(pkg->id, id) != 0)                                       why = "another app's";
+        else if (!sig_verify((const uint8_t *)text, pkg->signed_len, pkg->sig, pkg->sig_len)) why = "bad signature";
+        else if (!(e = nv_store_pkg::find(*pkg, "app.aot")) || e->size != len)   why = "app.aot not listed";
+        else if (mbedtls_sha256(aot, len, h, 0) != 0 || memcmp(h, e->sha256, 32) != 0) why = "app.aot changed";
+        else ok = true;
+    }
+    if (!ok) NV_LOGW(TAG, "'%s': package.sig check failed (%s)", id, why);
+    heap_caps_free(pkg);
+    heap_caps_free(text);
+    return ok;
+}
+
+// Some installed app has an app.aot but no package.sig beside it (installed by older firmware).
+bool aot_without_sig() {
+    DIR *d = opendir(kAppsDir);
+    if (!d) return false;
+    bool found = false;
+    while (struct dirent *e = readdir(d)) {
+        if (e->d_name[0] == '.') continue;
+        char p[sizeof kAppsDir + 256 + 16];
+        struct stat st;
+        snprintf(p, sizeof p, "%s/%s/app.aot", kAppsDir, e->d_name);
+        if (stat(p, &st) != 0) continue;
+        snprintf(p, sizeof p, "%s/%s/package.sig", kAppsDir, e->d_name);
+        if (stat(p, &st) != 0) { found = true; break; }
+    }
+    closedir(d);
+    return found;
+}
+
+// Apps installed before package.sig was kept beside them: fetch it now, once, so their app.aot keeps
+// running natively. Only when the installed version is the catalog's (an older app.aot cannot match
+// the newer package; its update brings both). Runs on the store worker after a catalog fetch.
+void backfill_package_sigs(const char *base, const nv_store_entry_t *rows, int n) {
+    nv_store_pkg::Package *pkg = nullptr;
+    for (int i = 0; i < n; i++) {
+        const nv_store_entry_t *e = &rows[i];
+        if (!e->installed || e->update || !e->aot_size) continue;
+        char dir[160], p[200];
+        snprintf(dir, sizeof dir, "%s/%s", kAppsDir, e->id);
+        struct stat st;
+        snprintf(p, sizeof p, "%s/package.sig", dir);
+        if (stat(p, &st) == 0) continue;
+        snprintf(p, sizeof p, "%s/app.aot", dir);
+        if (stat(p, &st) != 0) continue;
+        if (!pkg) pkg = (nv_store_pkg::Package *)heap_caps_malloc(sizeof *pkg, MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
+        if (!pkg) return;
+        char *text = nullptr;
+        size_t tn = 0;
+        if (fetch_package(base, e, pkg, &text, &tn) == PKG_OK) {
+            if (save_package_sig(dir, text, tn)) NV_LOGI(TAG, "'%s': package.sig kept for its app.aot", e->id);
+            heap_caps_free(text);
+        }
+    }
+    heap_caps_free(pkg);
 }
 
 // The signed entry a download must match (nullptr = unsigned install, developer mode). Worker only.
@@ -1642,14 +1745,15 @@ void do_fetch(const char *base) {
         if (stat(dir, &st) == 0) category_write(dir, next[i].category);
     }
     heap_caps_free(plats);
-    free(next);
 
-    if (n < 0) { set_state(NV_STORE_ERROR, "Bad catalog (store.json)"); return; }
+    if (n < 0) { free(next); set_state(NV_STORE_ERROR, "Bad catalog (store.json)"); return; }
     lock(); s_cat_gen++; s_cat_at_us = esp_timer_get_time(); unlock();
     char m[64];
     snprintf(m, sizeof m, n ? "%d app%s available" : "Store is empty", n, n == 1 ? "" : "s");
     set_state(NV_STORE_READY, m);
     NV_LOGI(TAG, "catalog: %d app(s), %d platform(s) from %s (%s)", n, np, base, v2 ? "store2" : "legacy");
+    backfill_package_sigs(base, next, n);
+    free(next);
 }
 
 // One part of one platform's carts into the table, after the native rows.
@@ -1843,7 +1947,9 @@ bool install_package(const char *base, const nv_store_entry_t *e) {
                                                           MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
     if (!s_staged || !pkg) { free(pkg); set_state(NV_STORE_ERROR, "out of memory"); return false; }
     s_staged->n = 0;
-    const PkgResult pr = fetch_package(base, e, pkg);
+    char *pkg_text = nullptr;
+    size_t pkg_text_n = 0;
+    const PkgResult pr = fetch_package(base, e, pkg, &pkg_text, &pkg_text_n);
     if (pr == PKG_BAD) {
         free(pkg);
         set_state(NV_STORE_ERROR, "Package signature invalid - not installed");
@@ -1869,6 +1975,17 @@ bool install_package(const char *base, const nv_store_entry_t *e) {
     if (!ok) stage_abort();
     s_pkg = nullptr;
     free(pkg);
+    // The signed list stays beside the files: the launcher checks app.aot against it at every run.
+    // An unsigned install (developer mode) leaves none, so a stale one cannot vouch for new code.
+    char sig_path[200];
+    snprintf(sig_path, sizeof sig_path, "%s/package.sig", dir);
+    if (ok && pkg_text) {
+        if (!save_package_sig(dir, pkg_text, pkg_text_n))
+            NV_LOGW(TAG, "install '%s': package.sig not kept, its app.aot will run interpreted", id);
+    } else if (ok) {
+        unlink(sig_path);
+    }
+    heap_caps_free(pkg_text);
     if (!ok) return false;
 
     // Validate what landed + refresh this row's installed/update flags in the snapshot.
@@ -2323,6 +2440,12 @@ void system_task(void *) {
         vTaskDelay(pdMS_TO_TICKS(5 * 60 * 1000));
     }
     heap_caps_free(local);
+    // After the update that started keeping package.sig: a catalog fetch backfills it for the
+    // installed apps, or their app.aot runs interpreted until the Store is next opened.
+    if (aot_without_sig() && wait_idle(10 * 60 * 1000)) {
+        nv_appstore_refresh();
+        wait_idle(5 * 60 * 1000);
+    }
     update_system_apps(ids, n);
     lock(); s_sys_running = false; unlock();
     vTaskDeleteWithCaps(nullptr);   // PSRAM stack (see spawn_worker)
@@ -2692,6 +2815,8 @@ bool nv_appstore_content_installed(const char *id, char *version, size_t n) {
 void nv_appstore_content_recover(void) {
     if (nv_sd_is_mounted()) content_recover();
 }
+
+void nv_appstore_security_init(void) { nv_wasm_set_aot_verifier(aot_verify); }
 
 void nv_appstore_set_content_hook(void (*hook)(const char *dest, const char *name, bool before)) { s_content_hook = hook; }
 

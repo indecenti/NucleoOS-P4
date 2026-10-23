@@ -1327,7 +1327,8 @@ int vx_texture_new(int w, int h, uint32_t color565, int flags) {
 void vx_texture_write(int tex, int x, int y, int w, int h, const uint16_t *px) {
     if (!g.open || !px || tex < 0 || tex >= g.ntex || !g.tex[tex] || w <= 0 || h <= 0) return;
     const Texture *t = g.tex[tex];
-    if (x < 0 || y < 0 || x + w > t->width || y + h > t->height) return;
+    // Guest-supplied: compared as differences, since x + w wraps negative for x near INT_MAX.
+    if (x < 0 || y < 0 || x >= t->width || y >= t->height || w > t->width - x || h > t->height - y) return;
     for (int r = 0; r < h; r++) memcpy(g.texpx[tex] + (size_t)(y + r) * t->width + x, px + (size_t)r * w, (size_t)w * 2);
     if (t->data == g.floor_src && g.floor_lit) g.floor_dirty = true;   // the floor samples a lit copy
 }

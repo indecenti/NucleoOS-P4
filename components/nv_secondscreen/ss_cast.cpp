@@ -30,7 +30,6 @@
 #include "nv_eth.h"
 #include "nv_mem_attr.h"
 
-#include "cJSON.h"
 #include "mdns.h"
 #include "esp_app_desc.h"
 #include "esp_random.h"
@@ -108,28 +107,12 @@ bool net_ip(char *ip, size_t n, char *iface, size_t in) {
 }
 
 // ---------------------------------------------------------------- trust store
-// "ss_trust" = comma-separated 16-hex tokens handed to senders the user chose to remember.
-// Whole entries only, compared in constant time: a substring match accepted any 16 characters that
-// happened to span two stored tokens (comma included).
+// "ss_trust" = comma-separated 16-hex tokens handed to senders the user chose to remember
+// (matched whole-entry, in constant time: ss_trust_has).
 bool trusted(const char *tok) {
-    if (!tok || strlen(tok) != 16) return false;
-    for (int i = 0; i < 16; i++)
-        if (!((tok[i] >= '0' && tok[i] <= '9') || (tok[i] >= 'a' && tok[i] <= 'f'))) return false;
     char list[kMaxTrusted * 17 + 1];
     nv_config_get_str("ss_trust", "", list, sizeof list);
-    bool hit = false;
-    for (const char *p = list; *p;) {
-        const char *c = strchr(p, ',');
-        const size_t len = c ? (size_t)(c - p) : strlen(p);
-        if (len == 16) {
-            uint8_t d = 0;
-            for (int i = 0; i < 16; i++) d |= (uint8_t)(p[i] ^ tok[i]);
-            hit |= d == 0;
-        }
-        if (!c) break;
-        p = c + 1;
-    }
-    return hit;
+    return ss_trust_has(list, tok);
 }
 
 void trust_add(const char *tok) {
@@ -220,23 +203,19 @@ struct Session {
     }
 
     void on_hi(const char *json) {
-        cJSON *j = cJSON_Parse(json);
-        if (!j) return;
-        const cJSON *tok = cJSON_GetObjectItem(j, "token");
-        const cJSON *agent = cJSON_GetObjectItem(j, "agent");
-        const cJSON *touch = cJSON_GetObjectItem(j, "touch");
-        s_want_touch = cJSON_IsTrue(touch);
-        if (cJSON_IsString(agent) && agent->valuestring[0]) {
+        SsCastHi hi;
+        if (!ss_cast_parse_hi(json, hi)) return;
+        s_want_touch = hi.touch;
+        if (hi.agent[0]) {
             // "192.168.1.20 · Chrome · Windows" -> keep the IP, prefer the sender's own name
             char ip[16];
             snprintf(ip, sizeof ip, "%s", c.peer_ip);
-            snprintf(label, sizeof label, "%s · %.30s", ip, agent->valuestring);
+            snprintf(label, sizeof label, "%s · %s", ip, hi.agent);
             Lk l(s_lk);
             snprintf(s_client_label, sizeof s_client_label, "%s", label);
         }
         got_hi = true;
-        approved = !nv_ss_cast_ask_enabled() || (cJSON_IsString(tok) && trusted(tok->valuestring));
-        cJSON_Delete(j);
+        approved = !nv_ss_cast_ask_enabled() || trusted(hi.token);
         if (approved) {
             send_text("{\"t\":\"state\",\"s\":\"ready\"}");
         } else {

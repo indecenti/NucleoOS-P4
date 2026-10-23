@@ -2584,16 +2584,19 @@ esp_err_t h_fs_list(httpd_req_t *req) {
     httpd_resp_sendstr_chunk(req, "{\"entries\":[");
     struct dirent *e;
     bool first = true;
-    char item[400];
+    // Names come from the card or a USB stick, i.e. from whoever wrote it: escaped, or a name like
+    // `x","isDir":true}]...` rewrites the listing the web shell renders.
+    char item[640], ename[520];
     while ((e = readdir(d)) != nullptr) {
         char full[640];
         snprintf(full, sizeof full, "%s/%s", phys, e->d_name);
         struct stat st{};
         stat(full, &st);
         const bool is_dir = S_ISDIR(st.st_mode);
+        json_escape(ename, sizeof ename, e->d_name);
         snprintf(item, sizeof item,
                  "%s{\"name\":\"%s\",\"type\":\"%s\",\"size\":%ld,\"isDir\":%s}",
-                 first ? "" : ",", e->d_name, is_dir ? "dir" : "file",
+                 first ? "" : ",", ename, is_dir ? "dir" : "file",
                  is_dir ? 0L : (long)st.st_size, is_dir ? "true" : "false");
         httpd_resp_sendstr_chunk(req, item);
         first = false;
@@ -2979,7 +2982,9 @@ esp_err_t h_time_set(httpd_req_t *req) {
 // GET /api/home -> the Settings > Home fields. Secrets (MQTT password, HA token) are write-only:
 // reported as *_set booleans, never echoed back.
 esp_err_t h_home_get(httpd_req_t *req) {
-    char host[64], user[64], url[160], sec[8], det[80];
+    // sec holds a whole secret just to test it: a short buffer made the read fail and every
+    // token (and any MQTT password of 8+ characters) reported as not set
+    char host[64], user[64], url[160], sec[320], det[80];
     nv_config_get_str("mqtt_host", "", host, sizeof host);
     nv_config_get_str("mqtt_user", "", user, sizeof user);
     nv_config_get_str("ha_url", "", url, sizeof url);

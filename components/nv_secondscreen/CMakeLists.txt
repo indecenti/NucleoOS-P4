@@ -1,5 +1,5 @@
 idf_component_register(
-    SRCS "ss_main.cpp" "ss_engine.cpp" "ss_usb.cpp" "ss_net.cpp" "ss_tls.cpp" "ss_cast.cpp"
+    SRCS "ss_main.cpp" "ss_engine.cpp" "ss_usb.cpp" "ss_net.cpp" "ss_parse.cpp" "ss_tls.cpp" "ss_cast.cpp"
          "ss_vnc.cpp" "ss_des.c" "ss_icons.c" "ss_assets.cpp"
     INCLUDE_DIRS "include"
     PRIV_INCLUDE_DIRS "."

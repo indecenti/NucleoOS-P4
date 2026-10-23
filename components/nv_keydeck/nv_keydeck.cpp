@@ -49,6 +49,34 @@ static volatile bool s_enabled   = false;   // mirror of nv_config "keydeck_en" 
 static char s_pin[16]  = "";
 static bool s_authed   = true;   // true whenever no PIN is configured
 
+// PIN guessing: a numeric PIN falls to a LAN script in minutes, one reconnect per try. After
+// KD_PIN_FREE wrong PINs in a row, connections are refused for 30 s, doubling per further miss up
+// to 15 min (same curve as the screen-lock PIN). A right PIN resets it.
+enum { KD_PIN_FREE = 5 };
+static uint8_t s_pin_fails     = 0;
+static int64_t s_pin_block_end = 0;   // ms, esp_timer clock
+
+static bool pin_equal(const char *got, const char *want)
+{
+    // Constant time over the stored PIN: no early exit that times out how many digits matched.
+    // (Only the length of what the client sent shows, and the client knows that.)
+    const size_t n = strlen(want), m = strlen(got);
+    unsigned diff = (unsigned)(m ^ n);
+    for (size_t i = 0; i < n; i++) diff |= (unsigned char)(want[i] ^ (i < m ? got[i] : 0));
+    return diff == 0;
+}
+
+static void pin_failed(void)
+{
+    if (s_pin_fails < 250) s_pin_fails++;
+    if (s_pin_fails < KD_PIN_FREE) return;
+    const unsigned step = s_pin_fails - KD_PIN_FREE;
+    int64_t ms = 30 * 1000LL << (step > 5 ? 5 : step);
+    if (ms > 15 * 60 * 1000LL) ms = 15 * 60 * 1000LL;
+    s_pin_block_end = esp_timer_get_time() / 1000 + ms;
+    NV_LOGW(TAG, "%u wrong PINs: connections refused for %lld s", s_pin_fails, (long long)(ms / 1000));
+}
+
 // ---------------------------------------------------------------- LVGL bridge
 // Short lock timeouts: with the LVGL task busy (animation storm), dropping one remote key
 // beats stalling the whole server loop.
@@ -107,11 +135,13 @@ static bool handle_line(int fd, char *line)
     if (strncmp(line, "HELLO ", 6) == 0 || strcmp(line, "HELLO") == 0) {
         if (s_pin[0]) {
             const char *p = strstr(line, " PIN=");
-            if (!p || strcmp(p + 5, s_pin) != 0) {
+            if (!p || !pin_equal(p + 5, s_pin)) {
                 tx(fd, "ERR badpin\n");
                 NV_LOGW(TAG, "client rejected: bad/missing PIN");
+                pin_failed();
                 return false;
             }
+            s_pin_fails = 0;
             if (!s_authed) ui_toast("KeyDeck keyboard connected");  // paired: announce now
             s_authed = true;
         }
@@ -120,6 +150,7 @@ static bool handle_line(int fd, char *line)
     }
     if (!s_authed) {           // PIN configured and no valid HELLO yet: nothing else is honored
         tx(fd, "ERR badpin\n");
+        pin_failed();
         return false;
     }
 
@@ -235,7 +266,11 @@ static void keydeck_task(void *)
             const int64_t now = esp_timer_get_time() / 1000;
 
             if (FD_ISSET(lis, &rf)) {
-                const int nc = accept(lis, nullptr, nullptr);
+                int nc = accept(lis, nullptr, nullptr);
+                if (nc >= 0 && now < s_pin_block_end) {   // locked out after wrong PINs
+                    close(nc);
+                    nc = -1;
+                }
                 if (nc >= 0) {
                     if (cli >= 0) drop_client(&cli, "replaced");  // latest wins
                     cli = nc;

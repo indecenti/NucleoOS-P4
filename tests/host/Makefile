@@ -30,8 +30,8 @@ ARCHES   := x64 x86
 m_x64    := -m64
 m_x86    := -m32
 CI_SECS  ?= 30
-FUZZERS  := avi mp4 mpeg1 web auth ota fwup ha pkg netpol content nvzim nvhtml dmd dl jpeg
-UNITS    := avi mp4 web auth ota fwup ha pkg netpol wasiro anima anima_nl anima_kb anima_agent wake date launcher content nvzim nvhtml vault sealed recwav dmd dl blitgeom jpeg
+FUZZERS  := avi mp4 mpeg1 web auth ota fwup ha pkg netpol content nvzim nvhtml dmd dl jpeg cast
+UNITS    := avi mp4 web auth ota fwup ha pkg netpol wasiro anima anima_nl anima_kb anima_agent wake date launcher content nvzim nvhtml vault sealed recwav dmd dl blitgeom jpeg cast
 
 # firmware code under test (+ host stubs) per target
 SRC_avi   := $(VP)/vp_avi.c
@@ -58,6 +58,11 @@ SRC_content := $(STORE)/nv_store_pkg.cpp $(STORE)/nv_store_tree.cpp $(ROOT)/comp
 FLAGS_content := -I$(ROOT)/components/nv_content/include
 SRC_netpol := $(ROOT)/components/nv_kernel/nv_net_policy.c $(MQTT)/nv_mqtt_topic.c
 FLAGS_netpol := -I$(ROOT)/components/nv_kernel/include
+# cast: NucleoCast (Second Screen) input from the LAN before pairing - request head, WebSocket frame
+# headers, the sender's "hi", the trust list
+SS        := $(ROOT)/components/nv_secondscreen
+SRC_cast  := $(SS)/ss_parse.cpp anima/third_party/cJSON.c
+FLAGS_cast := -I$(SS) -Ianima/third_party
 # dl: the system downloader's pure parts - Metalink 4, the job record it resumes from, parts, app paths
 SRC_dl   := $(ROOT)/components/nv_dl/nv_dl_core.c
 FLAGS_dl := -I$(ROOT)/components/nv_dl/include -I$(ROOT)/components/nv_kernel/include
@@ -113,7 +118,7 @@ FLAGS_blitgeom := -I$(ROOT)/components/nv_hal/include
 # the fuzzer reaches memory bugs.
 FLAGS_mpeg1 := -fno-sanitize=alignment -fno-sanitize=shift-base   # no commas: they split $(call) args
 # headers the firmware sources and harnesses include (a change rebuilds everything)
-HDRS := $(wildcard $(ROOT)/components/nv_anima/*.h $(ROOT)/components/nv_anima/include/*.h $(VP)/*.h $(WEB)/*.h $(AUTH)/include/*.h $(OTA)/include/nv_ota_manifest.h $(OTA)/include/nv_fwup_policy.h $(OTA)/include/nv_fwup_codec.h $(MQTT)/nv_ha_proto.h $(STORE)/include/nv_store_pkg.h $(STORE)/include/nv_store_tree.h $(ROOT)/components/nv_content/include/nv_content_plan.h $(ROOT)/components/nv_kernel/include/nv_net_policy.h $(WASM)/nv_wasi_ro.h $(MQTT)/nv_mqtt_topic.h $(WASM)/include/nv_wasm.h $(WASM)/nv_jpeg_util.h $(ROOT)/ports/zim/nvzim/*.h $(ROOT)/ports/zim/nvhtml/*.h $(ROOT)/components/nv_kernel/include/nv_sealed.h $(ROOT)/components/nv_hal/include/nv_rec_wav.h $(ROOT)/components/nv_hal/include/nv_blit_geom.h $(ROOT)/components/nv_dmd/dmd_core.h $(ROOT)/components/nv_dl/include/nv_dl_core.h unit/*.h)
+HDRS := $(wildcard $(ROOT)/components/nv_anima/*.h $(ROOT)/components/nv_anima/include/*.h $(VP)/*.h $(WEB)/*.h $(AUTH)/include/*.h $(OTA)/include/nv_ota_manifest.h $(OTA)/include/nv_fwup_policy.h $(OTA)/include/nv_fwup_codec.h $(MQTT)/nv_ha_proto.h $(STORE)/include/nv_store_pkg.h $(STORE)/include/nv_store_tree.h $(ROOT)/components/nv_content/include/nv_content_plan.h $(ROOT)/components/nv_kernel/include/nv_net_policy.h $(WASM)/nv_wasi_ro.h $(MQTT)/nv_mqtt_topic.h $(WASM)/include/nv_wasm.h $(WASM)/nv_jpeg_util.h $(ROOT)/ports/zim/nvzim/*.h $(ROOT)/ports/zim/nvhtml/*.h $(ROOT)/components/nv_kernel/include/nv_sealed.h $(ROOT)/components/nv_hal/include/nv_rec_wav.h $(ROOT)/components/nv_hal/include/nv_blit_geom.h $(ROOT)/components/nv_dmd/dmd_core.h $(ROOT)/components/nv_dl/include/nv_dl_core.h $(ROOT)/components/nv_secondscreen/ss_parse.h unit/*.h)
 
 # Fuzzer working dirs (seed copy + finds + artifacts). 32-bit programs can't stat() a WSL /mnt/<drive>
 # path (64-bit inode numbers -> EOVERFLOW), so on WSL they live under ~/.cache instead of here.

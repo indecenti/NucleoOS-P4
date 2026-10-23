@@ -53,6 +53,12 @@ What it changes:
   (run on every path component to detect symlinks) sized its first buffer from `st_size`, i.e. a
   full-file-sized malloc for every open/stat of a regular file: opening a 28 MB WAD failed with
   ENOMEM once the file outgrew the largest free PSRAM block. Only a symlink's size is used now.
+- `core/iwasm/common/wasm_runtime_common.c` — `wasm_runtime_call_indirect()` checks the type of
+  the table element before calling it: the element index comes from the guest (nv.try_call), and
+  the interpreter and AOT paths copy the callee's results into the caller's `argv` and read its
+  parameters from it with no type check, so a function returning more cells than `argv` holds wrote
+  past it on the host stack. Now the element's parameter cells must equal `argc` and its result
+  cells fit in it, or the call raises "indirect call type mismatch".
 - `core/iwasm/aot/arch/aot_reloc_riscv.c` — registers `__fixsfdi` / `__fixunssfdi` for rv32f: an
   AOT module converting a float to a 64-bit integer was refused at load and ran interpreted.
 
