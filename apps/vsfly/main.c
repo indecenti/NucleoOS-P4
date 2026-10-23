@@ -47,7 +47,6 @@ static float fatan2(float y, float x)
 }
 static float fsqrt(float v) { return v > 0 ? __builtin_sqrtf(v) : 0; }
 static float fclamp(float v, float lo, float hi) { return v < lo ? lo : v > hi ? hi : v; }
-static float fabs_(float v) { return v < 0 ? -v : v; }
 
 typedef struct { float x, y, h; } v3;          /* cells; h = height in cells */
 
@@ -147,22 +146,111 @@ static void draw_ring(const cam_t *c, const ring_t *g, int col, int col2)
     }
 }
 
-/* ---- the plane: a low-poly model, local axes f (forward), r (right), u (up), in cells of 1024 ---- */
-static const float MV[][3] = {
-    { 4.2f, 0, 0.1f }, { -4.0f, 0, 0.35f }, { 0.6f, 0, 0.75f }, { 0.6f, 0, -0.45f },     /* 0 nose 1 tail 2 top 3 belly */
-    { 0.6f, -0.55f, 0.1f }, { 0.6f, 0.55f, 0.1f },                                        /* 4 5 flanks */
-    { 1.2f, 0, 0.15f }, { -1.0f, -4.8f, 0.35f }, { -1.0f, 4.8f, 0.35f }, { -1.4f, 0, 0.15f }, /* 6 wing root, 7 8 tips, 9 */
-    { -3.0f, 0, 0.3f }, { -4.2f, -1.8f, 0.35f }, { -4.2f, 1.8f, 0.35f },                 /* 10 tailplane root, 11 12 */
-    { -3.0f, 0, 0.4f }, { -4.3f, 0, 1.8f }, { -4.5f, 0, 0.4f },                           /* 13 fin */
-};
-static const unsigned char MT[][4] = {         /* triangle a b c, colour id */
-    { 0, 2, 4, 0 }, { 0, 5, 2, 0 }, { 0, 4, 3, 1 }, { 0, 3, 5, 1 },                       /* nose */
-    { 1, 4, 2, 0 }, { 1, 2, 5, 0 }, { 1, 3, 4, 1 }, { 1, 5, 3, 1 },                       /* body */
-    { 6, 7, 9, 2 }, { 6, 9, 8, 2 },                                                       /* wings */
-    { 10, 11, 1, 2 }, { 10, 1, 12, 2 },                                                   /* tailplane */
-    { 13, 14, 15, 3 },                                                                    /* fin */
-};
-static const int MCOL[4][3] = { { 220, 40, 30 }, { 240, 240, 236 }, { 245, 245, 240 }, { 220, 40, 30 } };
+/* ---- the plane: a low-poly sport plane built at start, local axes f (forward), r (right), u (up),
+ * in cells of a 1024^2 world (scaled by g_cs). Fuselage = rings of 8 points along f; wings, tailplane
+ * and fin as thin slabs; a glass canopy; a two-blade propeller that spins. Every triangle is wound to
+ * face away from its part's centre, so back faces can be culled per frame. ---- */
+#define PV_MAX 128
+#define PT_MAX 160
+enum { MAT_WHITE, MAT_GREY, MAT_RED, MAT_GLASS, MAT_DARK };
+static const int MATRGB[5][3] = { { 236, 238, 240 }, { 170, 176, 186 }, { 210, 36, 32 }, { 40, 70, 120 }, { 40, 40, 44 } };
+static float g_pv[PV_MAX][3];
+static unsigned char g_pt[PT_MAX][4];
+static int g_npv, g_npt, g_prop0;            /* the propeller's two quads are the last 4 triangles */
+
+static int pv_add(float f, float r, float u)
+{
+    g_pv[g_npv][0] = f; g_pv[g_npv][1] = r; g_pv[g_npv][2] = u;
+    return g_npv++;
+}
+
+/* triangle a b c of material m, wound so its normal points away from (cf, cr, cu) */
+static void pt_add(int a, int b, int c, int m, float cf, float cr, float cu)
+{
+    const float *A = g_pv[a], *B = g_pv[b], *C = g_pv[c];
+    const float ux = B[0] - A[0], uy = B[1] - A[1], uz = B[2] - A[2], vx = C[0] - A[0], vy = C[1] - A[1], vz = C[2] - A[2];
+    const float nx = uy * vz - uz * vy, ny = uz * vx - ux * vz, nz = ux * vy - uy * vx;
+    const float ox = (A[0] + B[0] + C[0]) / 3 - cf, oy = (A[1] + B[1] + C[1]) / 3 - cr, oz = (A[2] + B[2] + C[2]) / 3 - cu;
+    if (g_npt >= PT_MAX) return;
+    if (nx * ox + ny * oy + nz * oz < 0) { int t = b; b = c; c = t; }
+    g_pt[g_npt][0] = (unsigned char)a; g_pt[g_npt][1] = (unsigned char)b; g_pt[g_npt][2] = (unsigned char)c;
+    g_pt[g_npt][3] = (unsigned char)m;
+    g_npt++;
+}
+
+/* a thin slab between a root and a tip chord (wing, tailplane): top and bottom faces */
+static void slab(float rf0, float rf1, float rr, float ru, float tf0, float tf1, float tr, float tu, float th, int m)
+{
+    const int a = pv_add(rf0, rr, ru + th), b = pv_add(rf1, rr, ru + th), c = pv_add(tf1, tr, tu + th), d = pv_add(tf0, tr, tu + th);
+    const int e = pv_add(rf0, rr, ru - th), f = pv_add(rf1, rr, ru - th), g = pv_add(tf1, tr, tu - th), h = pv_add(tf0, tr, tu - th);
+    const float cf = (rf0 + rf1 + tf0 + tf1) / 4, cr = (rr + tr) / 2, cu = (ru + tu) / 2;
+    pt_add(a, b, c, m, cf, cr, cu); pt_add(a, c, d, m, cf, cr, cu);
+    pt_add(e, f, g, m == MAT_WHITE ? MAT_GREY : m, cf, cr, cu); pt_add(e, g, h, m == MAT_WHITE ? MAT_GREY : m, cf, cr, cu);
+    pt_add(d, c, g, m, cf, cr, cu); pt_add(d, g, h, m, cf, cr, cu);              /* the tip edge */
+}
+
+static void build_plane(void)
+{
+    static const float st[7][4] = {          /* station f, half width, half height, centre u */
+        { 4.65f, 0.06f, 0.06f, 0.10f }, { 4.05f, 0.42f, 0.40f, 0.10f }, { 2.6f, 0.62f, 0.62f, 0.12f },
+        { 0.6f, 0.66f, 0.70f, 0.14f }, { -1.6f, 0.52f, 0.56f, 0.16f }, { -3.4f, 0.30f, 0.34f, 0.24f },
+        { -4.7f, 0.10f, 0.14f, 0.30f },
+    };
+    int ring[7][8], s, k;
+    g_npv = g_npt = 0;
+    for (s = 0; s < 7; s++)
+        for (k = 0; k < 8; k++) {
+            const float a = (float)k * 0.785398f;
+            ring[s][k] = pv_add(st[s][0], st[s][1] * fcos(a), st[s][3] + st[s][2] * fsin(a));
+        }
+    for (s = 0; s < 6; s++)
+        for (k = 0; k < 8; k++) {
+            const int k1 = (k + 1) & 7;
+            const float cf = (st[s][0] + st[s + 1][0]) / 2, cu = (st[s][3] + st[s + 1][3]) / 2;
+            /* livery: red nose and tail, a red band low on the cabin, grey belly, white elsewhere */
+            int m = (k >= 5 && k <= 6) || k == 4 ? MAT_GREY : MAT_WHITE;
+            if (s == 0 || s == 5) m = MAT_RED;
+            if (s == 2 && (k == 0 || k == 3 || k == 7 || k == 4)) m = MAT_RED;
+            pt_add(ring[s][k], ring[s + 1][k], ring[s + 1][k1], m, cf, 0, cu);
+            pt_add(ring[s][k], ring[s + 1][k1], ring[s][k1], m, cf, 0, cu);
+        }
+    {   /* canopy: a glass bubble over the cabin */
+        const int a = pv_add(2.3f, -0.40f, 0.62f), b = pv_add(2.3f, 0.40f, 0.62f), c = pv_add(0.5f, -0.44f, 0.74f);
+        const int d = pv_add(0.5f, 0.44f, 0.74f), e = pv_add(1.3f, 0, 1.12f), f = pv_add(-0.6f, 0, 0.86f);
+        pt_add(a, b, e, MAT_GLASS, 1.2f, 0, 0.5f); pt_add(a, e, c, MAT_GLASS, 1.2f, 0, 0.5f);
+        pt_add(b, d, e, MAT_GLASS, 1.2f, 0, 0.5f); pt_add(c, e, f, MAT_GLASS, 1.2f, 0, 0.5f);
+        pt_add(d, f, e, MAT_GLASS, 1.2f, 0, 0.5f);
+    }
+    slab(1.2f, -1.5f, -0.5f, 0.02f, -0.2f, -1.25f, -4.9f, 0.38f, 0.07f, MAT_WHITE);   /* left wing, dihedral */
+    slab(1.2f, -1.5f, 0.5f, 0.02f, -0.2f, -1.25f, 4.9f, 0.38f, 0.07f, MAT_WHITE);     /* right wing */
+    slab(-3.3f, -4.5f, -0.2f, 0.28f, -3.95f, -4.55f, -1.95f, 0.32f, 0.04f, MAT_WHITE); /* tailplane */
+    slab(-3.3f, -4.5f, 0.2f, 0.28f, -3.95f, -4.55f, 1.95f, 0.32f, 0.04f, MAT_WHITE);
+    {   /* fin, both sides */
+        const int a = pv_add(-3.1f, -0.04f, 0.4f), b = pv_add(-4.7f, -0.04f, 0.4f), c = pv_add(-4.75f, -0.04f, 2.0f), d = pv_add(-4.2f, -0.04f, 2.0f);
+        const int e = pv_add(-3.1f, 0.04f, 0.4f), f = pv_add(-4.7f, 0.04f, 0.4f), g = pv_add(-4.75f, 0.04f, 2.0f), h = pv_add(-4.2f, 0.04f, 2.0f);
+        pt_add(a, b, c, MAT_RED, -4, 0, 1); pt_add(a, c, d, MAT_RED, -4, 0, 1);
+        pt_add(e, f, g, MAT_RED, -4, 0, 1); pt_add(e, g, h, MAT_RED, -4, 0, 1);
+    }
+    {   /* propeller: two blades, rewritten each frame (spinning) */
+        g_prop0 = g_npt;
+        for (k = 0; k < 8; k++) pv_add(4.7f, 0, 0.1f);
+        pt_add(g_npv - 8, g_npv - 7, g_npv - 6, MAT_DARK, 4.0f, 0, 0.1f); pt_add(g_npv - 8, g_npv - 6, g_npv - 5, MAT_DARK, 4.0f, 0, 0.1f);
+        pt_add(g_npv - 4, g_npv - 3, g_npv - 2, MAT_DARK, 4.0f, 0, 0.1f); pt_add(g_npv - 4, g_npv - 2, g_npv - 1, MAT_DARK, 4.0f, 0, 0.1f);
+    }
+}
+
+static void spin_prop(float a)                 /* the last 8 vertices: two blades at angle a */
+{
+    int b;
+    for (b = 0; b < 2; b++) {
+        const float t = a + (float)b * PI_F, c = fcos(t), s = fsin(t), w = 0.12f;
+        float *v = g_pv[g_npv - 8 + b * 4];
+        v[0] = 4.75f; v[1] = -s * w; v[2] = 0.1f + c * w;                       /* root, one side */
+        v = g_pv[g_npv - 7 + b * 4]; v[0] = 4.75f; v[1] = c * 1.15f - s * w * 0.5f; v[2] = 0.1f + s * 1.15f + c * w * 0.5f;
+        v = g_pv[g_npv - 6 + b * 4]; v[0] = 4.75f; v[1] = c * 1.15f + s * w * 0.5f; v[2] = 0.1f + s * 1.15f - c * w * 0.5f;
+        v = g_pv[g_npv - 5 + b * 4]; v[0] = 4.75f; v[1] = s * w; v[2] = 0.1f - c * w;
+    }
+}
 
 typedef struct { float x, y, h, yaw, pitch, bank, v; } plane_t;
 
@@ -178,34 +266,81 @@ static v3 plane_point(const plane_t *pl, const float *m)
     return o;
 }
 
-static void draw_plane(const cam_t *c, const plane_t *pl)
+/* soft shadow on the ground under the plane: it shows the height above the terrain */
+static void draw_shadow(const cam_t *c, const plane_t *pl)
 {
-    float sx[16], sy[16], z[16], dz[13];
-    int ok[16], ord[13], i, j, n = (int)(sizeof MT / sizeof MT[0]);
-    v3 w[16];
-    for (i = 0; i < 16; i++) {
-        w[i] = plane_point(pl, MV[i]);
+    const float g = ground_at(pl->x, pl->y), above = pl->h - g;
+    v3 p = { pl->x, pl->y, g };
+    float sx, sy, z;
+    int w, h, a;
+    if (above > 70.0f * g_cs || !project(c, p, &sx, &sy, &z)) return;
+    w = (int)(9.0f * g_cs * g_F / z);
+    h = w / 3 + 2;
+    a = 120 - (int)(above / g_cs * 1.5f);
+    if (w < 4 || a < 10) return;
+    plate_s((int)sx - w / 2, (int)sy - h / 2, w, h, C565(10, 12, 16), a);
+}
+
+static void draw_plane(const cam_t *c, const plane_t *pl, int t_ms)
+{
+    static float sx[PV_MAX], sy[PV_MAX], z[PV_MAX], dz[PT_MAX];
+    static v3 w[PV_MAX];
+    static int ok[PV_MAX], ord[PT_MAX];
+    const float lx = -0.6f, ly = 0.6f, lz = 0.53f;            /* the baked sun (az 135, el 32) */
+    int i, j, n = 0;
+    spin_prop((float)t_ms * 0.045f);
+    for (i = 0; i < g_npv; i++) {
+        w[i] = plane_point(pl, g_pv[i]);
         ok[i] = project(c, w[i], &sx[i], &sy[i], &z[i]);
     }
-    for (i = 0; i < n; i++) { ord[i] = i; dz[i] = z[MT[i][0]] + z[MT[i][1]] + z[MT[i][2]]; }
-    for (i = 1; i < n; i++)                     /* far first (painter) */
-        for (j = i; j > 0 && dz[ord[j]] > dz[ord[j - 1]]; j--) { int t = ord[j]; ord[j] = ord[j - 1]; ord[j - 1] = t; }
-    for (i = 0; i < n; i++) {
-        const unsigned char *t = MT[ord[i]];
+    for (i = 0; i < g_npt; i++) {               /* front faces only, far first */
+        const unsigned char *t = g_pt[i];
         const v3 a = w[t[0]], b = w[t[1]], d = w[t[2]];
-        /* lambert from the baked sun (az 135, el 32) + sky light */
-        const float ux = b.x - a.x, uy = b.y - a.y, uh = b.h - a.h, vx = d.x - a.x, vy = d.y - a.y, vh = d.h - a.h;
-        float nx = uy * vh - uh * vy, ny = uh * vx - ux * vh, nh = ux * vy - uy * vx;
+        const float nx = (b.y - a.y) * (d.h - a.h) - (b.h - a.h) * (d.y - a.y);
+        const float ny = (b.h - a.h) * (d.x - a.x) - (b.x - a.x) * (d.h - a.h);
+        const float nh = (b.x - a.x) * (d.y - a.y) - (b.y - a.y) * (d.x - a.x);
+        if (!ok[t[0]] || !ok[t[1]] || !ok[t[2]]) continue;
+        if (i < g_prop0 && nx * (c->p.x - a.x) + ny * (c->p.y - a.y) + nh * (c->p.h - a.h) <= 0) continue;
+        ord[n] = i;
+        dz[n] = z[t[0]] + z[t[1]] + z[t[2]];
+        for (j = n; j > 0 && dz[j] > dz[j - 1]; j--) {
+            const float tf = dz[j]; const int ti = ord[j];
+            dz[j] = dz[j - 1]; ord[j] = ord[j - 1]; dz[j - 1] = tf; ord[j - 1] = ti;
+        }
+        n++;
+    }
+    for (i = 0; i < n; i++) {
+        const unsigned char *t = g_pt[ord[i]];
+        const v3 a = w[t[0]], b = w[t[1]], d = w[t[2]];
+        float nx = (b.y - a.y) * (d.h - a.h) - (b.h - a.h) * (d.y - a.y);
+        float ny = (b.h - a.h) * (d.x - a.x) - (b.x - a.x) * (d.h - a.h);
+        float nh = (b.x - a.x) * (d.y - a.y) - (b.y - a.y) * (d.x - a.x);
         const float nl = fsqrt(nx * nx + ny * ny + nh * nh) + 1e-6f;
-        float lit;
+        float vx = c->p.x - a.x, vy = c->p.y - a.y, vh = c->p.h - a.h, vl, ndl, hx, hy, hz, hl, sp, lit;
         int k, rgb[3];
         nx /= nl; ny /= nl; nh /= nl;
-        lit = fabs_(nx * -0.6f + ny * 0.6f + nh * 0.53f);
-        lit = 0.45f + 0.65f * lit;
-        if (!ok[t[0]] || !ok[t[1]] || !ok[t[2]]) continue;
-        for (k = 0; k < 3; k++) { int v = (int)((float)MCOL[t[3]][k] * lit); rgb[k] = v > 255 ? 255 : v; }
+        vl = fsqrt(vx * vx + vy * vy + vh * vh) + 1e-6f;
+        vx /= vl; vy /= vl; vh /= vl;
+        if (nx * vx + ny * vy + nh * vh < 0) { nx = -nx; ny = -ny; nh = -nh; }    /* the propeller's back */
+        ndl = nx * lx + ny * ly + nh * lz;
+        hx = lx + vx; hy = ly + vy; hz = lz + vh;
+        hl = fsqrt(hx * hx + hy * hy + hz * hz) + 1e-6f;
+        sp = (nx * hx + ny * hy + nh * hz) / hl;
+        sp = sp > 0 ? sp : 0;
+        sp *= sp; sp *= sp; sp *= sp; sp *= sp;                                      /* ^16 */
+        lit = 0.42f + 0.72f * (ndl > 0 ? ndl : 0) + 0.18f * nh;
+        for (k = 0; k < 3; k++) {
+            int v = (int)((float)MATRGB[t[3]][k] * lit + sp * (t[3] == MAT_GLASS ? 230.0f : 110.0f));
+            rgb[k] = v > 255 ? 255 : v < 0 ? 0 : v;
+        }
         tri_s((int)sx[t[0]], (int)sy[t[0]], (int)sx[t[1]], (int)sy[t[1]], (int)sx[t[2]], (int)sy[t[2]],
               C565(rgb[0], rgb[1], rgb[2]));
+    }
+    if ((t_ms / 500) & 1) {                     /* navigation lights: red left tip, green right tip */
+        static const float tipl[3] = { -0.75f, -4.95f, 0.42f }, tipr[3] = { -0.75f, 4.95f, 0.42f };
+        float x, y, zz;
+        if (project(c, plane_point(pl, tipl), &x, &y, &zz)) rect_s((int)x - 2, (int)y - 2, 5, 5, C565(255, 40, 40));
+        if (project(c, plane_point(pl, tipr), &x, &y, &zz)) rect_s((int)x - 2, (int)y - 2, 5, 5, C565(60, 255, 90));
     }
 }
 
@@ -216,6 +351,58 @@ static void hud_label_value(int x, int y, const char *label, const char *value, 
     plate_s(x, y, w, 52, C565(8, 14, 26), 150);
     text_s(x + 10, y + 6, label, 2, C565(150, 170, 190));
     text_sh(x + 10, y + 22, value, 4, col);
+}
+
+/* ring progress: 12 dots under the ring counter */
+static void hud_progress(int x, int y, int done)
+{
+    int i;
+    for (i = 0; i < NRINGS; i++) {
+        const int c = i < done ? C565(255, 215, 40) : i == done ? C565(255, 255, 255) : C565(70, 80, 95);
+        rect_s(x + i * 11, y, 8, i == done ? 8 : 6, c);
+    }
+}
+
+/* radar: the rings around the plane, heading up, the next one bright */
+static void hud_radar(const plane_t *pl, int ring, int cx, int cy, int rad)
+{
+    const float range = 520.0f * g_cs, cyw = fcos(pl->yaw), syw = fsin(pl->yaw);
+    int i;
+    plate_s(cx - rad - 6, cy - rad - 6, 2 * rad + 12, 2 * rad + 12, C565(8, 14, 26), 140);
+    ring_s(cx, cy, rad, 32, C565(80, 100, 120));
+    ring_s(cx, cy, rad / 2, 24, C565(50, 64, 80));
+    for (i = 0; i < NRINGS; i++) {
+        const ring_t *g = &g_ring[i];
+        const float dx = g->c.x - pl->x, dy = g->c.y - pl->y;
+        float fwd = dx * cyw + dy * syw, rt = -dx * syw + dy * cyw, d = fsqrt(fwd * fwd + rt * rt);
+        int px, py, col, sz;
+        if (d > range) { fwd *= range / d; rt *= range / d; }
+        px = cx + (int)(rt / range * (float)rad);
+        py = cy - (int)(fwd / range * (float)rad);
+        col = i == ring ? C565(255, 215, 40) : ((i - ring + NRINGS) % NRINGS) < 3 ? C565(150, 130, 70) : C565(80, 85, 95);
+        sz = i == ring ? 7 : 4;
+        rect_s(px - sz / 2, py - sz / 2, sz, sz, col);
+    }
+    tri_s(cx, cy - 7, cx - 5, cy + 5, cx + 5, cy + 5, 0xFFFF);                 /* the plane */
+}
+
+/* cockpit: horizon line and pitch ladder, rolling with the bank */
+static void hud_attitude(const cam_t *c)
+{
+    const int cx = g_w / 2, cy = g_h / 2;
+    int k;
+    for (k = -2; k <= 2; k++) {
+        const float y0 = (float)cy - c->pitch_px - (float)k * 0.1745f * g_F;   /* every 10 degrees */
+        const int half = k == 0 ? 240 : 60, col = k == 0 ? C565(120, 255, 160) : C565(90, 200, 130);
+        const int x0 = cx - half, x1 = cx + half;
+        const int ya = (int)(y0 + c->roll * (float)(x0 - cx)), yb = (int)(y0 + c->roll * (float)(x1 - cx));
+        if (k && ya > 0 && ya < g_h) {
+            line_s(x0, ya, cx - 24, (int)(y0 + c->roll * -24.0f), col);
+            line_s(cx + 24, (int)(y0 + c->roll * 24.0f), x1, yb, col);
+        } else if (!k) {
+            line_s(x0, ya, x1, yb, col);
+        }
+    }
 }
 
 static void center_text(int y, const char *s, int k, int col)
@@ -273,6 +460,7 @@ void run(void)
     if (nv_load("best", &best, sizeof best) != sizeof best) best = 0;
     __builtin_memset(&in, 0, sizeof in);
     make_course();
+    build_plane();
 
 respawn:
     {
@@ -447,7 +635,8 @@ respawn:
             if (!project(&cam, g->c, &sx, &sy, &z) || sx < 0 || sx >= g_w || sy < 0 || sy >= g_h)
                 draw_pointer(&cam, g, &pl);
         }
-        if (view == 0 && state != ST_CRASH) draw_plane(&cam, &pl);
+        if (view == 0 && state != ST_CRASH) { draw_shadow(&cam, &pl); draw_plane(&cam, &pl, t_now); }
+        if (view == 1) hud_attitude(&cam);
         if (view == 1) {                        /* cockpit: a flight path marker */
             rect_s(g_w / 2 - 16, g_h / 2 - 1, 10, 3, 0xFFFF);
             rect_s(g_w / 2 + 6, g_h / 2 - 1, 10, 3, 0xFFFF);
@@ -459,6 +648,8 @@ respawn:
             char a[24], b[24];
             fmt_int(fmt_str(fmt_int(a, state == ST_DONE ? NRINGS : ring), "/"), NRINGS);
             hud_label_value(16, 14, "RING", a, C565(255, 215, 40));
+            hud_progress(18, 72, state == ST_DONE ? NRINGS : ring);
+            hud_radar(&pl, ring, g_w - 70, g_h - 150, 52);
             fmt_time(b, state == ST_DONE ? finish_ms - t_start : t_now - t_start);
             {
                 const int w = text_w(b, 5) + 24;
@@ -490,6 +681,11 @@ respawn:
                 fmt_time(a, finish_ms - t_start);
                 center_text(g_h / 2 - 30, a, 6, 0xFFFF);
                 if (newbest) center_text(g_h / 2 + 22, "NEW RECORD!", 3, C565(255, 215, 40));
+                else if (best) {
+                    const int tt = finish_ms - t_start;
+                    center_text(g_h / 2 + 22, tt <= best * 105 / 100 ? "GOLD" : tt <= best * 115 / 100 ? "SILVER" : "BRONZE", 3,
+                                tt <= best * 105 / 100 ? C565(255, 215, 40) : tt <= best * 115 / 100 ? C565(200, 210, 220) : C565(205, 127, 50));
+                }
                 center_text(g_h / 2 + 66, "TAP OR ENTER TO FLY AGAIN", 2, C565(200, 220, 230));
             }
             if (in.last == IN_TOUCH) hud_stick(in.stick_on, in.stick_x0, in.stick_y0, in.stick_x, in.stick_y);
