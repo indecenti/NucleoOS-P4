@@ -20,6 +20,7 @@
 #include <sys/stat.h>
 #include <unistd.h>
 
+#include "esp_cpu.h"
 #include "esp_heap_caps.h"
 #include "esp_timer.h"
 #include "freertos/FreeRTOS.h"
@@ -41,6 +42,7 @@ typedef struct {
     uint16_t *sram_mip[VS_MAX_MIPS];     /* internal-RAM copies of the small mips (sram_tier) */
     uint16_t *sram_pal;
     uint8_t *maxb;                       /* block maxima for empty-space skipping (internal RAM if it fits) */
+    uint8_t *maxs;                       /* super-block maxima for early ray exit */
     int sram_levels;
     uint8_t *sky_file;
     vs_world wd;
@@ -56,6 +58,7 @@ typedef struct {
     int32_t last_us;
     uint32_t frames;
     int64_t prof_us;
+    uint64_t cyc[7];                     /* VS_CYCLES sums over the prof window */
     int64_t wait_us[VS_MT_MAX_CORES];    /* time the cores spent waiting for their DMA copies */
     bool open;
 } voxel_state;
@@ -65,6 +68,10 @@ typedef struct {
 static voxel_state *s_vp;
 #define s_v (*s_vp)
 static vs_mt s_mt;                       /* internal RAM: its strip counter is an atomic shared by the cores */
+
+#ifdef VS_CYCLES
+uint32_t vs_clock(void) { return (uint32_t)esp_cpu_get_cycle_count(); }   /* the core's VS_CYCLES profiling */
+#endif
 
 /* ---- helper task (core 1) ---- */
 static TaskHandle_t s_helper;
@@ -173,6 +180,7 @@ void voxel_close(void)
     for (l = 0; l < VS_MAX_MIPS; l++) if (s_v.sram_mip[l]) heap_caps_free(s_v.sram_mip[l]);
     if (s_v.sram_pal) heap_caps_free(s_v.sram_pal);
     if (s_v.maxb) heap_caps_free(s_v.maxb);
+    if (s_v.maxs) heap_caps_free(s_v.maxs);
     if (s_v.world_file) heap_caps_free(s_v.world_file);
     if (s_v.mips) heap_caps_free(s_v.mips);
     if (s_v.sky_file) heap_caps_free(s_v.sky_file);
@@ -199,6 +207,11 @@ static void sram_tier(void)
     const bool mb_sram = heap_caps_get_free_size(MALLOC_CAP_INTERNAL) >= mb + keep;
     s_v.maxb = (uint8_t *)heap_caps_malloc(mb, (mb_sram ? MALLOC_CAP_INTERNAL : MALLOC_CAP_SPIRAM) | MALLOC_CAP_8BIT);
     if (s_v.maxb) vs_build_maxb(&s_v.wd, s_v.maxb, sh);
+    if (s_v.maxb) {
+        const size_t ms = vs_maxs_bytes(s_v.wd.log2size, sh);
+        s_v.maxs = (uint8_t *)heap_caps_malloc(ms, (mb_sram ? MALLOC_CAP_INTERNAL : MALLOC_CAP_SPIRAM) | MALLOC_CAP_8BIT);
+        if (s_v.maxs) vs_build_maxs(&s_v.wd, s_v.maxs);
+    }
     p = (uint16_t *)heap_caps_malloc(VS_PAL_N * 2, MALLOC_CAP_INTERNAL | MALLOC_CAP_8BIT);
     if (p) { memcpy(p, s_v.wd.pal, VS_PAL_N * 2); s_v.sram_pal = p; s_v.wd.pal = p; }
     for (l = s_v.wd.nmips - 1; l >= 1; l--) {
@@ -325,7 +338,18 @@ int32_t voxel_render(uint16_t *fb, int cols, int rows)
     s_v.last_us = (int32_t)(esp_timer_get_time() - t0);
     if (s_v.target_ms) vs_tune(&s_v.gov, s_v.view, s_v.last_us / 1000);
     s_v.prof_us += s_v.last_us;
+    { int q; for (q = 0; q < 7; q++) s_v.cyc[q] += s_v.last.cyc[q]; }
     if (++s_v.frames % 60 == 0) {
+        {   /* per frame, both cores together, in units of 1000 cycles */
+            uint64_t tot = 0;
+            int q;
+            for (q = 0; q < 7; q++) tot += s_v.cyc[q];
+            NV_LOGI(TAG, "kcycles/frame %u: setup %u sample %u water %u near %u flat %u ridge %u sky %u",
+                    (unsigned)(tot / 60000), (unsigned)(s_v.cyc[0] / 60000), (unsigned)(s_v.cyc[1] / 60000),
+                    (unsigned)(s_v.cyc[2] / 60000), (unsigned)(s_v.cyc[3] / 60000), (unsigned)(s_v.cyc[4] / 60000),
+                    (unsigned)(s_v.cyc[5] / 60000), (unsigned)(s_v.cyc[6] / 60000));
+            for (q = 0; q < 7; q++) s_v.cyc[q] = 0;
+        }
         NV_LOGI(TAG, "prof %dx%d cores %d fast %d xs %d: render %d us avg, dma wait %d/%d us, samples %u, near px %u, "
                 "q %d, strips %u/%u", cols, rows, s_v.cores, s_v.fast, s_v.xscale, (int)(s_v.prof_us / 60),
                 (int)(s_v.wait_us[0] / 60), (int)(s_v.wait_us[1] / 60), (unsigned)s_v.last.samples,
@@ -411,6 +435,8 @@ int32_t voxel_info(int32_t key)
     case VOXEL_INFO_FAST: return s_v.fast;
     case VOXEL_INFO_XSCALE: return s_v.xscale;
     case VOXEL_INFO_SRAM_LEVELS: return s_v.sram_levels;
+    case VOXEL_INFO_VSCALE: return s_v.view ? s_v.view->vscale_q8 : 0;
+    case VOXEL_INFO_FOCAL: return s_v.view ? (s_v.view->focal_y ? s_v.view->focal_y : s_v.view->focal) : 0;
     default: return -1;
     }
 }

@@ -13,6 +13,19 @@
  */
 #include "vsng.h"
 
+#ifdef VS_CYCLES                         /* device profiling: the platform supplies a cycle counter */
+uint32_t vs_clock(void);
+#define VS_T0() (c0 = vs_clock())
+#define VS_TA(k) (cyc[k] += vs_clock() - c0)
+#define VS_T1() (c1 = vs_clock())
+#define VS_TB(k) (cyc[k] += vs_clock() - c1)
+#else
+#define VS_T0() ((void)0)
+#define VS_TA(k) ((void)0)
+#define VS_T1() ((void)0)
+#define VS_TB(k) ((void)0)
+#endif
+
 #ifdef VS_PROFILE                        /* host profiling: what the frame spends its work on */
 unsigned long long vs_prof[9];
 #define VS_PROF(k, n) (vs_prof[k] += (unsigned long long)(n))
@@ -93,6 +106,11 @@ void vs_setup(vs_view *v)
         if (fp < dz) fp = dz;
         fp = (int32_t)(((int64_t)fp * (v->lod_q8 > 0 ? v->lod_q8 : 256)) >> 8);
         v->lod[n] = (uint8_t)(fp > 256 ? ilog2((uint32_t)fp >> 8) : 0);
+        {   /* brilinear: through the second half of each octave, fade toward the next level, so a level
+             * change is a blend instead of a jump that crawls across the ground as the camera moves */
+            const int32_t lo = 256 << v->lod[n], t = fp > 256 ? (int32_t)(((int64_t)(fp - lo) << 8) / lo) : 0;
+            v->lodf[n] = (uint8_t)(t < 128 ? 0 : (t - 128) >> 2 > 31 ? 31 : (t - 128) >> 2);
+        }
         if (z < (v->near_z << 8)) nnear = n + 1;
         if (z < (v->smooth_z << 8)) nsmooth = n + 1;
         n++;
@@ -124,7 +142,7 @@ void vs_view_fit(vs_view *v, int w, int h, int fov_deg, int xscale)
     if (!v->vscale_q8) v->vscale_q8 = 205;
     if (!v->fog_start) v->fog_start = v->zfar / 4;
     if (!v->near_z) v->near_z = 48;
-    if (!v->smooth_z) v->smooth_z = v->focal_y * 2 / 3; /* where a cell shrinks under ~1.5 px */
+    if (!v->smooth_z) v->smooth_z = v->focal_y * 2 / 3; /* bilinear while a cell spans > ~1.5 px */
     if (!v->lod_q8) v->lod_q8 = 256;
     if (!v->detail_q8) v->detail_q8 = 256;
     if (!v->quality) v->quality = 256;
@@ -140,35 +158,41 @@ void vs_governor_init(vs_governor *g, int target_ms, int scale_min_q8)
     g->scale_min_q8 = scale_min_q8;
     g->avg_ms_q4 = target_ms << 4;
     g->cooldown = 30;
+    g->q_min = 192;
+    g->near0 = 0;
 }
 
-/* Order of trade-offs (cheapest loss first when slow, best gain first when fast): step density
- * down to 160, then render scale, then step density to 96 and the textured near zone. */
+/* Order of trade-offs, cheapest loss first when slow: step density down to 224, then interpolated
+ * columns (render scale), then step density down to the floor (q_min, default 192) and the textured
+ * near zone down to half. It never goes below those floors: past them a slow frame stays slow rather
+ * than turning into a mosaic. Best gain first when there is headroom. */
 int vs_tune(vs_governor *g, vs_view *v, int frame_ms)
 {
-    int32_t t = g->target_ms << 4;
+    const int32_t t = g->target_ms << 4;
+    const int qmin = g->q_min > 0 ? g->q_min : 192;
+    if (!g->near0) g->near0 = v->near_z;
     g->avg_ms_q4 += ((frame_ms << 4) - g->avg_ms_q4) / 8;
     if (g->cooldown > 0) { g->cooldown--; return 0; }
     if (g->avg_ms_q4 > t + t / 10) {                                 /* too slow */
         g->cooldown = 12;
-        if (v->quality > 160) { v->quality -= 24; vs_setup(v); return 1; }
+        if (v->quality > 224) { v->quality -= 16; vs_setup(v); return 1; }
         if (g->scale_q8 > g->scale_min_q8) {
             g->scale_q8 -= 16;
             if (g->scale_q8 < g->scale_min_q8) g->scale_q8 = g->scale_min_q8;
             return 2;
         }
-        if (v->quality > 96) { v->quality -= 16; vs_setup(v); return 1; }
-        if (v->near_z > 16) { v->near_z -= 8; vs_setup(v); return 1; }
+        if (v->quality > qmin) { v->quality -= 16; vs_setup(v); return 1; }
+        if (v->near_z > g->near0 / 2) { v->near_z -= g->near0 / 8 + 1; vs_setup(v); return 1; }
     } else if (g->avg_ms_q4 < t * 3 / 4) {                           /* headroom */
         g->cooldown = 24;
-        if (v->near_z < 48) { v->near_z += 8; vs_setup(v); return 1; }
-        if (v->quality < 160) { v->quality += 16; vs_setup(v); return 1; }
+        if (v->near_z < g->near0) { v->near_z += g->near0 / 8 + 1; if (v->near_z > g->near0) v->near_z = g->near0; vs_setup(v); return 1; }
+        if (v->quality < 256) { v->quality += 16; vs_setup(v); return 1; }
         if (g->scale_q8 < 256) {
             g->scale_q8 += 16;
             if (g->scale_q8 > 256) g->scale_q8 = 256;
             return 2;
         }
-        if (v->quality < 320) { v->quality += 24; vs_setup(v); return 1; }
+        if (v->quality < 320) { v->quality += 16; vs_setup(v); return 1; }
     }
     return 0;
 }
@@ -274,6 +298,57 @@ void vs_build_maxb(vs_world *wd, uint8_t *buf, int shift)
     wd->maxb_shift = shift;
 }
 
+uint32_t vs_maxs_bytes(int log2size, int shift)
+{
+    return 1u << (2 * (log2size - shift - 2));
+}
+
+void vs_build_maxs(vs_world *wd, uint8_t *buf)
+{
+    const int lb = wd->log2size - wd->maxb_shift, ls = lb - 2;
+    const uint32_t ns = 1u << ls, msk = ns - 1;
+    uint32_t sx, sy, bx, by;
+    int dx, dy;
+    uint8_t *tmp = buf;                                        /* pass 1 in place: 4x4 block max */
+    if (!wd->maxb || ls < 1) return;
+    for (sy = 0; sy < ns; sy++)
+        for (sx = 0; sx < ns; sx++) {
+            uint8_t m = 0;
+            for (by = 0; by < 4; by++)
+                for (bx = 0; bx < 4; bx++) {
+                    const uint8_t v = wd->maxb[(((sy << 2) + by) << lb) | ((sx << 2) + bx)];
+                    if (v > m) m = v;
+                }
+            tmp[(sy << ls) | sx] = m;
+        }
+    /* pass 2: dilate by one super block, rows then columns (separable max), with a small row buffer */
+    for (sy = 0; sy < ns; sy++) {
+        uint8_t row[512];
+        for (sx = 0; sx < ns && sx < 512; sx++) {
+            uint8_t m = 0;
+            for (dx = -1; dx <= 1; dx++) {
+                const uint8_t v = tmp[(sy << ls) | ((sx + (uint32_t)dx) & msk)];
+                if (v > m) m = v;
+            }
+            row[sx] = m;
+        }
+        for (sx = 0; sx < ns && sx < 512; sx++) tmp[(sy << ls) | sx] = row[sx];
+    }
+    for (sx = 0; sx < ns && sx < 512; sx++) {
+        uint8_t colv[512];
+        for (sy = 0; sy < ns; sy++) {
+            uint8_t m = 0;
+            for (dy = -1; dy <= 1; dy++) {
+                const uint8_t v = tmp[(((sy + (uint32_t)dy) & msk) << ls) | sx];
+                if (v > m) m = v;
+            }
+            colv[sy] = m;
+        }
+        for (sy = 0; sy < ns; sy++) tmp[(sy << ls) | sx] = colv[sy];
+    }
+    wd->maxs = buf;
+}
+
 /* ---- pixel helpers ------------------------------------------------------------------------------ */
 
 /* a -> b by f/32, both RGB565: the three channels spread so one multiply blends them all. */
@@ -335,6 +410,33 @@ int32_t vs_height_at(const vs_world *wd, int32_t x, int32_t y)
     return h;
 }
 
+void vs_frame(vs_view *v, const vs_cam *cam)
+{
+    /* distance of the camera along the view direction, Q8 cells, in world terms */
+    const int64_t s = ((int64_t)cam->x * vs_cos(cam->yaw) + (int64_t)cam->y * vs_sin(cam->yaw)) >> 24;
+    const int32_t fy = v->focal_y ? v->focal_y : v->focal;
+    int64_t w = s, zp = 0;
+    int i;
+    v->pinned = 0;
+    if (v->nopin) {
+        int32_t z = 256;
+        for (i = 0; i < v->nsteps; i++) { z += v->dz_q8[i]; v->pz[i] = z; }
+        return;
+    }
+    for (i = 0; i < v->nsteps; i++) {
+        int64_t P = 128, wn, zn;
+        while (P * 3 / 2 < v->dz_q8[i]) P <<= 1;              /* the power of two nearest the step */
+        wn = (w >= 0 ? w / P : -((-w + P - 1) / P)) * P + P;  /* next plane of that lattice */
+        zn = wn - s;
+        v->pdz[i] = (int32_t)(zn - zp);
+        v->pkz[i] = (int32_t)(((int64_t)fy * v->vscale_q8 << 8) / zn);
+        v->pz[i] = (int32_t)zn;
+        zp = zn;
+        w = wn;
+    }
+    v->pinned = 1;
+}
+
 /* ---- the march ---------------------------------------------------------------------------------- */
 
 /* Columns march in groups of VS_GROUP, step by step: at each distance the group's rays read cells a
@@ -342,12 +444,16 @@ int32_t vs_height_at(const vs_world *wd, int32_t x, int32_t y)
  * time walked ~300 lines across the map and threw them away before its neighbour came back for
  * them), and the step's tables (length, 1/z, fog, mip level) are read once for the group. */
 #define VS_GROUP 8
+#define VS_RS_MAX 96                      /* super blocks along a ray (zfar / 64 cells + 2) */
 
 typedef struct {
     int32_t px, py, dx, dy, jh, yb;
     uint16_t *col;
     const uint16_t *sc;
     uint32_t pc;                         /* colour of the previous sample (span start) */
+    uint16_t pend;                       /* colour of a span top that covers part of row yb */
+    uint16_t pcov;                       /* ...and how much of it, 0..15 sixteenths (0 = none) */
+    uint8_t rem[VS_RS_MAX];              /* tallest terrain from super block k on along the ray */
     int live;
 } vs_ray;
 
@@ -370,14 +476,22 @@ void vs_render_strip(const vs_view *v, const vs_world *wd, const vs_sky *sky, co
     const uint8_t *maxb = wd->maxb;
     const int bshift = wd->maxb_shift, blog2 = log2 - bshift;
     const uint32_t bmask = (1u << blog2) - 1;
+    const uint8_t *maxs = wd->maxs;
+    const int sshift = bshift + 2, slog2 = log2 - sshift;
+    const uint32_t smask = (1u << slog2) - 1;
+    const int nrs = (v->pz[v->nsteps - 1] >> (8 + sshift)) + 2 < VS_RS_MAX ? (v->pz[v->nsteps - 1] >> (8 + sshift)) + 2 : VS_RS_MAX;
     uint32_t samples = 0, psky = 0, pnear = 0;
     vs_ray rays[VS_GROUP];
     int g;
+#ifdef VS_CYCLES
+    uint32_t cyc[7] = { 0, 0, 0, 0, 0, 0, 0 }, c0 = 0, c1 = 0;
+#endif
 
     if (x1 > W) x1 = W;
     for (g = x0; g < x1; g += VS_GROUP) {
         const int n = x1 - g < VS_GROUP ? x1 - g : VS_GROUP;
         int k, i, live = n;
+        VS_T0();
 
         for (k = 0; k < n; k++) {
             const int x = g + k;
@@ -393,11 +507,25 @@ void vs_render_strip(const vs_view *v, const vs_world *wd, const vs_sky *sky, co
             r->col = out + (uint32_t)(x - x0) * H;
             r->sc = sky->px + (uint32_t)((((cam->yaw + v->col_ang[x]) & VS_ANG_MASK) * sky->w) >> VS_ANG_BITS) * sky->h;
             r->pc = 0xFFFFFFFFu;
+            r->pcov = 0;
+            if (maxs) {   /* the tallest terrain still ahead, every super-block side along the ray */
+                int32_t q;
+                uint8_t m = 0;
+                for (q = nrs - 1; q >= 0; q--) {
+                    const int32_t d = q << sshift;                          /* cells */
+                    const uint32_t cx = ((uint32_t)(cam->x + r->dx * d) >> (16 + sshift)) & smask;
+                    const uint32_t cy = ((uint32_t)(cam->y + r->dy * d) >> (16 + sshift)) & smask;
+                    const uint8_t v = maxs[(cy << slog2) | cx];
+                    if (v > m) m = v;
+                    r->rem[q] = m;
+                }
+            }
             r->live = 1;
         }
 
+        VS_TA(0);
         for (i = 0; i < nsteps && live; i++) {
-            const int32_t dz = v->dz_q8[i], kz = v->kz[i];
+            const int32_t dz = v->pinned ? v->pdz[i] : v->dz_q8[i], kz = v->pinned ? v->pkz[i] : v->kz[i];
             const uint32_t f = v->fog[i];
             const int l = v->lod[i] < wd->nmips ? v->lod[i] : wd->nmips - 1;
             const uint16_t *mp = wd->mip[l];
@@ -405,9 +533,14 @@ void vs_render_strip(const vs_view *v, const vs_world *wd, const vs_sky *sky, co
             const uint32_t ml = mask >> l;
             /* the farthest any cell can reach on screen from here on, for the early exit */
             const int32_t jtop = hmax <= camh ? 0x7FFFFFFF : (((hmax - camh) * kz) >> 12);
-            /* block-max skipping is exact only where a sampled cell (and its bilinear neighbours)
-             * lies inside one dilated block */
-            const int skipok = maxb && (i < nnear || (i < nsmooth ? l <= 1 : l <= bshift));
+            /* level blend (brilinear) only where samples are single cells: two reads, the far mips are
+             * in internal RAM; in the bilinear zone it would cost eight reads for little */
+            const uint32_t tb = l + 1 < wd->nmips && i >= nsmooth ? v->lodf[i] : 0;
+            /* block-max skipping must cover every base cell the sample can read: a bilinear sample on
+             * level l reaches 2^(l+1) cells (2^(l+2) while blending with l+1), a nearest one 2^l. Up to
+             * the dilation (2) one block lookup covers it, up to a block side the four corner blocks do. */
+            const int32_t reach = i < nsmooth ? 2 << l : 1 << (l + (tb ? 1 : 0));
+            const int skipok = maxb && reach <= (1 << bshift);
             for (k = 0; k < n; k++) {
                 vs_ray *r = &rays[k];
                 const int32_t ppx = r->px, ppy = r->py, jh = r->jh;
@@ -415,14 +548,25 @@ void vs_render_strip(const vs_view *v, const vs_world *wd, const vs_sky *sky, co
                 int32_t yb = r->yb, hq, j;
                 uint32_t c;
                 if (!r->live) continue;
+                VS_T0();
                 r->px += (r->dx * dz) >> 8;
                 r->py += (r->dy * dz) >> 8;
                 if (skipok) {
-                    const uint32_t b = ((((uint32_t)r->py >> (16 + bshift)) & bmask) << blog2) |
-                                       (((uint32_t)r->px >> (16 + bshift)) & bmask);
-                    if (jh + (((((int32_t)maxb[b]) << 4) - camh) * kz >> 12) <= yb) {
+                    const uint32_t bx0 = ((uint32_t)r->px >> (16 + bshift)) & bmask, by0 = ((uint32_t)r->py >> (16 + bshift)) & bmask;
+                    int32_t top = maxb[(by0 << blog2) | bx0];
+                    if (reach > 2) {
+                        const uint32_t bx1 = (((uint32_t)r->px >> 16) + (uint32_t)reach) >> bshift & bmask;
+                        const uint32_t by1 = (((uint32_t)r->py >> 16) + (uint32_t)reach) >> bshift & bmask;
+                        const int32_t t1 = maxb[(by0 << blog2) | bx1], t2 = maxb[(by1 << blog2) | bx0],
+                                      t3 = maxb[(by1 << blog2) | bx1];
+                        if (t1 > top) top = t1;
+                        if (t2 > top) top = t2;
+                        if (t3 > top) top = t3;
+                    }
+                    if (jh + (((top << 4) - camh) * kz >> 12) <= yb) {
                         VS_PROF(8, 1);
                         r->pc = 0xFFFFFFFFu;               /* the next span starts fresh */
+                        VS_TA(1);
                         goto next;
                     }
                 }
@@ -438,12 +582,24 @@ void vs_render_strip(const vs_view *v, const vs_world *wd, const vs_sky *sky, co
                                                     ((uint32_t)r->py >> (16 + l)) & ml, ll)];
                     c = VS_X(pal, c16);
                     hq = VS_XHQ(c);
+                    if (tb) {
+                        const uint32_t m2 = ml >> 1;
+                        const uint32_t d16 = wd->mip[l + 1][vs_tidx(((uint32_t)r->px >> (17 + l)) & m2,
+                                                                    ((uint32_t)r->py >> (17 + l)) & m2, ll - 1)];
+                        c = (c & 0xFFFF0000u) | mix565(c & 0xFFFF, pal[d16 & 127], tb);
+                        hq += ((int32_t)((d16 >> 7) << 3) - hq) * (int32_t)tb >> 5;
+                    }
                 }
-                j = jh + (((hq - camh) * kz) >> 12);
+                VS_TA(1);
+                VS_T0();
+                const int32_t jf = ((hq - camh) * kz) >> 8;  /* span top, Q4 rows */
+                j = jh + (jf >> 4);
                 if (j > yb) {
                     const int32_t jj = j;             /* unclamped: the span's true length */
+                    const int32_t y0 = yb;
                     if (j > H) j = H;
                     VS_PROF(3, 1);
+                    VS_T1();
                     if (VS_XGROUP(c) == VS_G_WATER) {
                         VS_PROF(4, j - yb);
                         /* water: the sky mirrored about the horizon, rippled; Fresnel: the farther (the
@@ -462,6 +618,7 @@ void vs_render_strip(const vs_view *v, const vs_world *wd, const vs_sky *sky, co
                                                 & 0x07E0F81Fu;
                             col[yb] = (uint16_t)(sp | (sp >> 16));
                         }
+                        VS_TB(2);
                     } else if (i < nnear) {
                         /* per pixel, cheaply: the colour runs from the previous sample to this one down
                          * the span (both already bilinear), the ground position walks with it and picks
@@ -489,29 +646,53 @@ void vs_render_strip(const vs_view *v, const vs_world *wd, const vs_sky *sky, co
                             }
                             col[yb] = f ? mix565(o, fogc, f) : o;
                         }
+                        VS_TB(3);
                     } else {
                         const uint16_t o = f ? mix565(c & 0xFFFF, fogc, f) : (uint16_t)c;
                         VS_PROF(6, j - yb);
                         for (; yb < j; yb++) col[yb] = o;
+                        VS_TB(4);
                     }
+                    VS_T1();
+                    /* anti-aliased ridges: the row this span's top only partly covered (left pending by
+                     * the previous span) gets its colour blended over what turned out to lie behind it;
+                     * this span's own top fraction is left pending for whatever comes next */
+                    if (r->pcov) col[y0] = mix565(col[y0], r->pend, (uint32_t)r->pcov * 2);
+                    r->pcov = jj < H ? (uint16_t)(jf & 15) : 0;
+                    r->pend = col[yb - 1];
                     r->yb = yb;
+                    VS_TB(5);
                 }
                 r->pc = c;
             next:
                 /* the top reached, or nothing farther can rise above what is painted */
-                if (yb >= H || ((i & 3) == 3 && (jtop == 0x7FFFFFFF ? yb >= jh : jh + jtop <= yb))) {
+                if (yb >= H) {
                     r->live = 0;
                     live--;
                     samples += (uint32_t)(i + 1);
+                } else if ((i & 3) == 3) {
+                    int32_t t = jtop;                   /* tallest cell of the map, or of what is left ahead */
+                    if (maxs) {
+                        const int32_t q = (v->pz[i] >> 8) >> sshift;
+                        const int32_t hr = (int32_t)r->rem[q < nrs ? q : nrs - 1] << 4;
+                        t = hr <= camh ? 0x7FFFFFFF : (((hr - camh) * kz) >> 12);
+                    }
+                    if (t == 0x7FFFFFFF ? yb >= jh : jh + t <= yb) {
+                        r->live = 0;
+                        live--;
+                        samples += (uint32_t)(i + 1);
+                    }
                 }
             }
         }
+        VS_T0();
         for (k = 0; k < n; k++) {
             vs_ray *r = &rays[k];
             int32_t yb = r->yb;
             const int32_t jh = r->jh;
             if (r->live) samples += (uint32_t)nsteps;
             if (yb < H) {
+                const int32_t y0 = yb;
                 psky += (uint32_t)(H - yb);
                 VS_PROF(7, H - yb);
                 for (; yb < H && yb <= jh; yb++) r->col[yb] = fogc;      /* haze below the horizon */
@@ -519,10 +700,17 @@ void vs_render_strip(const vs_view *v, const vs_world *wd, const vs_sky *sky, co
                     int32_t q = (yb - jh) * sky_scale;                       /* sky row, Q16 */
                     for (; yb < H; yb++, q += sky_scale) r->col[yb] = (q >> 16) < sky->h ? r->sc[q >> 16] : sky->top;
                 }
+                if (r->pcov) r->col[y0] = mix565(r->col[y0], r->pend, (uint32_t)r->pcov * 2);   /* ridge over sky */
             }
         }
+        VS_TA(6);
     }
     if (st) {
+#ifdef VS_CYCLES
+        { int q; for (q = 0; q < 7; q++) st->cyc[q] = cyc[q]; }
+#else
+        { int q; for (q = 0; q < 7; q++) st->cyc[q] = 0; }
+#endif
         st->samples = samples;
         st->pixels_sky = psky;
         st->pixels_near = pnear;

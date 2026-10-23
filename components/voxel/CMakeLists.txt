@@ -7,5 +7,6 @@ idf_component_register(
     PRIV_REQUIRES esp_timer heap freertos log nv_kernel nv_hal
 )
 
-# Pure CPU work over PSRAM: -O2 like the other hot paths (Vertice, LVGL, WAMR).
-target_compile_options(${COMPONENT_LIB} PRIVATE -O2)
+# Pure CPU work: -O3 with unrolled loops (the per-step march and the span fills are the frame).
+# Per-section cycle counters exist (-DVS_CYCLES) but esp_cpu_get_cycle_count proved unreliable for them.
+target_compile_options(${COMPONENT_LIB} PRIVATE -O3 -funroll-loops)

@@ -62,7 +62,7 @@ void vs_mt_free(vs_mt *mt);
 /* Render a whole frame into fb (column-major, (v->w * xscale) * v->h, 64-byte aligned, v->h even). With
  * mt->xscale = 2 the view is half as wide as the frame: every other column is traced, the ones in
  * between are the average of their neighbours (~1.8x faster, full vertical resolution). */
-void vs_mt_frame(vs_mt *mt, const vs_view *v, const vs_world *wd, const vs_sky *sky, const vs_cam *cam,
+void vs_mt_frame(vs_mt *mt, vs_view *v, const vs_world *wd, const vs_sky *sky, const vs_cam *cam,
                  uint16_t *fb, vs_stats *total);
 
 #endif

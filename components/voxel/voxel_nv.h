@@ -39,6 +39,8 @@ enum {                                   /* voxel_info keys */
     VOXEL_INFO_FAST = 7,                 /* 1 = SRAM strips + DMA, 0 = straight into the canvas */
     VOXEL_INFO_XSCALE = 8,               /* traced columns in use, 1 or 2 */
     VOXEL_INFO_SRAM_LEVELS = 9,          /* mip levels copied into internal RAM */
+    VOXEL_INFO_VSCALE = 10,              /* one height unit in cells, Q8 (for projecting your own 3D) */
+    VOXEL_INFO_FOCAL = 11,               /* vertical focal length in px of the last frame */
 };
 
 /* Load a world (.vsw, VSW3: 16-bit palette cells) and a sky (.vss) from the SD card into PSRAM. 0, or <0: -1 busy/args,

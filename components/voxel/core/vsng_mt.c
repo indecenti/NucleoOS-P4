@@ -61,7 +61,8 @@ static void worker(void *arg, int core)
     const int H = v->h, sw = mt->p.strip_w, xs = mt->xscale;
     const int fast = mt->buf[core][0] && mt->buf[core][1] && H <= mt->buf_h;
     int slot = 0, pending[2] = { 0, 0 }, s;
-    vs_stats acc = { 0, 0, 0 }, st;
+    vs_stats acc, st;
+    memset(&acc, 0, sizeof acc);
     uint32_t n = 0;
 
     while ((s = take_strip(mt)) < mt->nstrips) {
@@ -81,6 +82,7 @@ static void worker(void *arg, int core)
         acc.samples += st.samples;
         acc.pixels_near += st.pixels_near;
         acc.pixels_sky += st.pixels_sky;
+        { int q; for (q = 0; q < 7; q++) acc.cyc[q] += st.cyc[q]; }
         n++;
     }
     if (pending[0]) mt->p.copy_wait(mt->p.ctx, core, 0);
@@ -89,10 +91,11 @@ static void worker(void *arg, int core)
     mt->strips_done[core] = n;
 }
 
-void vs_mt_frame(vs_mt *mt, const vs_view *v, const vs_world *wd, const vs_sky *sky, const vs_cam *cam,
+void vs_mt_frame(vs_mt *mt, vs_view *v, const vs_world *wd, const vs_sky *sky, const vs_cam *cam,
                  uint16_t *fb, vs_stats *total)
 {
     int c;
+    vs_frame(v, cam);                    /* pinned steps: once per frame, before the cores start */
     mt->v = v; mt->wd = wd; mt->sky = sky; mt->cam = cam; mt->fb = fb;
     if (mt->xscale != 2) mt->xscale = 1;
     if (mt->xscale == 2 && (mt->p.strip_w & 1)) mt->xscale = 1;     /* strips must hold whole pairs */
@@ -107,6 +110,7 @@ void vs_mt_frame(vs_mt *mt, const vs_view *v, const vs_world *wd, const vs_sky *
             total->samples += mt->st[c].samples;
             total->pixels_near += mt->st[c].pixels_near;
             total->pixels_sky += mt->st[c].pixels_sky;
+            { int q; for (q = 0; q < 7; q++) total->cyc[q] += mt->st[c].cyc[q]; }
         }
     }
 }

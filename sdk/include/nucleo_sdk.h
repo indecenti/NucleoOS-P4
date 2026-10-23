@@ -194,7 +194,8 @@ NV_IMPORT("nv", "gfx_set_rotation") int32_t nv_gfx_set_rotation(int32_t quarter_
 enum { VS_CFG_FOV = 0, VS_CFG_ZFAR = 1, VS_CFG_QUALITY = 2, VS_CFG_NEAR = 3, VS_CFG_SMOOTH = 4,
        VS_CFG_DETAIL = 5, VS_CFG_TARGET_MS = 6, VS_CFG_CORES = 7, VS_CFG_FOG = 8, VS_CFG_DIRECT = 9, VS_CFG_XSCALE = 10 };
 enum { VS_INFO_LOG2SIZE = 0, VS_INFO_WATER = 1, VS_INFO_MAXH = 2, VS_INFO_SAMPLES = 3, VS_INFO_NEAR_PX = 4,
-       VS_INFO_RENDER_US = 5, VS_INFO_QUALITY = 6, VS_INFO_FAST = 7, VS_INFO_XSCALE = 8, VS_INFO_SRAM_LEVELS = 9 };
+       VS_INFO_RENDER_US = 5, VS_INFO_QUALITY = 6, VS_INFO_FAST = 7, VS_INFO_XSCALE = 8, VS_INFO_SRAM_LEVELS = 9,
+       VS_INFO_VSCALE = 10, VS_INFO_FOCAL = 11 };
 NV_IMPORT("nv", "vs_open")   int32_t vs_open(const char *world, const char *sky);   // 0 or <0
 NV_IMPORT("nv", "vs_close")  void    vs_close(void);
 NV_IMPORT("nv", "vs_camera") void    vs_camera(int32_t x, int32_t y, int32_t h, int32_t yaw, int32_t pitch,

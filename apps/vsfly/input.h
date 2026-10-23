@@ -21,6 +21,7 @@ enum { IN_TOUCH = 0, IN_KEYS = 1, IN_PAD = 2, IN_MOUSE = 3 };
 typedef struct {
     int move_x, move_y, look_x, look_y, climb, boost;
     int pause_edge, confirm_edge, back_edge;
+    int tapped, tap_x, tap_y;            /* a touch tap this frame and where (screen px) */
     int last;                            /* IN_* */
     /* touch stick, for drawing: active, origin and knob in screen px */
     int stick_on, stick_x0, stick_y0, stick_x, stick_y;
@@ -65,7 +66,7 @@ static inline void in_poll(in_state *s, int screen_w, int screen_h, int dt)
     nv_mouse_t m;
 
     s->move_x = s->move_y = s->look_x = s->look_y = s->climb = s->boost = 0;
-    s->pause_edge = s->confirm_edge = s->back_edge = 0;
+    s->pause_edge = s->confirm_edge = s->back_edge = s->tapped = 0;
 
     /* keyboard: digital keys ramp to full in ~150 ms so turns are smooth */
     __builtin_memcpy(s->prev_keys, s->keys, sizeof s->keys);
@@ -159,6 +160,9 @@ static inline void in_poll(in_state *s, int screen_w, int screen_h, int dt)
     } else if (s->t_prev && s->t_hold_ms < 250 &&
                (s->t_lx - s->t_x0) * (s->t_lx - s->t_x0) + (s->t_ly - s->t_y0) * (s->t_ly - s->t_y0) < 400) {
         s->confirm_edge = 1;                                            /* a tap */
+        s->tap_x = s->t_x0;
+        s->tap_y = s->t_y0;
+        s->tapped = 1;
     }
     s->t_prev = down;
 }

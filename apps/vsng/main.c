@@ -134,17 +134,20 @@ void run(void)
 #ifdef VSNG_BENCH
         /* profile build: a fixed view, one engine setting changed at a time, 30 frames each, logged */
         {
-            static const struct { const char *name; int cores, smooth, nearz, quality, detail, direct; } B[] = {
-                { "warm", 2, -1, -1, 256, 256, 0 }, { "base", 2, -1, -1, 256, 256, 0 },
-                { "1core", 1, -1, -1, 256, 256, 0 }, { "nosmooth", 2, 0, -1, 256, 256, 0 },
-                { "nonear", 2, -1, 0, 256, 256, 0 }, { "q128", 2, -1, -1, 128, 256, 0 },
-                { "direct", 2, -1, -1, 256, 256, 1 }, { "direct1core", 1, -1, -1, 256, 256, 1 },
+            static const struct { const char *name; int cores, smooth, nearz, quality, detail, direct, zfar; } B[] = {
+                { "warm", 2, -1, -1, 256, 256, 0, 0 }, { "strips", 2, -1, -1, 256, 256, 0, 0 },
+                { "direct", 2, -1, -1, 256, 256, 1, 0 }, { "strips1c", 1, -1, -1, 256, 256, 0, 0 },
+                { "direct1c", 1, -1, -1, 256, 256, 1, 0 }, { "strips2", 2, -1, -1, 256, 256, 0, 0 },
             };
             static int stage = -1, frames = 0, sum = 0, smooth0 = 0, near0 = 0;
+            static int zfar0 = 0;
             if (stage < 0) {
                 demo_cam(&cam, 40, size, water, &eye);
+                vs_camera(cam.x, cam.y, cam.h, cam.yaw, cam.pitch, cam.roll, t0);
+                vs_render();                                           /* fits the view: defaults exist */
                 smooth0 = vs_config(VS_CFG_SMOOTH, -1);
                 near0 = vs_config(VS_CFG_NEAR, -1);
+                zfar0 = vs_config(VS_CFG_ZFAR, -1);
                 stage = 0;
             }
             demo = 0;
@@ -155,14 +158,15 @@ void run(void)
                 vs_config(VS_CFG_QUALITY, B[stage].quality);
                 vs_config(VS_CFG_DETAIL, B[stage].detail);
                 vs_config(VS_CFG_DIRECT, B[stage].direct);
+                vs_config(VS_CFG_ZFAR, B[stage].zfar ? B[stage].zfar : zfar0);
             }
             vs_camera(cam.x, cam.y, cam.h, cam.yaw, cam.pitch, cam.roll, t0);
             us = vs_render();
             if (frames >= 5) sum += us;                                    /* skip the warm-up frames */
-            if (++frames == 35 && stage < (int)(sizeof B / sizeof B[0])) {
+            if (++frames == 65 && stage < (int)(sizeof B / sizeof B[0])) {
                 const char *k[] = { "stage", "render_us", "samples", "near_px" };
                 int v[4];
-                v[0] = stage; v[1] = sum / 30; v[2] = vs_info(VS_INFO_SAMPLES); v[3] = vs_info(VS_INFO_NEAR_PX);
+                v[0] = stage; v[1] = sum / 60; v[2] = vs_info(VS_INFO_SAMPLES); v[3] = vs_info(VS_INFO_NEAR_PX);
                 log_kv(B[stage].name, k, v, 4);
                 stage++; frames = 0; sum = 0;
             }

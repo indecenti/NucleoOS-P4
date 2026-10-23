@@ -1,97 +1,239 @@
-/* Sky Ranger - an arcade flight demo on the VoxelSpaceNG engine (NucleoOS ABI 20).
+/* Sky Ranger - an arcade flight game on the VoxelSpaceNG engine (NucleoOS ABI 20).
  *
- * Fly through 12 rings in order over the valley as fast as you can; touch the ground and you restart
- * from the last ring. The world comes from the engine demo app (manifest "requires": vsng), the
- * terrain is rendered natively on both cores, this app only flies, draws the rings and the HUD.
+ * Fly through 12 rings in order over the valley as fast as you can. The terrain is rendered natively
+ * on both cores (vs_render); this app flies the plane, draws it (a low-poly model projected with the
+ * engine's own camera), the 3D rings and the HUD on the quarter-turned canvas.
  *
- * Controls (input.h): bank and climb = left stick / arrows-WASD / mouse / touch stick (left half);
- * boost = RT / Shift / left button / hold on the right half; altitude trim = LB-RB / R-F / wheel;
- * pause = Esc / Start / B (again = quit), resume or restart = Enter / A / tap. Gamepads rumble on a
- * crash.
+ * Flight: the stick rolls and pitches the plane; the turn comes from the bank (rate ~ tan(bank) / v),
+ * climbing costs speed and diving gains it, below the stall speed the nose drops. Collisions: the
+ * ground (and water) under the fuselage, the nose and both wing tips; rings count only when the plane
+ * crosses their plane inside the radius (no tunnelling at speed), a clipped rim slows it down;
+ * terrain ahead on the flight path raises PULL UP. Units: cells (x, y and heights alike), seconds.
+ *
+ * Controls (input.h): roll/pitch = left stick / arrows-WASD / mouse / touch stick (left half, pull
+ * back to climb); throttle = RT / Shift / left button / hold the right half; view = C / Y button /
+ * tap VIEW; pause = Esc / Start / B (again = quit); Enter / A / tap = resume, retry.
  */
 #include "hud.h"
 #include "input.h"
+#include "font.h"
 
-#define NRINGS   12
-#define RING_R   14                      /* cells */
+#define NRINGS 12
+#define PI_F   3.14159265f
 
-static int g_focal;
+/* ---- float helpers (no libm in a freestanding module) ---- */
+static float fsin(float a)
+{
+    float x2;
+    int k = (int)(a * 0.15915494f + (a >= 0 ? 0.5f : -0.5f));
+    a -= (float)k * 6.2831853f;                                   /* -pi..pi */
+    if (a > 1.5707963f) a = PI_F - a;
+    else if (a < -1.5707963f) a = -PI_F - a;                      /* -pi/2..pi/2 */
+    x2 = a * a;
+    return a * (1.0f - x2 / 6.0f * (1.0f - x2 / 20.0f * (1.0f - x2 / 42.0f * (1.0f - x2 / 72.0f))));
+}
+static float fcos(float a) { return fsin(a + 1.5707963f); }
+static float fatan2(float y, float x)
+{
+    const float ax = x < 0 ? -x : x, ay = y < 0 ? -y : y;
+    float a, t, r;
+    if (ax < 1e-6f && ay < 1e-6f) return 0;
+    t = ax > ay ? ay / ax : ax / ay;
+    a = t * t;
+    r = t * (0.9998660f + a * (-0.3302995f + a * (0.1801410f + a * (-0.0851330f + a * 0.0208351f))));
+    if (ay > ax) r = 1.5707963f - r;
+    if (x < 0) r = PI_F - r;
+    return y < 0 ? -r : r;
+}
+static float fsqrt(float v) { return v > 0 ? __builtin_sqrtf(v) : 0; }
+static float fclamp(float v, float lo, float hi) { return v < lo ? lo : v > hi ? hi : v; }
+static float fabs_(float v) { return v < 0 ? -v : v; }
 
-typedef struct { int x, y, h; } pt;      /* x, y Q16 cells; h Q4 height units */
-static pt g_ring[NRINGS];
-static int g_size, g_water, g_maxh;
+typedef struct { float x, y, h; } v3;          /* cells; h = height in cells */
 
-static int iabs(int v) { return v < 0 ? -v : v; }
+/* ---- world ---- */
+static float g_cs;                              /* world cells per cell of a 1024^2 world (speeds, sizes) */
+static float g_vs;                              /* one height unit in cells */
+static float g_F;                               /* vertical focal, px */
+static float g_water_h;                         /* water surface, cells */
+static int g_size, g_maxh;
+
+static float ground_at(float x, float y)        /* terrain or water surface, cells */
+{
+    const float g = (float)vs_height((int)(x * 65536.0f), (int)(y * 65536.0f)) * (g_vs / 16.0f);
+    return g > g_water_h ? g : g_water_h;
+}
+
+typedef struct { v3 c, n; float r; } ring_t;    /* centre, facing (to the next ring), radius */
+static ring_t g_ring[NRINGS];
 
 static void make_course(void)
 {
-    int i, k;
+    int i;
     for (i = 0; i < NRINGS; i++) {
-        int a = i * 4096 / NRINGS;
-        int r = g_size / 4 + (isin(a * 3) >> 11);              /* a wobbly loop round the map centre, cells */
-        int hmax = 0;
-        g_ring[i].x = (g_size << 15) + icos(a) * r;
-        g_ring[i].y = (g_size << 15) + isin(a) * r;
-        for (k = -2; k <= 2; k++) {                            /* clear the ground round it */
-            int hx = vs_height(g_ring[i].x + (k << 19), g_ring[i].y);
-            int hy = vs_height(g_ring[i].x, g_ring[i].y + (k << 19));
-            if (hx > hmax) hmax = hx;
-            if (hy > hmax) hmax = hy;
+        const float a = (float)i * 6.2831853f / NRINGS;
+        const float rad = (float)g_size * (0.25f + 0.04f * fsin(a * 3.0f));
+        float hmax = 0, x = (float)g_size * 0.5f + fcos(a) * rad, y = (float)g_size * 0.5f + fsin(a) * rad;
+        int k;
+        for (k = -3; k <= 3; k++) {
+            const float g1 = ground_at(x + (float)k * 6 * g_cs, y), g2 = ground_at(x, y + (float)k * 6 * g_cs);
+            if (g1 > hmax) hmax = g1;
+            if (g2 > hmax) hmax = g2;
         }
-        if (hmax < g_water << 4) hmax = g_water << 4;
-        g_ring[i].h = hmax + ((RING_R + 10 + (i % 3) * 8) << 4);
+        g_ring[i].c.x = x;
+        g_ring[i].c.y = y;
+        g_ring[i].r = 14.0f * g_cs;
+        g_ring[i].c.h = hmax + g_ring[i].r + (10.0f + (float)(i % 3) * 8.0f) * g_cs;
+    }
+    for (i = 0; i < NRINGS; i++) {
+        const ring_t *b = &g_ring[(i + 1) % NRINGS];
+        float dx = b->c.x - g_ring[i].c.x, dy = b->c.y - g_ring[i].c.y, l = fsqrt(dx * dx + dy * dy);
+        g_ring[i].n.x = dx / l;
+        g_ring[i].n.y = dy / l;
+        g_ring[i].n.h = 0;
     }
 }
 
-/* ---- camera projection, the engine's: fov 80, vscale 205/256 ---- */
-typedef struct { int x, y, h, yaw, pitch, roll; } cam_t;
-static int project(const cam_t *c, const pt *p, int *sx, int *sy, int *z_q8)
+/* ---- camera: the engine's projection (planar columns, horizon shift, roll as a shear) ---- */
+typedef struct { v3 p; float yaw, pitch_px, roll; } cam_t;     /* roll = screen slope (px per px) */
+
+static int project(const cam_t *c, v3 p, float *sx, float *sy, float *z)
 {
-    int dx = (p->x - c->x) >> 8, dy = (p->y - c->y) >> 8;      /* Q8 cells */
-    int cy = icos(c->yaw), sy_ = isin(c->yaw);
-    int z = (int)(((long long)dx * cy + (long long)dy * sy_) >> 16);
-    int r = (int)(((long long)-dx * sy_ + (long long)dy * cy) >> 16);
-    int dh = (c->h - p->h) * 205 / 16;                        /* Q8 cells */
-    if (z < 512) return 0;
-    *sx = g_w / 2 + (int)((long long)r * g_focal / z);
-    *sy = g_h / 2 - c->pitch + (int)((long long)dh * g_focal / z);
-    *sy += (int)(((long long)c->roll * (*sx - g_w / 2)) >> 16);
-    *z_q8 = z;
+    const float dx = p.x - c->p.x, dy = p.y - c->p.y, cy = fcos(c->yaw), sy_ = fsin(c->yaw);
+    const float zz = dx * cy + dy * sy_, r = -dx * sy_ + dy * cy;
+    if (zz < 0.5f * g_cs) return 0;
+    *sx = (float)g_w * 0.5f + r * g_F / zz;
+    *sy = (float)g_h * 0.5f - c->pitch_px + (c->p.h - p.h) * g_F / zz;
+    *sy += c->roll * (*sx - (float)g_w * 0.5f);
+    *z = zz;
     return 1;
 }
 
-/* is the straight line from the eye to p clear of the ground? */
-static int visible(const cam_t *c, const pt *p)
+static void engine_camera(const cam_t *c, int t)
+{
+    float yaw = c->yaw * (4096.0f / 6.2831853f);
+    int iy = (int)yaw & 4095;
+    vs_camera((int)(c->p.x * 65536.0f), (int)(c->p.y * 65536.0f), (int)(c->p.h / g_vs * 16.0f), iy,
+              (int)c->pitch_px, (int)(c->roll * 65536.0f), t);
+}
+
+static int line_clear(const cam_t *c, v3 p)    /* terrain between the eye and p? */
 {
     int k;
-    for (k = 1; k < 8; k++) {
-        int x = c->x + (int)(((long long)(p->x - c->x) * k) >> 3);
-        int y = c->y + (int)(((long long)(p->y - c->y) * k) >> 3);
-        int h = c->h + (int)(((long long)(p->h - c->h) * k) >> 3);
-        if (vs_height(x, y) > h) return 0;
+    for (k = 1; k < 10; k++) {
+        const float t = (float)k / 10.0f;
+        if (ground_at(c->p.x + (p.x - c->p.x) * t, c->p.y + (p.y - c->p.y) * t) > c->p.h + (p.h - c->p.h) * t)
+            return 0;
     }
     return 1;
 }
 
-static void draw_ring(const cam_t *c, const pt *p, int col, int col2)
+/* a ring is a circle in its own vertical plane: 32 points projected, two strokes */
+static void draw_ring(const cam_t *c, const ring_t *g, int col, int col2)
 {
-    int sx, sy, z, r;
-    if (!project(c, p, &sx, &sy, &z)) return;
-    r = (int)((long long)(RING_R << 8) * g_focal / z);
-    if (r < 3 || r > g_w) return;
-    ring_s(sx, sy, r, 28, col);
-    ring_s(sx, sy, r - 2, 28, col);
-    ring_s(sx, sy, r - 4, 28, col2);
+    float px[33], py[33], z;
+    int ok[33], i;
+    const v3 side = { -g->n.y, g->n.x, 0 };
+    for (i = 0; i <= 32; i++) {
+        const float a = (float)i * 6.2831853f / 32;
+        v3 p = { g->c.x + side.x * fcos(a) * g->r, g->c.y + side.y * fcos(a) * g->r, g->c.h + fsin(a) * g->r };
+        ok[i] = project(c, p, &px[i], &py[i], &z);
+    }
+    for (i = 0; i < 32; i++) {
+        if (!ok[i] || !ok[i + 1]) continue;
+        line_s((int)px[i], (int)py[i], (int)px[i + 1], (int)py[i + 1], col);
+        line_s((int)px[i] + 1, (int)py[i], (int)px[i + 1] + 1, (int)py[i + 1], col);
+        line_s((int)px[i], (int)py[i] + 1, (int)px[i + 1], (int)py[i + 1] + 1, col2);
+    }
 }
 
-/* arrow at the screen edge toward a target that is behind or off screen */
-static void draw_pointer(const cam_t *c, const pt *p)
+/* ---- the plane: a low-poly model, local axes f (forward), r (right), u (up), in cells of 1024 ---- */
+static const float MV[][3] = {
+    { 4.2f, 0, 0.1f }, { -4.0f, 0, 0.35f }, { 0.6f, 0, 0.75f }, { 0.6f, 0, -0.45f },     /* 0 nose 1 tail 2 top 3 belly */
+    { 0.6f, -0.55f, 0.1f }, { 0.6f, 0.55f, 0.1f },                                        /* 4 5 flanks */
+    { 1.2f, 0, 0.15f }, { -1.0f, -4.8f, 0.35f }, { -1.0f, 4.8f, 0.35f }, { -1.4f, 0, 0.15f }, /* 6 wing root, 7 8 tips, 9 */
+    { -3.0f, 0, 0.3f }, { -4.2f, -1.8f, 0.35f }, { -4.2f, 1.8f, 0.35f },                 /* 10 tailplane root, 11 12 */
+    { -3.0f, 0, 0.4f }, { -4.3f, 0, 1.8f }, { -4.5f, 0, 0.4f },                           /* 13 fin */
+};
+static const unsigned char MT[][4] = {         /* triangle a b c, colour id */
+    { 0, 2, 4, 0 }, { 0, 5, 2, 0 }, { 0, 4, 3, 1 }, { 0, 3, 5, 1 },                       /* nose */
+    { 1, 4, 2, 0 }, { 1, 2, 5, 0 }, { 1, 3, 4, 1 }, { 1, 5, 3, 1 },                       /* body */
+    { 6, 7, 9, 2 }, { 6, 9, 8, 2 },                                                       /* wings */
+    { 10, 11, 1, 2 }, { 10, 1, 12, 2 },                                                   /* tailplane */
+    { 13, 14, 15, 3 },                                                                    /* fin */
+};
+static const int MCOL[4][3] = { { 220, 40, 30 }, { 240, 240, 236 }, { 245, 245, 240 }, { 220, 40, 30 } };
+
+typedef struct { float x, y, h, yaw, pitch, bank, v; } plane_t;
+
+static v3 plane_point(const plane_t *pl, const float *m)
 {
-    int a = (iatan2((p->y - c->y) >> 8, (p->x - c->x) >> 8) - c->yaw) & 4095;   /* 0 = ahead, 1024 = right */
-    int cx = g_w / 2, cy = g_h / 2, rx = g_w / 2 - 40, ry = g_h / 2 - 40;
-    int ex = cx + ((isin(a) * rx) >> 16), ey = cy - ((icos(a) * ry) >> 16);
-    int dx = isin(a) >> 11, dy = -icos(a) >> 11;            /* direction, ~32 px */
+    /* roll about f, pitch about r, then yaw about u */
+    const float cb = fcos(pl->bank), sb = fsin(pl->bank), cp = fcos(pl->pitch), sp = fsin(pl->pitch);
+    const float cy = fcos(pl->yaw), sy = fsin(pl->yaw);
+    const float f = m[0] * g_cs, r0 = m[1] * g_cs, u0 = m[2] * g_cs;
+    const float r = r0 * cb - u0 * sb, u1 = r0 * sb + u0 * cb;     /* roll */
+    const float f2 = f * cp - u1 * sp, u = f * sp + u1 * cp;      /* pitch */
+    v3 o = { pl->x + f2 * cy - r * sy, pl->y + f2 * sy + r * cy, pl->h + u };
+    return o;
+}
+
+static void draw_plane(const cam_t *c, const plane_t *pl)
+{
+    float sx[16], sy[16], z[16], dz[13];
+    int ok[16], ord[13], i, j, n = (int)(sizeof MT / sizeof MT[0]);
+    v3 w[16];
+    for (i = 0; i < 16; i++) {
+        w[i] = plane_point(pl, MV[i]);
+        ok[i] = project(c, w[i], &sx[i], &sy[i], &z[i]);
+    }
+    for (i = 0; i < n; i++) { ord[i] = i; dz[i] = z[MT[i][0]] + z[MT[i][1]] + z[MT[i][2]]; }
+    for (i = 1; i < n; i++)                     /* far first (painter) */
+        for (j = i; j > 0 && dz[ord[j]] > dz[ord[j - 1]]; j--) { int t = ord[j]; ord[j] = ord[j - 1]; ord[j - 1] = t; }
+    for (i = 0; i < n; i++) {
+        const unsigned char *t = MT[ord[i]];
+        const v3 a = w[t[0]], b = w[t[1]], d = w[t[2]];
+        /* lambert from the baked sun (az 135, el 32) + sky light */
+        const float ux = b.x - a.x, uy = b.y - a.y, uh = b.h - a.h, vx = d.x - a.x, vy = d.y - a.y, vh = d.h - a.h;
+        float nx = uy * vh - uh * vy, ny = uh * vx - ux * vh, nh = ux * vy - uy * vx;
+        const float nl = fsqrt(nx * nx + ny * ny + nh * nh) + 1e-6f;
+        float lit;
+        int k, rgb[3];
+        nx /= nl; ny /= nl; nh /= nl;
+        lit = fabs_(nx * -0.6f + ny * 0.6f + nh * 0.53f);
+        lit = 0.45f + 0.65f * lit;
+        if (!ok[t[0]] || !ok[t[1]] || !ok[t[2]]) continue;
+        for (k = 0; k < 3; k++) { int v = (int)((float)MCOL[t[3]][k] * lit); rgb[k] = v > 255 ? 255 : v; }
+        tri_s((int)sx[t[0]], (int)sy[t[0]], (int)sx[t[1]], (int)sy[t[1]], (int)sx[t[2]], (int)sy[t[2]],
+              C565(rgb[0], rgb[1], rgb[2]));
+    }
+}
+
+/* ---- HUD ---- */
+static void hud_label_value(int x, int y, const char *label, const char *value, int col)
+{
+    const int w = (text_w(label, 2) > text_w(value, 4) ? text_w(label, 2) : text_w(value, 4)) + 20;
+    plate_s(x, y, w, 52, C565(8, 14, 26), 150);
+    text_s(x + 10, y + 6, label, 2, C565(150, 170, 190));
+    text_sh(x + 10, y + 22, value, 4, col);
+}
+
+static void center_text(int y, const char *s, int k, int col)
+{
+    text_sh((g_w - text_w(s, k)) / 2, y, s, k, col);
+}
+
+static void draw_pointer(const cam_t *c, const ring_t *g, const plane_t *pl)
+{
+    const float a = fatan2(g->c.y - c->p.y, g->c.x - c->p.x) - c->yaw;
+    const float s = fsin(a), co = fcos(a);
+    const int cx = g_w / 2, cy = g_h / 2, ex = cx + (int)(s * (float)(g_w / 2 - 50)), ey = cy - (int)(co * (float)(g_h / 2 - 50));
+    const int dx = (int)(s * 26), dy = (int)(-co * 26);
+    char buf[16];
+    const float dist = fsqrt((g->c.x - pl->x) * (g->c.x - pl->x) + (g->c.y - pl->y) * (g->c.y - pl->y)) / g_cs;
     tri_s(ex + dx, ey + dy, ex - dy / 2, ey + dx / 2, ex + dy / 2, ey - dx / 2, C565(255, 210, 40));
+    fmt_int(buf, (int)dist);
+    text_sh(ex - text_w(buf, 2) / 2 - dx, ey - 7 - dy, buf, 2, C565(255, 230, 120));
 }
 
 static void rumble(int ms)
@@ -100,14 +242,18 @@ static void rumble(int ms)
     for (i = 0; i < n; i++) nv_pad_rumble(i, 40000, 60000, ms);
 }
 
+enum { ST_COUNT, ST_FLY, ST_CRASH, ST_DONE };
+
 NV_EXPORT("run")
 void run(void)
 {
     in_state in;
+    plane_t pl, last_ok;
     cam_t cam;
-    int px, py, ph, yaw, bank = 0, vs = 0;        /* plane: Q16 cells, Q4 units, angle; vertical speed Q4/s */
-    int ring = 0, t_start = 0, t_now, best = 0, crashed_until = 0, finished_ms = 0, countdown_until = 0;
-    int paused = 0, pause_t = 0, last;
+    v3 prev;
+    int ring = 0, state = ST_COUNT, view = 0, paused = 0, warn = 0, newbest = 0;
+    int t_now, last, t_state = 0, t_start = 0, best = 0, finish_ms = 0, pause_t = 0, rim_until = 0;
+    float cam_yaw = 0;
 
     sin_init();
     if (nv_gfx_set_rotation(1) != 1 || vs_open("vsng:alps", "vsng:day") < 0) {
@@ -117,133 +263,242 @@ void run(void)
     }
     g_w = nv_gfx_height();
     g_h = nv_gfx_width();
-    g_focal = g_w * 596 / 1000;                  /* w/2 / tan(40 deg): the engine's fov 80 */
     g_size = 1 << vs_info(VS_INFO_LOG2SIZE);
-    g_water = vs_info(VS_INFO_WATER);
     g_maxh = vs_info(VS_INFO_MAXH);
-    vs_config(VS_CFG_TARGET_MS, 33);             /* adaptive quality: hold ~30 fps */
+    g_cs = (float)g_size / 1024.0f;
+    g_vs = vs_info(VS_INFO_VSCALE) > 0 ? (float)vs_info(VS_INFO_VSCALE) / 256.0f : 0.8f * g_cs;
+    g_F = (float)g_w * 0.596f;                   /* w/2 / tan(40 deg): the engine's fov 80 */
+    g_water_h = (float)vs_info(VS_INFO_WATER) * g_vs;
+    vs_config(VS_CFG_TARGET_MS, 45);             /* adaptive quality, never below its floors */
     if (nv_load("best", &best, sizeof best) != sizeof best) best = 0;
     __builtin_memset(&in, 0, sizeof in);
     make_course();
 
 respawn:
     {
-        const pt *from = &g_ring[(ring + NRINGS - 1) % NRINGS], *to = &g_ring[ring];
-        px = from->x; py = from->y; ph = from->h;
-        if (ring == 0) {                           /* start: behind ring 0, facing it */
-            int a = iatan2((to->y - g_ring[NRINGS - 1].y) >> 8, (to->x - g_ring[NRINGS - 1].x) >> 8);
-            px = to->x - icos(a) * 120;
-            py = to->y - isin(a) * 120;
-            ph = to->h;
+        const ring_t *to = &g_ring[ring], *from = &g_ring[(ring + NRINGS - 1) % NRINGS];
+        float back = ring == 0 ? 110.0f * g_cs : 0.0f;
+        int k;
+        pl.x = (ring == 0 ? to->c.x : from->c.x) - to->n.x * back;
+        pl.y = (ring == 0 ? to->c.y : from->c.y) - to->n.y * back;
+        if (ring) { pl.x = from->c.x; pl.y = from->c.y; }
+        pl.h = ring == 0 ? to->c.h : from->c.h;
+        for (k = 0; k <= 8; k++) {                /* clear of the ground along the first leg */
+            const float t = (float)k / 8.0f, g = ground_at(pl.x + (to->c.x - pl.x) * t, pl.y + (to->c.y - pl.y) * t);
+            if (g + 22.0f * g_cs > pl.h) pl.h = g + 22.0f * g_cs;
         }
-        {   /* clear of the ground along the first leg: the plane starts above whatever lies before the ring */
-            int k;
-            for (k = 0; k <= 8; k++) {
-                int x = px + (int)(((long long)(to->x - px) * k) >> 3), y = py + (int)(((long long)(to->y - py) * k) >> 3);
-                int g = vs_height(x, y) + (25 << 4);
-                if (g > ph) ph = g;
-            }
-        }
-        yaw = iatan2((to->y - py) >> 8, (to->x - px) >> 8);
-        bank = 0; vs = 0;
+        pl.yaw = fatan2(to->c.y - pl.y, to->c.x - pl.x);
+        pl.pitch = 0; pl.bank = 0; pl.v = 70.0f * g_cs;
+        cam_yaw = pl.yaw;
+        prev.x = pl.x; prev.y = pl.y; prev.h = pl.h;
+        last_ok = pl;
         last = nv_millis();
-        countdown_until = ring == 0 ? last + 3000 : last + 1000;
-        if (ring == 0) { t_start = countdown_until; finished_ms = 0; }
+        state = ST_COUNT;
+        t_state = last + (ring == 0 ? 3000 : 1200);
+        if (ring == 0) { t_start = t_state; finish_ms = 0; newbest = 0; }
     }
 
     for (;;) {
-        int dt, ground, speed, flying;
+        float dt;
         t_now = nv_millis();
-        dt = t_now - last;
-        if (dt > 50) dt = 50;
+        dt = (float)(t_now - last) / 1000.0f;
+        if (dt > 0.05f) dt = 0.05f;
         last = t_now;
         if (nv_gfx_back()) { if (paused) break; paused = 1; pause_t = t_now; }
-        in_poll(&in, g_w, g_h, dt);
+        in_poll(&in, g_w, g_h, (int)(dt * 1000));
+
+        if (in_key_edge(&in, 0x06) || (in.tapped && in.tap_x > g_w - 150 && in.tap_y > g_h - 70)) view = !view;
+        {
+            static unsigned pad_prev_y;
+            nv_pad_state_t ps;
+            if (nv_pad_count() > 0 && nv_pad_state(0, &ps, sizeof ps) > 0) {
+                if ((ps.buttons & NV_PADB_Y) && !(pad_prev_y & NV_PADB_Y)) view = !view;
+                pad_prev_y = ps.buttons;
+            }
+        }
 
         if (paused) {
             if (in.back_edge) break;
-            if (in.confirm_edge) {                 /* resume: the clocks skip the pause */
-                int d = t_now - pause_t;
-                paused = 0; t_start += d; countdown_until += d;
-                if (crashed_until) crashed_until += d;
+            if (in.confirm_edge) {
+                const int d = t_now - pause_t;
+                paused = 0; t_start += d; t_state += d;
             }
         } else if (in.pause_edge) {
             paused = 1; pause_t = t_now;
-        } else if (finished_ms) {
-            if (in.confirm_edge && t_now - finished_ms > 1000) { ring = 0; goto respawn; }
-        }
-
-        flying = !paused && !finished_ms && t_now >= countdown_until && !crashed_until;
-        if (flying) {
-            /* flight model: bank turns, stick climbs (pull back = climb), speed with boost */
-            int stx = in.move_x + in.look_x * 12, sty = -in.move_y - in.look_y * 12;
-            if (stx > 256) stx = 256;
-            if (stx < -256) stx = -256;
-            if (sty > 256) sty = 256;
-            if (sty < -256) sty = -256;
-            bank += (stx * 380 / 256 - bank) * dt / 160;
-            yaw = (yaw + bank * dt / 500) & 4095;
-            vs += ((sty * 72 * 16 / 256) + in.climb * 4 - vs) * dt / 300;          /* to +-72 units/s */
-            ph += vs * dt / 1000;
-            speed = 70 + in.boost * 50 / 256;                                      /* cells/s */
-            px += (int)(((long long)icos(yaw) * speed * dt) / 1000);
-            py += (int)(((long long)isin(yaw) * speed * dt) / 1000);
-            if (ph > (g_maxh + 160) << 4) ph = (g_maxh + 160) << 4;
-
-            ground = vs_height(px, py);
-            if (ground < g_water << 4) ground = g_water << 4;
-            if (ph < ground + (2 << 4)) {                                           /* crash */
-                crashed_until = t_now + 1200;
-                nv_gfx_tone(110, 300);
-                rumble(400);
-            }
-            {
-                const pt *r = &g_ring[ring];
-                int dx = iabs((r->x - px) >> 16), dy = iabs((r->y - py) >> 16), dh = iabs(r->h - ph) >> 4;
-                if (dx * dx + dy * dy + dh * dh < RING_R * RING_R) {
-                    nv_gfx_tone(880 + ring * 40, 80);
-                    if (++ring == NRINGS) {
-                        int t = t_now - t_start;
-                        finished_ms = t_now;
-                        if (!best || t < best) { best = t; nv_save("best", &best, sizeof best); }
-                        ring = 0;
-                    }
-                }
-            }
-        } else if (crashed_until && !paused && t_now >= crashed_until) {
-            crashed_until = 0;
+        } else if (state == ST_COUNT && t_now >= t_state) {
+            state = ST_FLY;
+        } else if (state == ST_CRASH && t_now >= t_state) {
+            goto respawn;
+        } else if (state == ST_DONE && in.confirm_edge && t_now - finish_ms > 1200) {
+            ring = 0;
             goto respawn;
         }
 
-        cam.x = px; cam.y = py; cam.h = ph; cam.yaw = yaw;
-        cam.pitch = g_h / 10 - vs / 12;          /* nose follows the climb */
-        cam.roll = -bank * 100 * 1024 / g_w;     /* horizon tilts against the bank */
-        vs_camera(cam.x, cam.y, cam.h, cam.yaw, cam.pitch, cam.roll, t_now);
+        if (!paused && (state == ST_FLY || state == ST_DONE)) {
+            /* ---- flight model ---- */
+            const float sx = fclamp((float)in.move_x / 256.0f + (float)in.look_x * 0.04f, -1, 1);
+            const float sy = fclamp(-(float)in.move_y / 256.0f - (float)in.look_y * 0.04f, -1, 1);
+            const float thr = state == ST_DONE ? 0.6f : 1.0f + 0.9f * (float)in.boost / 256.0f;
+            const float vmin = 40.0f * g_cs, vstall = 48.0f * g_cs;
+            float tb = sx * 0.95f, cb, sb, cp, sp;
+            int k;
+            pl.bank += (tb - pl.bank) * fclamp(dt * 3.0f, 0, 1);
+            pl.pitch += (sy * 0.9f - pl.pitch * 0.4f) * dt + (float)in.climb / 256.0f * 0.6f * dt;
+            if (pl.v < vstall) pl.pitch -= (vstall - pl.v) / g_cs * 0.02f * dt;          /* stall: nose drops */
+            pl.pitch = fclamp(pl.pitch, -0.75f, 0.75f);
+            cb = fcos(pl.bank); sb = fsin(pl.bank); cp = fcos(pl.pitch); sp = fsin(pl.pitch);
+            pl.yaw += 85.0f * g_cs * (sb / cb) / pl.v * dt;                                  /* coordinated turn */
+            pl.v += (thr * 0.6f * 72.0f * g_cs - 0.6f * pl.v - 70.0f * g_cs * sp) * dt;      /* thrust, drag, gravity */
+            pl.v = fclamp(pl.v, vmin, 175.0f * g_cs);
+            pl.x += pl.v * cp * fcos(pl.yaw) * dt;
+            pl.y += pl.v * cp * fsin(pl.yaw) * dt;
+            pl.h += pl.v * sp * dt;
+            if (pl.h > ((float)g_maxh * g_vs) + 220.0f * g_cs) pl.h = (float)g_maxh * g_vs + 220.0f * g_cs;
+
+            /* ---- collisions: fuselage, nose and wing tips against ground and water ---- */
+            if (state == ST_FLY) {
+                static const float probe[4][3] = { { 0, 0, -0.45f }, { 4.2f, 0, 0 }, { -1.0f, -4.8f, 0.3f }, { -1.0f, 4.8f, 0.3f } };
+                for (k = 0; k < 4; k++) {
+                    const v3 p = plane_point(&pl, probe[k]);
+                    if (p.h < ground_at(p.x, p.y)) break;
+                }
+                if (k < 4) {
+                    state = ST_CRASH;
+                    t_state = t_now + 1600;
+                    rumble(500);
+                }
+            }
+            /* ---- terrain ahead on the flight path ---- */
+            warn = 0;
+            for (k = 1; k <= 4 && state == ST_FLY; k++) {
+                const float t = 0.45f * (float)k;
+                const float x = pl.x + pl.v * cp * fcos(pl.yaw) * t, y = pl.y + pl.v * cp * fsin(pl.yaw) * t;
+                if (pl.h + pl.v * sp * t < ground_at(x, y) + 3.0f * g_cs) warn = 1;
+            }
+            /* ---- rings: crossing the ring's plane inside the radius ---- */
+            if (state == ST_FLY) {
+                const ring_t *g = &g_ring[ring];
+                const float s0 = (prev.x - g->c.x) * g->n.x + (prev.y - g->c.y) * g->n.y;
+                const float s1 = (pl.x - g->c.x) * g->n.x + (pl.y - g->c.y) * g->n.y;
+                if (s0 < 0 && s1 >= 0) {
+                    const float t = s0 / (s0 - s1);
+                    const float hx = prev.x + (pl.x - prev.x) * t - g->c.x, hy = prev.y + (pl.y - prev.y) * t - g->c.y;
+                    const float hh = prev.h + (pl.h - prev.h) * t - g->c.h;
+                    const float d = fsqrt(hx * hx + hy * hy + hh * hh);
+                    if (d < g->r) {
+                        rumble(60);
+                        if (++ring == NRINGS) {
+                            const int tt = t_now - t_start;
+                            state = ST_DONE;
+                            finish_ms = t_now;
+                            if (!best || tt < best) { best = tt; newbest = 1; nv_save("best", &best, sizeof best); }
+                            ring = 0;
+                        }
+                    } else if (d < g->r * 1.3f) {
+                        pl.v *= 0.6f;                   /* clipped the rim */
+                        pl.bank += 0.6f;
+                        rim_until = t_now + 600;
+                        rumble(200);
+                    }
+                }
+            }
+            prev.x = pl.x; prev.y = pl.y; prev.h = pl.h;
+            if (state == ST_FLY) last_ok = pl;
+        }
+
+        /* ---- camera ---- */
+        {
+            const plane_t *p = state == ST_CRASH ? &last_ok : &pl;
+            float d = cam_yaw - p->yaw;
+            while (d > PI_F) d -= 6.2831853f;
+            while (d < -PI_F) d += 6.2831853f;
+            cam_yaw -= d * fclamp(dt * 4.0f, 0, 1);
+            if (view == 0) {                    /* chase */
+                const float back = 17.0f * g_cs, up = 5.0f * g_cs;
+                float cz, sxp, syp;
+                cam.p.x = p->x - fcos(cam_yaw) * back;
+                cam.p.y = p->y - fsin(cam_yaw) * back;
+                cam.p.h = p->h + up;
+                if (cam.p.h < ground_at(cam.p.x, cam.p.y) + 2.0f * g_cs) cam.p.h = ground_at(cam.p.x, cam.p.y) + 2.0f * g_cs;
+                cam.yaw = cam_yaw;
+                cam.roll = -(fsin(p->bank) / fcos(p->bank)) * 0.35f;
+                cam.pitch_px = 0;
+                {   /* aim so the plane sits a little below the centre */
+                    v3 q = { p->x, p->y, p->h };
+                    if (project(&cam, q, &sxp, &syp, &cz)) cam.pitch_px = syp - (float)g_h * 0.62f;
+                }
+            } else {                            /* cockpit */
+                cam.p.x = p->x; cam.p.y = p->y; cam.p.h = p->h + 0.6f * g_cs;
+                cam.yaw = p->yaw;
+                cam.roll = -(fsin(p->bank) / fcos(p->bank));
+                cam.pitch_px = -(fsin(p->pitch) / fcos(p->pitch)) * g_F;
+            }
+            cam.pitch_px = fclamp(cam.pitch_px, -(float)g_h * 0.8f, (float)g_h * 0.8f);
+        }
+        engine_camera(&cam, t_now);
         vs_render();
 
-        /* rings: the next one bright, the one after dim; pointer when it is not in view */
-        if (!finished_ms) {
-            const pt *r = &g_ring[ring], *r2 = &g_ring[(ring + 1) % NRINGS];
-            int sx, sy, z;
-            if (visible(&cam, r2)) draw_ring(&cam, r2, C565(150, 120, 40), C565(90, 70, 20));
-            if (visible(&cam, r)) draw_ring(&cam, r, C565(255, 220, 40), C565(255, 140, 0));
-            if (!project(&cam, r, &sx, &sy, &z) || sx < 0 || sx >= g_w || sy < 0 || sy >= g_h) draw_pointer(&cam, r);
+        /* ---- world overlays: rings, plane ---- */
+        if (state != ST_DONE) {
+            const ring_t *g = &g_ring[ring], *g2 = &g_ring[(ring + 1) % NRINGS];
+            float sx, sy, z;
+            if (line_clear(&cam, g2->c)) draw_ring(&cam, g2, C565(150, 120, 50), C565(90, 70, 30));
+            if (line_clear(&cam, g->c)) draw_ring(&cam, g, C565(255, 215, 40), C565(255, 130, 0));
+            if (!project(&cam, g->c, &sx, &sy, &z) || sx < 0 || sx >= g_w || sy < 0 || sy >= g_h)
+                draw_pointer(&cam, g, &pl);
         }
-        /* crosshair */
-        rect_s(g_w / 2 - 14, g_h / 2 - 1, 9, 3, 0xFFFF);
-        rect_s(g_w / 2 + 5, g_h / 2 - 1, 9, 3, 0xFFFF);
-        rect_s(g_w / 2 - 1, g_h / 2 - 1, 3, 3, C565(255, 80, 60));
+        if (view == 0 && state != ST_CRASH) draw_plane(&cam, &pl);
+        if (view == 1) {                        /* cockpit: a flight path marker */
+            rect_s(g_w / 2 - 16, g_h / 2 - 1, 10, 3, 0xFFFF);
+            rect_s(g_w / 2 + 6, g_h / 2 - 1, 10, 3, 0xFFFF);
+            rect_s(g_w / 2 - 1, g_h / 2 - 1, 3, 3, C565(255, 80, 60));
+        }
 
-        /* HUD: ring, time, best, countdown, crash / finish bars, touch stick */
-        hud_int(16, 16, finished_ms ? NRINGS : ring, 4, C565(255, 220, 40));
-        hud_time(g_w / 2 - 60, 16, finished_ms ? finished_ms - t_start : t_now - t_start, 4, 0xFFFF);
-        if (best) hud_time(g_w - 150, 16, best, 3, C565(120, 230, 140));
-        if (t_now < countdown_until && !paused) hud_int(g_w / 2 - 20, g_h / 2 - 90, (countdown_until - t_now) / 1000 + 1, 12, 0xFFFF);
-        if (crashed_until) rect_s(0, g_h - 14, g_w, 14, C565(220, 30, 30));
-        if (finished_ms) rect_s(0, g_h - 14, g_w, 14, C565(60, 200, 90));
-        if (in.last == IN_TOUCH) hud_stick(in.stick_on, in.stick_x0, in.stick_y0, in.stick_x, in.stick_y);
-        if (paused) hud_pause();
-
+        /* ---- HUD ---- */
+        {
+            char a[24], b[24];
+            fmt_int(fmt_str(fmt_int(a, state == ST_DONE ? NRINGS : ring), "/"), NRINGS);
+            hud_label_value(16, 14, "RING", a, C565(255, 215, 40));
+            fmt_time(b, state == ST_DONE ? finish_ms - t_start : t_now - t_start);
+            {
+                const int w = text_w(b, 5) + 24;
+                plate_s((g_w - w) / 2, 12, w, 52, C565(8, 14, 26), 150);
+                text_sh((g_w - text_w(b, 5)) / 2, 20, b, 5, 0xFFFF);
+            }
+            if (best) { fmt_time(a, best); hud_label_value(g_w - 150, 14, "BEST", a, C565(120, 230, 140)); }
+            fmt_int(a, (int)(pl.v / g_cs * 3.0f));
+            hud_label_value(16, g_h - 70, "SPEED", a, pl.v < 50.0f * g_cs ? C565(255, 120, 80) : 0xFFFF);
+            fmt_int(b, (int)((pl.h - ground_at(pl.x, pl.y)) / g_cs * 4.0f));
+            hud_label_value(150, g_h - 70, "ALT", b, warn ? C565(255, 80, 60) : 0xFFFF);
+            plate_s(g_w - 120, g_h - 62, 104, 44, C565(8, 14, 26), 150);
+            text_s(g_w - 106, g_h - 48, view ? "CHASE" : "COCKPIT", 2, C565(150, 170, 190));
+            if (warn && ((t_now / 200) & 1)) center_text(g_h / 2 + 60, "PULL UP", 5, C565(255, 70, 50));
+            if (t_now < rim_until) center_text(g_h / 2 + 110, "RIM!", 3, C565(255, 160, 60));
+            if (state == ST_COUNT && !paused) {
+                const int left = t_state - t_now;
+                fmt_int(a, left / 1000 + 1);
+                center_text(g_h / 2 - 110, left < 250 ? "GO!" : a, 12, 0xFFFF);
+            }
+            if (state == ST_CRASH) {
+                plate_s(g_w / 2 - 170, g_h / 2 - 70, 340, 120, C565(60, 6, 6), 190);
+                center_text(g_h / 2 - 50, "CRASH", 8, C565(255, 90, 70));
+                center_text(g_h / 2 + 12, "BACK TO THE LAST RING", 2, 0xFFFF);
+            }
+            if (state == ST_DONE) {
+                plate_s(g_w / 2 - 220, g_h / 2 - 110, 440, 210, C565(6, 30, 14), 200);
+                center_text(g_h / 2 - 92, "FINISH", 7, C565(140, 255, 160));
+                fmt_time(a, finish_ms - t_start);
+                center_text(g_h / 2 - 30, a, 6, 0xFFFF);
+                if (newbest) center_text(g_h / 2 + 22, "NEW RECORD!", 3, C565(255, 215, 40));
+                center_text(g_h / 2 + 66, "TAP OR ENTER TO FLY AGAIN", 2, C565(200, 220, 230));
+            }
+            if (in.last == IN_TOUCH) hud_stick(in.stick_on, in.stick_x0, in.stick_y0, in.stick_x, in.stick_y);
+            if (paused) {
+                hud_pause();
+                center_text(g_h / 2 + 80, "PAUSED", 4, 0xFFFF);
+                center_text(g_h / 2 + 124, "ENTER RESUME   ESC QUIT", 2, C565(200, 220, 230));
+            }
+        }
         if (!nv_gfx_present()) break;
     }
     vs_close();
