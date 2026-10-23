@@ -52,7 +52,7 @@ starts and stops cleanly, not that every feature inside it is right.
 | KeyDeck (Cardputer as a Wi-Fi keyboard) | Verified (1.0.9) | Off by default |
 | Bluetooth and USB gamepads, BLE keyboards and mice | Experimental | No controller has been paired on the board yet |
 | USB drives (`/usb0`..) | Experimental | No drive has enumerated yet: needs an OTG adapter |
-| MQTT and Home Assistant | Experimental | Off by default; not yet run against a real broker |
+| MQTT and Home Assistant | Verified (1.2.188) | Off by default. Run against Home Assistant 2026.2 (demo integration) and Mosquitto: `tools/hil/casa_ha.py --mqtt` |
 | Ethernet | Experimental | PHY never confirmed on this board |
 
 ## Security

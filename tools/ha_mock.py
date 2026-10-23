@@ -6,6 +6,8 @@ Implements what the Casa app uses: GET /api/, POST /api/template (ignores the te
 renders the fixed demo entities below in the app's line format), POST /api/services/<domain>/<svc>
 (updates the demo state). Every call must carry "Authorization: Bearer <token>" — like the real one.
 Point the panel at it: POST /api/home {"ha_url":"http://<pc-ip>:8123","ha_token":"mock-token"}.
+No WebSocket: Casa falls back to its 5 s HTTP poll. The real check, against a real Home Assistant
+(its demo integration), is tools/hil/casa_ha.py.
 """
 import argparse
 import json
@@ -57,7 +59,12 @@ class H(BaseHTTPRequestHandler):
         if not self._auth():
             return
         if self.path == "/api/template":
-            txt = "".join("|".join(str(f) for f in e) + "\n" for e in ENTS)
+            # Casa 1.1's line: id|state|name|area|brightness%|target|current|unit|device_class|low|high
+            dcs = {"°C": "temperature", "W": "power", "%": "humidity"}
+            txt = "".join("%s|%s|%s|%s|%d|%s|%s|%s|%s||\n" % (
+                e[1], e[2], e[3], e[4], round(e[5] / 2.55) if e[0] == "light" and e[2] == "on" else 0, e[7], e[8],
+                e[6], dcs.get(e[6], "") if e[0] == "sensor" else "door" if e[0] == "binary_sensor" else "")
+                for e in ENTS)
             return self._send(200, txt.encode("utf-8"), "text/plain; charset=utf-8")
         if self.path.startswith("/api/services/"):
             _, _, _, dom, svc = self.path.split("/")[:5]
@@ -83,6 +90,10 @@ class H(BaseHTTPRequestHandler):
                     e[2] = "locked" if svc == "lock" else "unlocked"
                 elif svc == "set_temperature":
                     e[7] = str(data.get("temperature"))
+                elif svc == "media_play_pause":
+                    e[2] = "paused" if e[2] == "playing" else "playing"
+                elif svc in ("start", "return_to_base"):
+                    e[2] = "cleaning" if svc == "start" else "docked"
             return self._send(200, b"[]")
         self._send(404, b"{}")
 

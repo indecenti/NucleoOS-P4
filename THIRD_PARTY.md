@@ -32,6 +32,7 @@ its exact terms; the list below is a convenience summary of the major dependenci
 | Freedoom 0.13.0 / DOOM shareware 1.9 / community WADs (Scythe, Memento Mori, Zone 300, DTWID, SIGIL DOS, Plutonia 2, Doom 2 Reloaded, 1000 Lines 2) | game data of the Doom store games, re-hosted unchanged with their text files on the store site (`data/doom`), never in the firmware | BSD-3-Clause / id shareware license / each WAD's own terms (freely distributable; 1000 Lines 2: CC BY 4.0) |
 | Lua 5.4.9 (Lua.org, PUC-Rio) + json.lua 0.1.2 (rxi) | Lua App engine (`ports/luaapp`, app `apps/luaapp`): Lua runtime and its built-in `json` module | MIT / MIT |
 | Montserrat Medium (The Montserrat Project Authors) | anti-aliased text of the Lua App engine (`ports/luaapp/font`, baked into the module by `gen_font.py`) | SIL OFL 1.1 |
+| Montserrat Bold (The Montserrat Project Authors) | lettering of the Home app (`apps/casa/img/f*.565`, baked by `apps/casa/art/gen_assets.py`) | SIL OFL 1.1 |
 | RetroLove (Jon Thysell) / love-tetronimo (Przemekkkth) / sudoku.lua (Azdren Ymeri) | Lua store apps `retrolove`, `tetronimo`, `sudoku` (sources in `apps/<id>/src`, license files alongside) | MIT / MIT / MIT |
 | libqrencode 4.1.1 (Kentaro Fukuchi) | system terminal program `qrencode` (`ports/cli`, sources fetched pinned by `ports/cli/fetch.sh`, patch `ports/cli/qrencode/qrencode.patch`; rebuild with `ports/cli/build.sh qrencode`) | LGPL-2.1-or-later |
 | GNU units 2.24 (Adrian Mariano, FSF) + its unit database | system terminal program `units` (`ports/cli`, database compiled in) | GPL-3.0-or-later |
@@ -53,7 +54,7 @@ its exact terms; the list below is a convenience summary of the major dependenci
 | ncurses 6.5 (Thomas E. Dickey, Free Software Foundation) | curses for the full-screen programs (`ports/tui/ncurses`, xterm-256color compiled in) | X11 (MIT-style) |
 | libxml2 2.14.6, libzip 1.11.4, libxlsxwriter 1.2.4, libxls 1.6.3, zlib 1.3.1 | spreadsheet files in `sc-im`: .xlsx/.ods reading, .xlsx writing (patch `ports/tui/deps/libxlsxwriter.patch`), .xls reading | MIT / BSD-3-Clause / BSD-2-Clause / BSD-2-Clause / Zlib |
 | MicroPython 1.26.1 (Damien P. George and contributors) + micropython-lib modules | system terminal program `python` (`ports/micropython`, patch `micropython.patch`; rebuild with `ports/micropython/build.sh`) | MIT |
-| Material Design Icons | UI glyphs (source for generated icons) | Apache-2.0 |
+| Material Design Icons | UI glyphs (source for generated icons; the Home app's `apps/casa/img/ic*.565`) | Apache-2.0 |
 | Flat Color Icons (icons8) | app/launcher icons (source for generated icons) | MIT |
 
 Notes:

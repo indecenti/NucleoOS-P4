@@ -1,22 +1,46 @@
 {
   "id": "casa",
   "name": "Casa",
-  "names": {"en": "Home", "it": "Casa", "es": "Casa", "fr": "Maison", "de": "Zuhause"},
-  "version": "1.0",
+  "names": {
+    "en": "Home",
+    "it": "Casa",
+    "es": "Casa",
+    "fr": "Maison",
+    "de": "Zuhause"
+  },
+  "version": "1.1",
   "entry": "run",
-  "abi": 12,
+  "abi": 15,
   "ram_budget": 262144,
   "stack_kb": 16,
   "timeout_ms": 120000,
-  "permissions": ["gfx", "ha"],
+  "permissions": [
+    "gfx",
+    "ha"
+  ],
   "canvas_w": 1024,
   "canvas_h": 600,
   "author": "NucleoOS",
   "license": "MIT",
-  "description": "Home Assistant dashboard: lights, plugs, covers, thermostats, scenes and sensors by room. Tap to switch, slide on a light for brightness.",
+  "description": "A dashboard for Home Assistant: lights, plugs, covers, thermostats, locks, media players, vacuums, scenes and sensors, by room. Live updates; unlocking asks first.",
   "descriptions": {
-    "en": "Home Assistant dashboard: lights, plugs, covers, thermostats, scenes and sensors by room. Tap to switch, slide on a light for brightness.",
-    "it": "La tua casa con Home Assistant: luci, prese, tapparelle, termostati, scene e sensori per stanza. Tocca per accendere, tocca la barra di una luce per la luminosità."
+    "en": "A dashboard for Home Assistant: lights, plugs, covers, thermostats, locks, media players, vacuums, scenes and sensors, by room. Live updates; unlocking asks first.",
+    "it": "Una dashboard per Home Assistant: luci, prese, tapparelle, termostati, serrature, lettori, robot aspirapolvere, scene e sensori, per stanza. Aggiornata in diretta; per sbloccare chiede conferma.",
+    "es": "Un panel para Home Assistant: luces, enchufes, persianas, termostatos, cerraduras, reproductores, robots aspiradores, escenas y sensores, por habitación. En directo; desbloquear pide confirmación.",
+    "fr": "Un tableau de bord pour Home Assistant : lumières, prises, volets, thermostats, serrures, lecteurs, robots aspirateurs, scènes et capteurs, par pièce. En direct ; déverrouiller demande confirmation.",
+    "de": "Ein Dashboard für Home Assistant: Lichter, Steckdosen, Rollläden, Thermostate, Schlösser, Player, Saugroboter, Szenen und Sensoren, nach Raum. Live; Entriegeln fragt nach."
   },
-  "anima": { "tags": ["casa", "domotica", "home assistant", "luci", "termostato", "smart home"], "does": "Home Assistant dashboard by room" }
+  "anima": {
+    "tags": [
+      "casa",
+      "domotica",
+      "home assistant",
+      "luci",
+      "termostato",
+      "smart home",
+      "serratura"
+    ],
+    "does": "Home Assistant dashboard by room"
+  },
+  "canvas_scale": "fit"
 }

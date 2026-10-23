@@ -60,3 +60,24 @@ Notify and Speak are limited to 1 per second (burst 5).
 `<node>` is shown in Settings > Home (*Device id*).
 
 Limits of this version: plain MQTT only (no TLS), one broker.
+
+## The Home app (Casa)
+
+The Store app **Home** is a touch dashboard for Home Assistant: lights, plugs, fans, covers,
+thermostats, locks, media players, vacuums, scenes, scripts and sensors, by room. It uses the
+address and token from **Settings > Home** through the system (the app never sees the token),
+gets live updates over Home Assistant's WebSocket API and asks before unlocking a lock or
+opening a garage, gate or door. Guide: [`apps/casa/GUIDE.en.md`](../apps/casa/GUIDE.en.md).
+
+## Testing against a real Home Assistant
+
+`tools/hil/casa_ha.py` drives the board's screen and reads the result back from Home Assistant:
+every kind of tile, the confirmations, live updates and, with `--mqtt`, the board's own entities
+(volume, mute, app, notifications). A Home Assistant with `demo:` in its configuration is enough:
+
+```sh
+python tools/hil/casa_ha.py --ha http://localhost:8123 --token-file ha-token.json \
+    --configure --board-ha http://<pc-ip>:8123 --mqtt --cleanup
+```
+
+Keep the token file outside the repository.

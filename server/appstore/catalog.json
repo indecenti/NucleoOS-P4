@@ -366,17 +366,6 @@
         "de": "83 Homebrew-Spiele aus dem CHIP-8 Community Archive (CC0) in einer CHIP-8 / SUPER-CHIP / XO-CHIP Konsole."
       }
     },
-    "casa": {
-      "category": "smarthome", "subcategory": "ha", "featured": true, "rating": 4.8, "regions": ["*"],
-      "names": { "en": "Home", "it": "Casa" },
-      "descriptions": {
-        "en": "Home Assistant on the panel: lights, switches, covers, thermostats, locks, scenes and sensors by room. Tap to toggle, hold for brightness and details. Set the Home Assistant URL and token in Settings > Home.",
-        "it": "Home Assistant sul pannello: luci, prese, tapparelle, termostati, serrature, scene e sensori per stanza. Tocca per accendere o spegnere, tieni premuto per luminosita e dettagli. Indirizzo e token di Home Assistant in Impostazioni > Casa.",
-        "es": "Home Assistant en el panel: luces, enchufes, persianas, termostatos, cerraduras, escenas y sensores por habitacion. Configura URL y token en Ajustes > Hogar.",
-        "fr": "Home Assistant sur le panneau : lumieres, prises, volets, thermostats, serrures, scenes et capteurs par piece. URL et jeton dans Reglages > Maison.",
-        "de": "Home Assistant auf dem Panel: Lichter, Steckdosen, Rollladen, Thermostate, Schlosser, Szenen und Sensoren nach Raum. URL und Token unter Einstellungen > Zuhause."
-      }
-    },
     "glulxe": {
       "category": "games", "subcategory": "adventure", "featured": false, "rating": 4.6, "regions": ["*"],
       "names": { "en": "Glulxe", "it": "Glulxe" },
@@ -412,13 +401,13 @@
     },
     "casa": {
       "category": "smarthome", "subcategory": "ha", "featured": true, "rating": 4.8, "regions": ["*"],
-      "names": { "en": "Home", "it": "Casa" },
+      "names": { "en": "Home", "it": "Casa", "es": "Casa", "fr": "Maison", "de": "Zuhause" },
       "descriptions": {
-        "en": "Home Assistant dashboard: lights, plugs, covers, thermostats, scenes and sensors by room. Tap to switch, tap a light's bar for brightness.",
-        "it": "La tua casa con Home Assistant: luci, prese, tapparelle, termostati, scene e sensori per stanza. Tocca per accendere, la barra di una luce per la luminosità.",
-        "es": "Panel de Home Assistant: luces, enchufes, persianas, termostatos, escenas y sensores por habitacion.",
-        "fr": "Tableau de bord Home Assistant : lumieres, prises, volets, thermostats, scenes et capteurs par piece.",
-        "de": "Home-Assistant-Dashboard: Lichter, Steckdosen, Rollladen, Thermostate, Szenen und Sensoren nach Raum."
+        "en": "A dashboard for Home Assistant: lights, plugs, covers, thermostats, locks, media players, vacuums, scenes and sensors, by room. Live updates; unlocking a lock or opening a garage asks first.",
+        "it": "Una dashboard per Home Assistant: luci, prese, tapparelle, termostati, serrature, lettori, robot aspirapolvere, scene e sensori, per stanza. In diretta; per sbloccare o aprire il garage chiede conferma.",
+        "es": "Un panel para Home Assistant: luces, enchufes, persianas, termostatos, cerraduras, reproductores, robots aspiradores, escenas y sensores, por habitación. En directo; desbloquear pide confirmación.",
+        "fr": "Un tableau de bord pour Home Assistant : lumières, prises, volets, thermostats, serrures, lecteurs, robots aspirateurs, scènes et capteurs, par pièce. En direct ; déverrouiller demande confirmation.",
+        "de": "Ein Dashboard für Home Assistant: Lichter, Steckdosen, Rollläden, Thermostate, Schlösser, Player, Saugroboter, Szenen und Sensoren, nach Raum. Live; Entriegeln fragt vorher nach."
       }
     },
     "python": {
