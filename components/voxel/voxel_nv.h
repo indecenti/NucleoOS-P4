@@ -25,7 +25,8 @@ enum {                                   /* voxel_config keys */
     VOXEL_CFG_CORES = 7,                 /* 1 or 2 */
     VOXEL_CFG_FOG = 8,                   /* fog start, cells */
     VOXEL_CFG_DIRECT = 9,                /* 1 = render straight into the canvas (no SRAM strips + DMA) */
-    VOXEL_CFG_XSCALE = 10,               /* traced columns: 0 auto, 1 every column, 2 every other (interpolated) */
+    VOXEL_CFG_XSCALE = 10,               /* traced columns: 0 auto, 1 every column, 2 every other, 4 every fourth */
+    VOXEL_CFG_MOTION = 11,               /* fast motion -> every fourth column traced: 0 auto, 1 never, 2 always */
 };
 
 enum {                                   /* voxel_info keys */
@@ -41,6 +42,7 @@ enum {                                   /* voxel_info keys */
     VOXEL_INFO_SRAM_LEVELS = 9,          /* mip levels copied into internal RAM */
     VOXEL_INFO_VSCALE = 10,              /* one height unit in cells, Q8 (for projecting your own 3D) */
     VOXEL_INFO_FOCAL = 11,               /* vertical focal length in px of the last frame */
+    VOXEL_INFO_MOTION = 12,              /* 1 = the last frame used the fast view (camera moving fast) */
 };
 
 /* Load a world (.vsw, VSW3: 16-bit palette cells) and a sky (.vss) from the SD card into PSRAM. 0, or <0: -1 busy/args,

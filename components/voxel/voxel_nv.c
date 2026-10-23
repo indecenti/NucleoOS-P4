@@ -6,7 +6,7 @@
  * scheme as Vertice (components/vertice), which measured it at 1.7x one core.
  *
  * Memory: world, mips, sky and view tables in PSRAM (a 1024^2 world is 4 MB + 1.4 MB of mips); per
- * core two strip buffers of 8 columns in internal DMA RAM (8 x 600 x 2 B = 9.6 KB each, 38 KB in all),
+ * core two strip buffers of 16 columns in internal DMA RAM (16 x 600 x 2 B = 19 KB each, 77 KB in all),
  * only while plenty of internal RAM stays free (the Wi-Fi driver dies of SRAM famine). Strips are
  * moved into the PSRAM canvas by nv_2d_copy_start: cached CPU writes to PSRAM run at ~33 MB/s a core,
  * the DMA does it in long bursts while the core renders the next strip.
@@ -33,7 +33,7 @@
 
 static const char *TAG = "voxel";
 
-#define STRIP_W        8
+#define STRIP_W        16
 #define SRAM_RESERVE   (96 * 1024)
 
 typedef struct {
@@ -47,7 +47,10 @@ typedef struct {
     uint8_t *sky_file;
     vs_world wd;
     vs_sky sky;
-    vs_view *view;                       /* PSRAM: ~25 KB of tables */
+    vs_view *view;                       /* PSRAM: ~40 KB of tables */
+    vs_view *view_h;                     /* the fast view: every fourth column traced, for fast camera motion */
+    int ys_cfg, ys, moving, still;       /* motion: forced (0 = auto, 1 never fast, 2 always), fast in use (2), counters */
+    vs_cam prev_cam;
     vs_cam cam;
     vs_governor gov;
     int fov, cores, target_ms, direct;
@@ -185,6 +188,7 @@ void voxel_close(void)
     if (s_v.mips) heap_caps_free(s_v.mips);
     if (s_v.sky_file) heap_caps_free(s_v.sky_file);
     if (s_v.view) heap_caps_free(s_v.view);
+    if (s_v.view_h) heap_caps_free(s_v.view_h);
     memset(&s_v, 0, sizeof s_v);
 }
 
@@ -196,8 +200,8 @@ bool voxel_is_open(void) { return s_vp && s_v.open; }
  * Freed on close; the PSRAM copies stay, so nothing breaks if a level did not fit. */
 static void sram_tier(void)
 {
-    /* left free: the OS reserve, the strip buffers (2 per core, 8 columns x 1024 rows each), a margin */
-    const size_t keep = SRAM_RESERVE + (size_t)STRIP_W * 1024 * 2 * 2 * 2 + 16 * 1024;
+    /* left free: the OS reserve, the strip buffers (2 per core, STRIP_W columns x 640 rows each), a margin */
+    const size_t keep = SRAM_RESERVE + (size_t)STRIP_W * 640 * 2 * 2 * 2 + 16 * 1024;
     int l, n = 0;
     size_t used = 0;
     uint16_t *p;
@@ -269,7 +273,8 @@ int voxel_open(const char *world_path, const char *sky_path)
     s_v.mips = (uint16_t *)heap_caps_aligned_alloc(64, (size_t)vs_mip_cells(s_v.wd.log2size) * 2,
                                                    MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
     s_v.view = (vs_view *)heap_caps_calloc(1, sizeof(vs_view), MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
-    if (!s_v.mips || !s_v.view) { voxel_close(); return -4; }
+    s_v.view_h = (vs_view *)heap_caps_calloc(1, sizeof(vs_view), MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
+    if (!s_v.mips || !s_v.view || !s_v.view_h) { voxel_close(); return -4; }
     vs_build_mips(&s_v.wd, s_v.mips);
     sram_tier();
     /* the world sets the view's scale: distance, height unit, near zone (in its own cells) */
@@ -307,6 +312,29 @@ void voxel_camera(int32_t x, int32_t y, int32_t h, int32_t yaw, int32_t pitch, i
     if (!s_vp) return;
     s_v.cam.x = x; s_v.cam.y = y; s_v.cam.h = h;
     s_v.cam.yaw = yaw & VS_ANG_MASK; s_v.cam.pitch = pitch; s_v.cam.roll = roll; s_v.cam.time_ms = time_ms;
+    {   /* fast motion (turning, flying, looking up or down): two such frames and the fast view takes over
+         * (half the rays), eight calm ones and the sharp one is back. Streaming past, the eye cannot tell. */
+        int32_t dyaw = (s_v.cam.yaw - s_v.prev_cam.yaw) & VS_ANG_MASK, dx = x - s_v.prev_cam.x, dy = y - s_v.prev_cam.y;
+        int32_t dp = pitch - s_v.prev_cam.pitch;
+        int fast;
+        if (dyaw > VS_ANG_FULL / 2) dyaw = VS_ANG_FULL - dyaw;
+        if (dx < 0) dx = -dx;
+        if (dy < 0) dy = -dy;
+        if (dp < 0) dp = -dp;
+        fast = dyaw > 5 || dx + dy > (24 << 16) / 64 || dp > 3;      /* > 0.4 degree, 0.375 cell, 3 px a frame */
+        if (fast) { s_v.moving++; s_v.still = 0; } else { s_v.still++; s_v.moving = 0; }
+        s_v.prev_cam = s_v.cam;
+    }
+}
+
+/* the fast view follows the sharp one: same zones, quality, distance, every fourth column traced */
+static void sync_half(void)
+{
+    vs_view *f = s_v.view, *h = s_v.view_h;
+    h->zfar = f->zfar; h->vscale_q8 = f->vscale_q8; h->fog_start = f->fog_start; h->near_z = f->near_z;
+    h->smooth_z = f->smooth_z; h->lod_q8 = f->lod_q8; h->detail_q8 = f->detail_q8; h->quality = f->quality;
+    h->nopin = f->nopin;
+    vs_view_fit(h, s_v.view_cols, s_v.view_rows, s_v.fov, s_v.xscale > 1 ? 4 : 2);
 }
 
 int32_t voxel_render(uint16_t *fb, int cols, int rows)
@@ -325,18 +353,25 @@ int32_t voxel_render(uint16_t *fb, int cols, int rows)
             s_v.view_cols = cols;
             s_v.view_rows = rows;
             s_v.xscale = xs;
+            sync_half();
             if (resized) mt_setup(rows);
             if (resized && s_v.target_ms) {
                 vs_governor_init(&s_v.gov, s_v.target_ms, 128);
                 if (cols >= 800) s_v.gov.scale_q8 = 128;   /* wide screens start interpolated: near lossless */
             }
         }
-        s_mt.xscale = xs;
     }
-    t0 = esp_timer_get_time();
-    vs_mt_frame(&s_mt, s_v.view, &s_v.wd, &s_v.sky, &s_v.cam, fb, &s_v.last);
+    if (s_v.ys_cfg) s_v.ys = s_v.ys_cfg;
+    else if (s_v.moving >= 2) s_v.ys = 2;
+    else if (s_v.still >= 8) s_v.ys = 1;
+    {
+        vs_view *v = s_v.ys == 2 ? s_v.view_h : s_v.view;
+        s_mt.xscale = v->xscale;
+        t0 = esp_timer_get_time();
+        vs_mt_frame(&s_mt, v, &s_v.wd, &s_v.sky, &s_v.cam, fb, &s_v.last);
+    }
     s_v.last_us = (int32_t)(esp_timer_get_time() - t0);
-    if (s_v.target_ms) vs_tune(&s_v.gov, s_v.view, s_v.last_us / 1000);
+    if (s_v.target_ms && s_v.ys == 1 && vs_tune(&s_v.gov, s_v.view, s_v.last_us / 1000) == 1) sync_half();
     s_v.prof_us += s_v.last_us;
     { int q; for (q = 0; q < 7; q++) s_v.cyc[q] += s_v.last.cyc[q]; }
     if (++s_v.frames % 60 == 0) {
@@ -350,8 +385,8 @@ int32_t voxel_render(uint16_t *fb, int cols, int rows)
                     (unsigned)(s_v.cyc[5] / 60000), (unsigned)(s_v.cyc[6] / 60000));
             for (q = 0; q < 7; q++) s_v.cyc[q] = 0;
         }
-        NV_LOGI(TAG, "prof %dx%d cores %d fast %d xs %d: render %d us avg, dma wait %d/%d us, samples %u, near px %u, "
-                "q %d, strips %u/%u", cols, rows, s_v.cores, s_v.fast, s_v.xscale, (int)(s_v.prof_us / 60),
+        NV_LOGI(TAG, "prof %dx%d cores %d fast %d xs %d motion %d: render %d us avg, dma wait %d/%d us, samples %u, near px %u, "
+                "q %d, strips %u/%u", cols, rows, s_v.cores, s_v.fast, s_v.ys == 2 ? s_v.view_h->xscale : s_v.xscale, s_v.ys == 2, (int)(s_v.prof_us / 60),
                 (int)(s_v.wait_us[0] / 60), (int)(s_v.wait_us[1] / 60), (unsigned)s_v.last.samples,
                 (unsigned)s_v.last.pixels_near, s_v.view->quality, (unsigned)s_mt.strips_done[0],
                 (unsigned)s_mt.strips_done[1]);
@@ -366,7 +401,7 @@ int32_t voxel_height(int32_t x, int32_t y)
     return voxel_is_open() ? vs_height_at(&s_v.wd, x, y) : 0;
 }
 
-int32_t voxel_config(int32_t key, int32_t value)
+static int32_t config_one(int32_t key, int32_t value)
 {
     vs_view *v;
     if (!voxel_is_open() || !(v = s_v.view)) return -1;
@@ -410,8 +445,11 @@ int32_t voxel_config(int32_t key, int32_t value)
             if (s_v.view_rows) mt_setup(s_v.view_rows);
         }
         return s_v.direct;
+    case VOXEL_CFG_MOTION:
+        if (value >= 0 && value <= 2) s_v.ys_cfg = value;
+        return s_v.ys_cfg;
     case VOXEL_CFG_XSCALE:
-        if (value >= 0 && value <= 2) s_v.xscale_cfg = value;
+        if (value == 0 || value == 1 || value == 2 || value == 4) s_v.xscale_cfg = value;
         return s_v.xscale_cfg;
     case VOXEL_CFG_FOG:
         if (value >= 0 && value < v->zfar) { v->fog_start = value; vs_setup(v); }
@@ -419,6 +457,16 @@ int32_t voxel_config(int32_t key, int32_t value)
     default:
         return -1;
     }
+}
+
+int32_t voxel_config(int32_t key, int32_t value)
+{
+    const int32_t r = config_one(key, value);
+    if (voxel_is_open() && s_v.view_cols &&
+        (key == VOXEL_CFG_QUALITY || key == VOXEL_CFG_NEAR || key == VOXEL_CFG_SMOOTH || key == VOXEL_CFG_DETAIL ||
+         key == VOXEL_CFG_FOG))
+        sync_half();
+    return r;
 }
 
 int32_t voxel_info(int32_t key)
@@ -433,9 +481,10 @@ int32_t voxel_info(int32_t key)
     case VOXEL_INFO_RENDER_US: return s_v.last_us;
     case VOXEL_INFO_QUALITY: return s_v.view ? s_v.view->quality : 0;
     case VOXEL_INFO_FAST: return s_v.fast;
-    case VOXEL_INFO_XSCALE: return s_v.xscale;
+    case VOXEL_INFO_XSCALE: return s_v.ys == 2 && s_v.view_h ? s_v.view_h->xscale : s_v.xscale;
     case VOXEL_INFO_SRAM_LEVELS: return s_v.sram_levels;
     case VOXEL_INFO_VSCALE: return s_v.view ? s_v.view->vscale_q8 : 0;
+    case VOXEL_INFO_MOTION: return s_v.ys == 2;
     case VOXEL_INFO_FOCAL: return s_v.view ? (s_v.view->focal_y ? s_v.view->focal_y : s_v.view->focal) : 0;
     default: return -1;
     }

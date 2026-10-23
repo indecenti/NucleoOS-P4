@@ -78,7 +78,7 @@ typedef struct {
     int w, h;                            /* screen size, w <= VS_MAX_W, h <= VS_MAX_H */
     int focal;                           /* px per traced column; horizontal fov = 2 * atan(w / 2 / focal) */
     int focal_y;                         /* px vertically (0 = focal); with half-rate columns twice focal */
-    int xscale;                          /* frame columns per traced column, 1 or 2 (vsng_mt widens) */
+    int xscale;                          /* frame columns per traced column, 1, 2 or 4 (vsng_mt widens) */
     int zfar;                            /* cells */
     int vscale_q8;                       /* height unit vs cell size, Q8 (256 = 1 cell) */
     int fog_start;                       /* cells where haze starts */
@@ -116,8 +116,8 @@ void vs_init_tables(void);
 void vs_setup(vs_view *v);
 
 /* Any screen: fills a view for a w x h frame with a horizontal fov (degrees) and sane defaults scaled to
- * the resolution, then vs_setup. xscale 2 traces every other column (w / 2 rays; set vs_mt.xscale = 2
- * too, it fills the columns in between). Call again whenever the size or xscale changes. */
+ * the resolution, then vs_setup. xscale 2 (or 4) traces every other (every fourth) column: w / xscale
+ * rays; set vs_mt.xscale the same, it interpolates the columns in between. Call again on a change. */
 void vs_view_fit(vs_view *v, int w, int h, int fov_deg, int xscale);
 
 /* Adaptive quality: feed the last frame time; it moves view quality/zfar/near_z (and suggests a

@@ -134,10 +134,10 @@ void run(void)
 #ifdef VSNG_BENCH
         /* profile build: a fixed view, one engine setting changed at a time, 30 frames each, logged */
         {
-            static const struct { const char *name; int cores, smooth, nearz, quality, detail, direct, zfar; } B[] = {
-                { "warm", 2, -1, -1, 256, 256, 0, 0 }, { "strips", 2, -1, -1, 256, 256, 0, 0 },
-                { "direct", 2, -1, -1, 256, 256, 1, 0 }, { "strips1c", 1, -1, -1, 256, 256, 0, 0 },
-                { "direct1c", 1, -1, -1, 256, 256, 1, 0 }, { "strips2", 2, -1, -1, 256, 256, 0, 0 },
+            static const struct { const char *name; int cores, smooth, nearz, quality, detail, direct, zfar, ys; } B[] = {
+                { "warm", 2, -1, -1, 256, 256, 0, 0, 1 }, { "sharp", 2, -1, -1, 256, 256, 0, 0, 1 },
+                { "fast", 2, -1, -1, 256, 256, 0, 0, 2 }, { "sharp2", 2, -1, -1, 256, 256, 0, 0, 1 },
+                { "fast2", 2, -1, -1, 256, 256, 0, 0, 2 },
             };
             static int stage = -1, frames = 0, sum = 0, smooth0 = 0, near0 = 0;
             static int zfar0 = 0;
@@ -158,6 +158,7 @@ void run(void)
                 vs_config(VS_CFG_QUALITY, B[stage].quality);
                 vs_config(VS_CFG_DETAIL, B[stage].detail);
                 vs_config(VS_CFG_DIRECT, B[stage].direct);
+                vs_config(VS_CFG_MOTION, B[stage].ys);
                 vs_config(VS_CFG_ZFAR, B[stage].zfar ? B[stage].zfar : zfar0);
             }
             vs_camera(cam.x, cam.y, cam.h, cam.yaw, cam.pitch, cam.roll, t0);
@@ -185,13 +186,13 @@ void run(void)
         n_perf++;
         if (nv_millis() - t_last >= 2000) {
             int now = nv_millis();
-            const char *k[] = { "fps10", "render_us", "frame_ms", "samples", "near_px", "quality", "fast", "gov", "input", "xs" };
-            int v[10];
+            const char *k[] = { "fps10", "render_us", "frame_ms", "samples", "near_px", "quality", "fast", "gov", "input", "xs", "motion" };
+            int v[11];
             fps10 = n_perf * 10000 / (now - t_last);
             v[0] = fps10; v[1] = sum_render / n_perf; v[2] = sum_frame / n_perf;
             v[3] = vs_info(VS_INFO_SAMPLES); v[4] = vs_info(VS_INFO_NEAR_PX); v[5] = vs_info(VS_INFO_QUALITY);
-            v[6] = vs_info(VS_INFO_FAST); v[7] = gov; v[8] = in.last; v[9] = vs_info(VS_INFO_XSCALE);
-            log_kv("vsng: perf", k, v, 10);
+            v[6] = vs_info(VS_INFO_FAST); v[7] = gov; v[8] = in.last; v[9] = vs_info(VS_INFO_XSCALE); v[10] = vs_info(VS_INFO_MOTION);
+            log_kv("vsng: perf", k, v, 11);
             n_perf = sum_render = sum_frame = 0;
             t_last = now;
         }

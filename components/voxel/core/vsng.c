@@ -131,7 +131,7 @@ void vs_view_fit(vs_view *v, int w, int h, int fov_deg, int xscale)
 {
     const double pi = 3.14159265358979323846;
     double half = fov_deg * pi / 360.0;
-    v->xscale = xscale == 2 ? 2 : 1;
+    v->xscale = xscale == 4 ? 4 : xscale == 2 ? 2 : 1;
     if (w > VS_MAX_W) w = VS_MAX_W;
     v->w = w / v->xscale;
     v->h = h > VS_MAX_H ? VS_MAX_H : h;
@@ -629,7 +629,10 @@ void vs_render_strip(const vs_view *v, const vs_world *wd, const vs_sky *sky, co
                         const int32_t sy = (int32_t)(((int64_t)(r->py - ppy) * rc) >> 16);
                         const uint32_t A = spread(r->pc != 0xFFFFFFFFu ? r->pc : i ? bilerp(map0, pal, log2, mask, ppx, ppy, 0) : c),
                                        B = spread(c);   /* span start: the previous sample, re-read if it was skipped */
-                        const int8_t *t = detail ? detail + (VS_XGROUP(c) << 12) : 0;
+                        /* detail grain fades out toward the edge of the near zone (full at the bow): unfiltered
+                         * texels shrinking under a pixel would sparkle as the camera moves */
+                        const int32_t amp = ((nnear - i) << 5) / (nnear ? nnear : 1);
+                        const int8_t *t = detail && amp > 3 ? detail + (VS_XGROUP(c) << 12) : 0;
                         const uint32_t ws = (uint32_t)rc << 5;                  /* 32 / n, Q16 */
                         uint32_t wq = ws >> 1;
                         int32_t qx = ppx + (sx >> 1), qy = ppy + (sy >> 1);
@@ -640,7 +643,7 @@ void vs_render_strip(const vs_view *v, const vs_world *wd, const vs_sky *sky, co
                             const uint32_t sp = ((A * (32 - w) + B * w) >> 5) & 0x07E0F81Fu;
                             uint16_t o = (uint16_t)(sp | (sp >> 16));
                             if (t) {
-                                int32_t d = t[(((uint32_t)qy >> 12) & 63) << 6 | (((uint32_t)qx >> 12) & 63)];
+                                int32_t d = (t[(((uint32_t)qy >> 13) & 63) << 6 | (((uint32_t)qx >> 13) & 63)] * amp) >> 5;
                                 o = d >= 0 ? mix565(o, 0xFFFF, (uint32_t)d >> det_shift)
                                            : mix565(o, 0x0000, (uint32_t)(-d) >> det_shift);
                             }

@@ -184,7 +184,9 @@
 //   nv.vs_config(key, value) -> i32         (ii)i      0 fov, 1 zfar, 2 quality, 3 near, 4 smooth,
 //                                                       5 detail, 6 target ms (adaptive), 7 cores, 8 fog,
 //                                                       9 direct (1 = no SRAM strips + DMA), 10 xscale
-//                                                       (0 auto, 1 every column, 2 every other, interpolated);
+//                                                       (0 auto, 1 every column, 2 every other, interpolated),
+//                                                       11 motion (0 auto: every fourth column traced while the
+//                                                       camera moves fast, 1 never, 2 always);
 //                                                       returns the value in effect (out of range: kept)
 //   nv.vs_info(key) -> i32                  (i)i       0 log2 size, 1 water, 2 max height, 3 samples,
 //                                                       4 textured px, 5 render us, 6 quality, 7 SRAM+DMA,
