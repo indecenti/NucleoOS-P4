@@ -204,11 +204,11 @@
  ],
  "apps_dir": "apps",
  "base": "/",
- "bytes": 29336949,
+ "bytes": 29388172,
  "caps_row": {
   "since": "1.2.118"
  },
- "commit": "aacc080e105e4c519326dc915bcf74ea69fef80b",
+ "commit": "dcda8f6af72faccc70fda68a67dc37a296486572",
  "edition": "p4",
  "externals": [
   {
@@ -523,11 +523,11 @@
    "why": "unRAR license is not free software: out until verified (external-resources.json)"
   }
  ],
- "files": 1254,
+ "files": 1256,
  "format": 1,
  "generator": "nucleo-webos tools/build.py",
- "gz_twins": 564,
- "hash": "efa219973560f1ff660fb7bfcda8a9e11f97b1544821e9edf0235f73a586a267",
+ "gz_twins": 565,
+ "hash": "a7c69d09173221e3edf156375bde738320e5092f45a33d4a7bd51dfefeb5a9f1",
  "left_out": [
   {
    "id": "automation-studio",
@@ -611,25 +611,27 @@
  ],
  "left_out_by_profile": [
   "community",
+  "pdf-editor",
   "scoreboard",
   "video-studio"
  ],
  "never_shipped": {
-  "app sources, tests and docs outside www/ (only manifest.json and www/ ship)": 12,
-  "build metadata: decides which apps enter a build, never read at runtime": 43,
+  "app sources, tests and docs outside www/ (only manifest.json and www/ ship)": 13,
+  "build metadata: decides which apps enter a build, never read at runtime": 44,
   "build scripts": 1,
-  "channel metadata: read by nucleoos-webapps-store's publishing tool": 1,
+  "channel metadata: read by nucleoos-webapps-store's publishing tool": 2,
   "decoder sources and their build scripts (the built .wasm sits in www/)": 4,
   "git/npm metadata (.gitattributes, .npmignore...)": 2,
+  "p4 profile: a Store app (web channel, about 2 MB with pdf.js): installed from the Store, never built in": 17,
   "p4 profile: heavy runtime or model the app fetches from its CDN when it is not on the card (Vosk, WebLLM/wllama, ONNX); also kept out of the P4 repo, which commits sd/web": 13,
   "p4 profile: in-browser speech for ANIMA's own page, which the P4 does not list (its voice is on the device)": 1,
   "p4 profile: not in the P4's app list (sd/web/apps.json): built, never shown": 26,
   "tests": 6
  },
- "profile_sha256": "f8f00db260d45854cddd428accebf5017d976e83d558a5a066c6b8daf06cd2bb",
+ "profile_sha256": "1f68b9fa5f458ece4c6aeffe3cd99bde79ecbc24e72a2dac7c8ecd87041c85cc",
  "shell": {
-  "cache": "nucleo-shell-v161-e84c4c06e10e",
-  "hash": "e84c4c06e10e"
+  "cache": "nucleo-shell-v161-15f44ef46232",
+  "hash": "15f44ef46232"
  },
  "shell_dir": "",
  "uncommitted_files": 0

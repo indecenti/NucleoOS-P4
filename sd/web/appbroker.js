@@ -103,7 +103,28 @@ export function resolveAppPath(appId, permissions, path) {
 
 // The whole vocabulary. Anything not listed is refused — a deny-list would be a promise we cannot keep.
 export const METHODS = ['fs.read', 'fs.write', 'fs.list', 'notify', 'sys.info', 'sys.status', 'ai.ask', 'ai.complete',
-  'app.i18n', 'kv.get', 'kv.set', 'kv.remove', 'kv.all', 'sys.caps'];
+  'app.i18n', 'kv.get', 'kv.set', 'kv.remove', 'kv.all', 'sys.caps', 'file.save', 'file.open', 'file.launch'];
+// file.save bounds: a document the user made in the app, handed to the browser as a download. The
+// type comes from the extension, from a short list of inert formats (nothing a browser would run).
+export const SAVE_MAX_BYTES = 64 * 1024 * 1024;
+export const SAVE_TYPES = { pdf: 'application/pdf', png: 'image/png', jpg: 'image/jpeg', jpeg: 'image/jpeg',
+  webp: 'image/webp', txt: 'text/plain', csv: 'text/csv', json: 'application/json', md: 'text/markdown' };
+const SAVE_GAP_MS = 1500;           // one download at a time, never a burst
+export const OPEN_MAX_FILES = 32;
+// The extensions an app may ask the Open sheet to show: plain short words, at most 16 of them.
+export function openTypes(types) {
+  if (!Array.isArray(types)) return [];
+  return [...new Set(types.map((x) => String(x == null ? '' : x).replace(/^\./, '').toLowerCase()).filter((x) => /^[a-z0-9]{1,8}$/.test(x)))].slice(0, 16);
+}
+// The name a saved file gets: no path, no control or reserved characters, an allowed extension.
+// null when nothing usable is left.
+export function saveName(name) {
+  const base = String(name == null ? '' : name).split(/[\\/]/).pop()
+    .replace(/[\u0000-\u001f\u007f<>:"|?*]/g, '').replace(/^[.\s]+|[.\s]+$/g, '').slice(0, 120);
+  const m = base.match(/\.([A-Za-z0-9]{1,5})$/);
+  if (!m || !Object.prototype.hasOwnProperty.call(SAVE_TYPES, m[1].toLowerCase()) || base.length <= m[0].length) return null;
+  return base;
+}
 // kv.* bounds: an app's own small state (settings, a score sheet), the size of what a page keeps in
 // localStorage — not a database. One JSON file per app, rewritten whole, so it stays small on purpose.
 export const KV_MAX_BYTES = 64 * 1024;
@@ -132,6 +153,14 @@ export function methodAllowed(method, permissions) {
   // sys.caps says which device features exist (nucleo-caps.js), so an app can hide what is missing instead of
   // failing on it. It is the same list the device's own /api/system/caps publishes without pairing.
   if (method === 'sys.caps') return true;
+  // file.save hands the user a file the app made (a signed PDF, an exported image) as a browser download:
+  // what any web page may do, and the one thing a frame without allow-downloads cannot. It reaches
+  // nothing on the device and reads nothing back, so it needs no declaration.
+  if (method === 'file.save') return true;
+  // file.open and file.launch hand over ONLY what the user picked in the shell's own Open sheet, or the file
+  // the user opened the app with (desktop, File Commander): the user's gesture is the grant, as with a
+  // browser's file input. The app never names a path, so neither needs a declaration.
+  if (method === 'file.open' || method === 'file.launch') return true;
   // sys.status is the device telemetry every curated app reads from /api/status — time, uptime, SD
   // space, Wi-Fi name. Read-only and cheap, but it does describe the household's network, so it is
   // DECLARED (system.events), not free like sys.info.
@@ -160,7 +189,8 @@ export function brokerEvent(event, payload) {
   return { type: 'nucleo.broker.event', event, ...payload };
 }
 
-export function createBroker({ fetchFn, findApp, notify, onFsChange, getLang, getTheme, getCaps, aiComplete, aiCooldownMs = 2000 } = {}) {
+export function createBroker({ fetchFn, findApp, notify, onFsChange, getLang, getTheme, getCaps, aiComplete, download,
+  pickOpen, pickSave, launchFile, aiCooldownMs = 2000 } = {}) {
   const doFetch = fetchFn || ((...a) => fetch(...a));
   // ONE call in flight, ever. See the device-discipline note at the top.
   let chain = Promise.resolve();
@@ -173,6 +203,8 @@ export function createBroker({ fetchFn, findApp, notify, onFsChange, getLang, ge
   // but it spends the user's key, so it is single-flight AND cooled down. Both refusals are immediate:
   // a queue here would just let an app buy delayed spending.
   let aiBusy = false, aiLastAt = 0;
+  let saveLastAt = -Infinity;
+  let sheetBusy = false;              // one Open/Save sheet at a time, whichever app asks
   const lang = () => (getLang ? getLang() : 'en') || 'en';
   const timeoutOpts = (extra) => {
     const o = { cache: 'no-store', ...extra };
@@ -329,6 +361,58 @@ export function createBroker({ fetchFn, findApp, notify, onFsChange, getLang, ge
     if (method === 'sys.caps') {
       const c = getCaps ? await getCaps().catch(() => null) : null;
       return { ok: true, caps: c && Array.isArray(c.caps) ? c.caps.slice() : [] };
+    }
+
+    if (method === 'file.save') {
+      if (!download && !pickSave) return { ok: false, error: 'unsupported' };
+      const name = saveName(args && args.name);
+      if (!name) return { ok: false, error: 'bad name' };
+      const d = args && args.data;
+      let bytes = null;
+      if (d instanceof ArrayBuffer) bytes = new Uint8Array(d);
+      else if (ArrayBuffer.isView(d)) bytes = new Uint8Array(d.buffer, d.byteOffset, d.byteLength);
+      else if (typeof d === 'string') bytes = new TextEncoder().encode(d);
+      if (!bytes) return { ok: false, error: 'bad data' };
+      if (bytes.byteLength > SAVE_MAX_BYTES) return { ok: false, error: 'too large (max 64 MB)' };
+      const mime = SAVE_TYPES[name.split('.').pop().toLowerCase()];
+      // The Save sheet: the user picks a folder on the device, or the download. Nothing is written until they do.
+      if (pickSave) {
+        if (sheetBusy) return { ok: false, error: 'busy' };
+        sheetBusy = true;
+        try {
+          const r = await pickSave(app, { name, mime, bytes });
+          if (!r) return { ok: false, error: 'cancelled' };
+          if (r.where === 'device' && onFsChange) onFsChange(r.path);
+          return { ok: true, name: r.name || name, where: r.where === 'device' ? 'device' : 'download', bytes: bytes.byteLength };
+        } catch (e) { return { ok: false, error: String((e && e.message) || e) }; }
+        finally { sheetBusy = false; }
+      }
+      const now = Date.now();
+      if (now - saveLastAt < SAVE_GAP_MS) return { ok: false, error: 'busy' };
+      saveLastAt = now;
+      try { await download(name, mime, bytes); }
+      catch (e) { return { ok: false, error: String((e && e.message) || e) }; }
+      return { ok: true, name, where: 'download', bytes: bytes.byteLength };
+    }
+
+    if (method === 'file.open') {
+      if (!pickOpen) return { ok: false, error: 'unsupported' };
+      if (sheetBusy) return { ok: false, error: 'busy' };
+      sheetBusy = true;
+      try {
+        const files = await pickOpen(app, { types: openTypes(args && args.types), multiple: !!(args && args.multiple) });
+        if (!files || !files.length) return { ok: false, error: 'cancelled' };
+        return { ok: true, files: files.slice(0, OPEN_MAX_FILES).map((f) => ({ name: String(f.name || '').split(/[\\/]/).pop().slice(0, 200), data: f.bytes, where: f.path ? 'device' : 'local' })) };
+      } catch (e) { return { ok: false, error: String((e && e.message) || e) }; }
+      finally { sheetBusy = false; }
+    }
+
+    if (method === 'file.launch') {
+      if (!launchFile) return { ok: true, file: null };
+      try {
+        const f = await launchFile(app);
+        return { ok: true, file: f ? { name: String(f.name || '').split(/[\\/]/).pop().slice(0, 200), data: f.bytes, where: 'device' } : null };
+      } catch (e) { return { ok: false, error: String((e && e.message) || e) }; }
     }
 
     if (method === 'notify') {

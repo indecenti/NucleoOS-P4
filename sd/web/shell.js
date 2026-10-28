@@ -13,6 +13,7 @@ import I18N from './nucleo-i18n.js';                  // centralized OS-wide int
 import { makeFetchJSON, makeLoadState } from './boot-fetch.js';   // resilient boot fetch + typed user-state load (shell-boot-fetch.test)
 import { rankApps, rankActions, looksLikeNL, clipAnswer } from './search-rank.js';   // pure search ranking (host-tested)
 import { createBroker, sanitizeApp, brokerEvent, themeInfo } from './appbroker.js';
+import { createFileDialog, OPEN_MAX_BYTES } from './filedialog.js';   // the OS Open/Save sheet behind file.open / file.save
 import Caps from './nucleo-caps.js';                               // what this device can do (contract/api.yaml)        // capability broker for sandboxed (agent-written) apps
 import { initSystemUI } from './system-ui.js';        // night light, lock screen, shortcuts sheet, widgets
 
@@ -264,7 +265,8 @@ const state = { apps: [], pins: [...UI_DEFAULTS.pins], wallpaper: UI_DEFAULTS.wa
       wav: 'media-player', mp3: 'media-player',
       mp4: 'video-player', webm: 'video-player', mov: 'video-player', mkv: 'video-player',
       m4v: 'video-player', ogv: 'video-player', avi: 'video-player', mpg: 'video-player', mpeg: 'video-player', m1v: 'video-player',
-      todo: 'tasks', info: 'help'
+      todo: 'tasks', info: 'help',
+      pdf: 'pdf-editor',     // a Store app: when it is not installed, the fallback opens the file
     },
     fallback: 'file-commander'
   } };
@@ -1736,6 +1738,34 @@ function wireMessages() {
     getTheme: () => currentThemeState,  // mode/accent/font size only (themeInfo), never the shell's styles
     getCaps: () => Caps.info(),         // the device's capability list, for apps that cannot import nucleo-caps.js
     onFsChange: () => { try { FsIndex.invalidate(); } catch {} },
+    // file.open / file.save: the OS sheet, shown HERE in the shell's origin. The user picks a folder of the device
+    // (/api/fs, the same on every edition) or this computer/phone (file input, download): a sandboxed frame may
+    // do none of it itself, and no app has to know which edition it runs on.
+    pickOpen: (app, o) => fileSheet().open({ appId: app.id, appName: appName(app), types: o.types, multiple: o.multiple }),
+    pickSave: (app, o) => fileSheet().save({ appId: app.id, appName: appName(app), name: o.name, bytes: o.bytes, mime: o.mime }),
+    // file.launch: the file the user opened the app WITH (desktop, File Commander, Recent) — only while the
+    // app's frame still shows that file, so an app reopened from Start does not get yesterday's document.
+    launchFile: async (app) => {
+      const path = launchGrants.get(app.id);
+      if (!path) return null;
+      const w = WM.list().find((x) => x.app.id === app.id);
+      const f = w && w.el.querySelector('iframe');
+      const src = (f && f.getAttribute('src')) || (w && w.pending) || '';
+      if (new URLSearchParams(src.split('?')[1] || '').get('path') !== path) return null;
+      const r = await fetch('/api/fs/read?path=' + encodeURIComponent(path), { cache: 'no-store' });
+      if (!r.ok) throw new Error('http-' + r.status);
+      const bytes = await r.arrayBuffer();
+      if (bytes.byteLength > OPEN_MAX_BYTES) throw new Error('too large');
+      return { name: path.split('/').pop(), bytes };
+    },
+    // file.save without the sheet (kept for callers that pass no pickSave): a plain download.
+    download: (name, mime, bytes) => {
+      const url = URL.createObjectURL(new Blob([bytes], { type: mime }));
+      const a = document.createElement('a');
+      a.href = url; a.download = name; a.rel = 'noopener'; a.style.display = 'none';
+      document.body.appendChild(a); a.click(); a.remove();
+      setTimeout(() => URL.revokeObjectURL(url), 60000);
+    },
     // ai.complete for apps that declared ai.cloud: executed HERE, in the shell's origin, so the user's
     // key never enters the sandbox — only the completion text goes back over the broker. Lazy import:
     // apps without the permission never cost the load. The OS-wide AI decision (ai-ask.js): a model on the
@@ -2567,6 +2597,18 @@ function pushRecent(path) {
   renderRecommended();
 }
 
+// The file each app was last opened with, by the shell (file.launch hands it over to sandboxed apps).
+const launchGrants = new Map();
+let fileSheetInst = null;
+function fileSheet() {
+  if (!fileSheetInst) fileSheetInst = createFileDialog({
+    t,
+    remember: (k, v) => { try { localStorage.setItem('nucleo.files.' + k, v); } catch {} },
+    recall: (k) => { try { return localStorage.getItem('nucleo.files.' + k); } catch { return null; } },
+  });
+  return fileSheetInst;
+}
+
 // Open an SD file with its associated app (shared by File Commander and file shortcuts).
 function openFile(path) {
   if (/\.lnk$/i.test(path)) { openLnk(path); return; }   // a shortcut → resolve + open its target
@@ -2576,6 +2618,8 @@ function openFile(path) {
   if (appId) {
     const app = byId(appId);
     if (app) {
+      launchGrants.set(app.id, path);
+      try { localStorage.setItem('nucleo.files.open.' + app.id, path.replace(/\/[^/]*$/, '') || '/data'); } catch {}   // Save as starts next to it
       WM.open(app, 'path=' + encodeURIComponent(path));
       return;
     } else {
