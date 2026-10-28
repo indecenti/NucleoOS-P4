@@ -17,6 +17,11 @@ recorded so nobody relaxes them by accident. Keep this file short and true.
   A plain `malloc()` under 16 KB lands in INTERNAL SRAM (`SPIRAM_MALLOC_ALWAYSINTERNAL`).
 - Measure with `python tools/ci/check_budgets.py build` (what CI enforces) or `idf.py size-components`.
   (the P4 internal bss section is `.dram1.bss`, PSRAM bss is `.ext_ram.bss`).
+- The static budget only catches creep; the real limit is the run-time low-water mark. Check it on the
+  board with `python tools/hil/heap_floor.py` (fixed web + TLS + Terminal load; fails under 120 KB min
+  free or a 64 KB largest block). Non-ISR FreeRTOS, heap and ring-buffer code runs from flash
+  (`sdkconfig.defaults`, 1.2.191: ~26 KB of SRAM back), so an IRAM / cache-safe ISR may call only the
+  `FromISR` functions, never `heap_caps_*` or a ring buffer.
 
 ## 2. Task stacks and flash access (the crash nobody sees coming)
 

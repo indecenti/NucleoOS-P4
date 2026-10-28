@@ -196,3 +196,10 @@ CONFIG_MDNS_MEMORY_ALLOC_SPIRAM=y
 # for the DSI bridge and DW_GDMA; the CSI camera shares DW_GDMA, so its ISR path must be IRAM-safe too.
 CONFIG_LCD_DSI_ISR_CACHE_SAFE=y
 CONFIG_CAM_CTLR_MIPI_CSI_ISR_CACHE_SAFE=y
+
+# Internal RAM: non-ISR FreeRTOS, ring-buffer and heap code runs from flash, not IRAM (~20 KB of internal RAM
+# back). Safe here: our IRAM / cache-safe ISRs (DSI vsync, CSI camera, 2D DMA, irqwatch) only call the
+# FromISR functions, which stay in IRAM, and none of them allocates or touches a ring buffer.
+CONFIG_FREERTOS_PLACE_FUNCTIONS_INTO_FLASH=y
+CONFIG_RINGBUF_PLACE_FUNCTIONS_INTO_FLASH=y
+CONFIG_HEAP_PLACE_FUNCTION_INTO_FLASH=y
