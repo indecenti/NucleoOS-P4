@@ -51,7 +51,8 @@ USER_DATA = {
 SECRETS = [
     re.compile(rb"AIza[0-9A-Za-z_-]{35}"),                       # Google / Gemini
     re.compile(rb"AQ\.[A-Za-z0-9_-]{40,}"),                      # Google / Gemini, 2026 format
-    re.compile(rb'"(?:api_?key|key|token|secret|password)"\s*:\s*"[^"\s]{20,}"', re.I),   # any JSON credential
+    # any JSON credential: an ASCII value (a translated label such as "Password": "<Bengali>" is not one)
+    re.compile(rb'"(?:api_?key|key|token|secret|password)"\s*:\s*"[!#-~]{20,}"', re.I),
     re.compile(rb"sk-ant-[A-Za-z0-9_-]{40,}"),                   # Anthropic
     re.compile(rb"sk-(?:proj-)?[A-Za-z0-9_-]{40,}"),             # OpenAI
     re.compile(rb"gsk_[A-Za-z0-9]{40,}"),                        # Groq
