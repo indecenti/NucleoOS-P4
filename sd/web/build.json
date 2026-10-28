@@ -204,11 +204,11 @@
  ],
  "apps_dir": "apps",
  "base": "/",
- "bytes": 29336656,
+ "bytes": 29336949,
  "caps_row": {
   "since": "1.2.118"
  },
- "commit": "22fabe6df3047cb110b2f7fdf3d24c21795f521c",
+ "commit": "1320d6415b6121f400df02235480a9d4474e0f78",
  "edition": "p4",
  "externals": [
   {
@@ -527,7 +527,7 @@
  "format": 1,
  "generator": "nucleo-webos tools/build.py",
  "gz_twins": 564,
- "hash": "e61b196f363843001409abf9c20971ba44d829203db0aeecff46ea9894bded60",
+ "hash": "1b85764749e7f1cb806aca6f95e95699b64a269022b3b021e7f5e3b34e4be495",
  "left_out": [
   {
    "id": "automation-studio",
@@ -628,8 +628,8 @@
  },
  "profile_sha256": "f8f00db260d45854cddd428accebf5017d976e83d558a5a066c6b8daf06cd2bb",
  "shell": {
-  "cache": "nucleo-shell-v161-8ea2b19d64b6",
-  "hash": "8ea2b19d64b6"
+  "cache": "nucleo-shell-v161-e84c4c06e10e",
+  "hash": "e84c4c06e10e"
  },
  "shell_dir": "",
  "uncommitted_files": 0

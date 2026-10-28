@@ -23,7 +23,7 @@
     "de": 100
   },
   "surfaces": 42,
-  "totalKeys": 4012,
+  "totalKeys": 4013,
   "namespaces": {
     "agent": 161,
     "anima": 174,
@@ -59,7 +59,7 @@
     "shell": 374,
     "spreadsheet": 303,
     "ssh": 70,
-    "store": 56,
+    "store": 57,
     "system-monitor": 42,
     "tasks": 18,
     "terminal": 32,
