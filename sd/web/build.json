@@ -8,8 +8,8 @@
   },
   {
    "id": "anima",
-   "version": "0.1.1",
-   "version_code": 2
+   "version": "0.1.2",
+   "version_code": 3
   },
   {
    "id": "arcade",
@@ -78,8 +78,8 @@
   },
   {
    "id": "games",
-   "version": "0.1.1",
-   "version_code": 1
+   "version": "0.1.2",
+   "version_code": 2
   },
   {
    "id": "groq-chat",
@@ -118,8 +118,8 @@
   },
   {
    "id": "paint",
-   "version": "1.0.1",
-   "version_code": 2
+   "version": "1.0.2",
+   "version_code": 3
   },
   {
    "id": "photo-viewer",
@@ -148,8 +148,8 @@
   },
   {
    "id": "settings",
-   "version": "0.2.1",
-   "version_code": 1
+   "version": "0.2.2",
+   "version_code": 2
   },
   {
    "id": "spreadsheet",
@@ -208,7 +208,7 @@
  "caps_row": {
   "since": "1.2.118"
  },
- "commit": "1320d6415b6121f400df02235480a9d4474e0f78",
+ "commit": "aacc080e105e4c519326dc915bcf74ea69fef80b",
  "edition": "p4",
  "externals": [
   {
@@ -527,7 +527,7 @@
  "format": 1,
  "generator": "nucleo-webos tools/build.py",
  "gz_twins": 564,
- "hash": "1b85764749e7f1cb806aca6f95e95699b64a269022b3b021e7f5e3b34e4be495",
+ "hash": "efa219973560f1ff660fb7bfcda8a9e11f97b1544821e9edf0235f73a586a267",
  "left_out": [
   {
    "id": "automation-studio",
