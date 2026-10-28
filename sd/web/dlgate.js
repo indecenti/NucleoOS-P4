@@ -1,9 +1,10 @@
+/* SPDX-License-Identifier: AGPL-3.0-or-later */
 // dlgate.js — OS-wide download gate for NucleoOS.
 //
-// The device serves the whole OS from a single-task, no-PSRAM HTTP server: two concurrent multi-MB
+// The Cardputer serves the whole OS from a single-task, no-PSRAM HTTP server: two concurrent multi-MB
 // pulls collapse it (the 503 "low memory, retry" read-storm in nucleo_webfs). So EVERY large download
 // in the OS — the ANIMA brain pack, the voice models, the Forge weights — funnels through ONE exclusive
-// lock held for the whole transfer. Web Locks are coordinated across same-origin contexts, so this is
+// lock held for the whole transfer (on bigger servers it simply keeps the device and its SD responsive). Web Locks are coordinated across same-origin contexts, so this is
 // genuinely OS-wide: it spans every app, tab, and iframe the device serves. Requests QUEUE (they never
 // fail) and run strictly one at a time, in order.
 //
@@ -11,28 +12,18 @@
 // download" is each caller's policy; the gate just guarantees there is never more than one at a time.
 
 const LOCK = 'nucleo-dl';
-const _subs = new Set();
-const _bc = (typeof BroadcastChannel !== 'undefined') ? new BroadcastChannel('nucleo-dl') : null;
-let _local = null;                 // label downloading in THIS tab (best-effort, for activeLabel())
 let _chain = Promise.resolve();    // same-tab fallback when Web Locks is unavailable
 let _busy = false;                 // fallback-only busy flag
 
-function _notify(label) {
-  _local = label || null;
-  try { _bc && _bc.postMessage({ active: _local }); } catch {}
-  for (const cb of _subs) { try { cb(_local); } catch {} }
-}
-if (_bc) _bc.onmessage = (e) => { const a = e && e.data ? e.data.active : null; for (const cb of _subs) { try { cb(a); } catch {} } };
-
 function _hasLocks() { return typeof navigator !== 'undefined' && navigator.locks && navigator.locks.request; }
 
-// Run `fn` while holding the single OS-wide download lock. `label` is a short human string shown in the
-// UI ("Scaricando …"). Returns whatever `fn` resolves to. By default a busy gate makes the caller WAIT
+// Run `fn` while holding the single OS-wide download lock. `label` is a short human string naming the
+// transfer (e.g. "ANIMA brain pack"). Returns whatever `fn` resolves to. By default a busy gate makes the caller WAIT
 // (FIFO queue). Pass {ifAvailable:true} for background/opportunistic work that must yield rather than
 // queue — it resolves to opts.skipValue (default null) without running `fn` when something else holds.
 export async function withDownloadLock(label, fn, opts = {}) {
   const skip = ('skipValue' in opts) ? opts.skipValue : null;
-  const run = async () => { _notify(label); try { return await fn(); } finally { _notify(null); } };
+  const run = async () => fn();   // `label` is kept in the signature for callers/readability; nothing displays it
 
   if (_hasLocks()) {
     if (opts.ifAvailable) {
@@ -51,19 +42,3 @@ export async function withDownloadLock(label, fn, opts = {}) {
   try { return await run(); } finally { _busy = false; release(); }
 }
 
-// Best-effort: is ANY download running in the OS right now? (Cross-tab via the shared lock manager.)
-export async function isDownloading() {
-  try {
-    if (_hasLocks() && navigator.locks.query) {
-      const q = await navigator.locks.query();
-      return ((q && q.held) || []).some((l) => l.name === LOCK);
-    }
-  } catch {}
-  return _busy || !!_local;
-}
-
-// The label downloading in THIS tab right now (or null). A cross-tab label arrives via onDownloadStatus.
-export function activeLabel() { return _local; }
-
-// Subscribe to status changes (label string while downloading, null when idle). Returns an unsubscribe.
-export function onDownloadStatus(cb) { _subs.add(cb); return () => _subs.delete(cb); }

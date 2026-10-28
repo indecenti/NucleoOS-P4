@@ -1,3 +1,4 @@
+/* SPDX-License-Identifier: AGPL-3.0-or-later */
 // soft-engine.js — base comune dei player "software" (AVI/MJPEG e MPEG-1) del Video Player.
 //
 // Espone lo stesso sottoinsieme di API di HTMLVideoElement che usa l'app (paused, currentTime,

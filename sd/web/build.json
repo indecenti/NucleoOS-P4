@@ -1,0 +1,636 @@
+{
+ "app_layout": "flat",
+ "apps": [
+  {
+   "id": "agent",
+   "version": "0.1.1",
+   "version_code": 2
+  },
+  {
+   "id": "anima",
+   "version": "0.1.1",
+   "version_code": 2
+  },
+  {
+   "id": "arcade",
+   "version": "1.0.1",
+   "version_code": 2
+  },
+  {
+   "id": "archive-manager",
+   "version": "1.0.1",
+   "version_code": 2
+  },
+  {
+   "id": "authenticator",
+   "version": "1.0.1",
+   "version_code": 1
+  },
+  {
+   "id": "browser",
+   "version": "0.2.1",
+   "version_code": 3
+  },
+  {
+   "id": "calculator",
+   "version": "0.1.1",
+   "version_code": 2
+  },
+  {
+   "id": "calendar",
+   "version": "0.1.1",
+   "version_code": 2
+  },
+  {
+   "id": "clock",
+   "version": "0.2.1",
+   "version_code": 3
+  },
+  {
+   "id": "code-runner",
+   "version": "0.1.1",
+   "version_code": 2
+  },
+  {
+   "id": "contacts",
+   "version": "1.0.1",
+   "version_code": 1
+  },
+  {
+   "id": "dj",
+   "version": "0.1.2",
+   "version_code": 1
+  },
+  {
+   "id": "dos-importer",
+   "version": "0.1.1",
+   "version_code": 2
+  },
+  {
+   "id": "dosbox",
+   "version": "0.1.1",
+   "version_code": 2
+  },
+  {
+   "id": "file-commander",
+   "version": "0.1.1",
+   "version_code": 1
+  },
+  {
+   "id": "games",
+   "version": "0.1.1",
+   "version_code": 1
+  },
+  {
+   "id": "groq-chat",
+   "version": "0.1.1",
+   "version_code": 2
+  },
+  {
+   "id": "help",
+   "version": "0.1.1",
+   "version_code": 2
+  },
+  {
+   "id": "log-viewer",
+   "version": "0.1.1",
+   "version_code": 1
+  },
+  {
+   "id": "media-player",
+   "version": "0.1.1",
+   "version_code": 1
+  },
+  {
+   "id": "metronome",
+   "version": "1.0.2",
+   "version_code": 3
+  },
+  {
+   "id": "miei-fatti",
+   "version": "0.1.1",
+   "version_code": 2
+  },
+  {
+   "id": "notepad",
+   "version": "0.1.1",
+   "version_code": 2
+  },
+  {
+   "id": "paint",
+   "version": "1.0.1",
+   "version_code": 2
+  },
+  {
+   "id": "photo-viewer",
+   "version": "0.1.1",
+   "version_code": 2
+  },
+  {
+   "id": "qr",
+   "version": "0.1.1",
+   "version_code": 2
+  },
+  {
+   "id": "radio",
+   "version": "1.0.1",
+   "version_code": 1
+  },
+  {
+   "id": "recorder",
+   "version": "0.1.1",
+   "version_code": 1
+  },
+  {
+   "id": "recycle-bin",
+   "version": "0.1.1",
+   "version_code": 2
+  },
+  {
+   "id": "settings",
+   "version": "0.2.1",
+   "version_code": 1
+  },
+  {
+   "id": "spreadsheet",
+   "version": "0.1.1",
+   "version_code": 2
+  },
+  {
+   "id": "ssh",
+   "version": "0.1.1",
+   "version_code": 2
+  },
+  {
+   "id": "store",
+   "version": "1.0.1",
+   "version_code": 1
+  },
+  {
+   "id": "system-monitor",
+   "version": "0.1.2",
+   "version_code": 2
+  },
+  {
+   "id": "tasks",
+   "version": "0.1.1",
+   "version_code": 2
+  },
+  {
+   "id": "terminal",
+   "version": "0.1.1",
+   "version_code": 2
+  },
+  {
+   "id": "unit-converter",
+   "version": "0.1.1",
+   "version_code": 2
+  },
+  {
+   "id": "video-player",
+   "version": "3.1.3",
+   "version_code": 5
+  },
+  {
+   "id": "weather",
+   "version": "1.0.1",
+   "version_code": 1
+  },
+  {
+   "id": "wifi-scanner",
+   "version": "0.1.2",
+   "version_code": 2
+  }
+ ],
+ "apps_dir": "apps",
+ "base": "/",
+ "bytes": 29336656,
+ "caps_row": {
+  "since": "1.2.118"
+ },
+ "commit": "22fabe6df3047cb110b2f7fdf3d24c21795f521c",
+ "edition": "p4",
+ "externals": [
+  {
+   "path": "apps/anima/www/forge/vendor/Qwen2-0.5B-Instruct-q4f16_1_cs1k-webgpu.wasm",
+   "size": 4850160,
+   "status": "excluded",
+   "why": "p4 profile: heavy runtime or model the app fetches from its CDN when it is not on the card (Vosk, WebLLM/wllama, ONNX); also kept out of the P4 repo, which commits sd/web"
+  },
+  {
+   "path": "apps/anima/www/forge/vendor/web-llm.js",
+   "size": 6086300,
+   "status": "excluded",
+   "why": "p4 profile: heavy runtime or model the app fetches from its CDN when it is not on the card (Vosk, WebLLM/wllama, ONNX); also kept out of the P4 repo, which commits sd/web"
+  },
+  {
+   "path": "apps/anima/www/forge/vendor/wllama/multi-thread/wllama.wasm",
+   "size": 1625381,
+   "status": "excluded",
+   "why": "p4 profile: heavy runtime or model the app fetches from its CDN when it is not on the card (Vosk, WebLLM/wllama, ONNX); also kept out of the P4 repo, which commits sd/web"
+  },
+  {
+   "path": "apps/anima/www/forge/vendor/wllama/single-thread/wllama.wasm",
+   "size": 1608830,
+   "status": "excluded",
+   "why": "p4 profile: heavy runtime or model the app fetches from its CDN when it is not on the card (Vosk, WebLLM/wllama, ONNX); also kept out of the P4 repo, which commits sd/web"
+  },
+  {
+   "path": "apps/anima/www/vosk/models/vosk-model-small-en-us-0.15.tar.gz.000",
+   "size": 7340032,
+   "status": "excluded",
+   "why": "p4 profile: heavy runtime or model the app fetches from its CDN when it is not on the card (Vosk, WebLLM/wllama, ONNX); also kept out of the P4 repo, which commits sd/web"
+  },
+  {
+   "path": "apps/anima/www/vosk/models/vosk-model-small-en-us-0.15.tar.gz.001",
+   "size": 7340032,
+   "status": "excluded",
+   "why": "p4 profile: heavy runtime or model the app fetches from its CDN when it is not on the card (Vosk, WebLLM/wllama, ONNX); also kept out of the P4 repo, which commits sd/web"
+  },
+  {
+   "path": "apps/anima/www/vosk/models/vosk-model-small-en-us-0.15.tar.gz.002",
+   "size": 7340032,
+   "status": "excluded",
+   "why": "p4 profile: heavy runtime or model the app fetches from its CDN when it is not on the card (Vosk, WebLLM/wllama, ONNX); also kept out of the P4 repo, which commits sd/web"
+  },
+  {
+   "path": "apps/anima/www/vosk/models/vosk-model-small-en-us-0.15.tar.gz.003",
+   "size": 7340032,
+   "status": "excluded",
+   "why": "p4 profile: heavy runtime or model the app fetches from its CDN when it is not on the card (Vosk, WebLLM/wllama, ONNX); also kept out of the P4 repo, which commits sd/web"
+  },
+  {
+   "path": "apps/anima/www/vosk/models/vosk-model-small-en-us-0.15.tar.gz.004",
+   "size": 7340032,
+   "status": "excluded",
+   "why": "p4 profile: heavy runtime or model the app fetches from its CDN when it is not on the card (Vosk, WebLLM/wllama, ONNX); also kept out of the P4 repo, which commits sd/web"
+  },
+  {
+   "path": "apps/anima/www/vosk/models/vosk-model-small-en-us-0.15.tar.gz.005",
+   "size": 4484702,
+   "status": "excluded",
+   "why": "p4 profile: heavy runtime or model the app fetches from its CDN when it is not on the card (Vosk, WebLLM/wllama, ONNX); also kept out of the P4 repo, which commits sd/web"
+  },
+  {
+   "path": "apps/anima/www/vosk/models/vosk-model-small-it-0.4.tar.gz.000",
+   "size": 7340032,
+   "status": "excluded",
+   "why": "p4 profile: heavy runtime or model the app fetches from its CDN when it is not on the card (Vosk, WebLLM/wllama, ONNX); also kept out of the P4 repo, which commits sd/web"
+  },
+  {
+   "path": "apps/anima/www/vosk/models/vosk-model-small-it-0.4.tar.gz.001",
+   "size": 7340032,
+   "status": "excluded",
+   "why": "p4 profile: heavy runtime or model the app fetches from its CDN when it is not on the card (Vosk, WebLLM/wllama, ONNX); also kept out of the P4 repo, which commits sd/web"
+  },
+  {
+   "path": "apps/anima/www/vosk/models/vosk-model-small-it-0.4.tar.gz.002",
+   "size": 7340032,
+   "status": "excluded",
+   "why": "p4 profile: heavy runtime or model the app fetches from its CDN when it is not on the card (Vosk, WebLLM/wllama, ONNX); also kept out of the P4 repo, which commits sd/web"
+  },
+  {
+   "path": "apps/anima/www/vosk/models/vosk-model-small-it-0.4.tar.gz.003",
+   "size": 7340032,
+   "status": "excluded",
+   "why": "p4 profile: heavy runtime or model the app fetches from its CDN when it is not on the card (Vosk, WebLLM/wllama, ONNX); also kept out of the P4 repo, which commits sd/web"
+  },
+  {
+   "path": "apps/anima/www/vosk/models/vosk-model-small-it-0.4.tar.gz.004",
+   "size": 4896728,
+   "status": "excluded",
+   "why": "p4 profile: heavy runtime or model the app fetches from its CDN when it is not on the card (Vosk, WebLLM/wllama, ONNX); also kept out of the P4 repo, which commits sd/web"
+  },
+  {
+   "path": "apps/anima/www/vosk/vosk.js",
+   "size": 5804485,
+   "status": "excluded",
+   "why": "p4 profile: in-browser speech for ANIMA's own page, which the P4 does not list (its voice is on the device)"
+  },
+  {
+   "path": "apps/arcade/www/emulatorjs/cores/.npmignore",
+   "size": 27,
+   "status": "excluded",
+   "why": "git/npm metadata (.gitattributes, .npmignore...)"
+  },
+  {
+   "path": "apps/arcade/www/emulatorjs/cores/README.md",
+   "size": 426,
+   "status": "excluded",
+   "why": "p4 profile: EmulatorJS cores (18 MB): the player probes the SD first and fetches the exact core from cdn.emulatorjs.org when it is absent"
+  },
+  {
+   "path": "apps/arcade/www/emulatorjs/cores/core-README.md",
+   "size": 506,
+   "status": "excluded",
+   "why": "p4 profile: EmulatorJS cores (18 MB): the player probes the SD first and fetches the exact core from cdn.emulatorjs.org when it is absent"
+  },
+  {
+   "path": "apps/arcade/www/emulatorjs/cores/fbalpha2012_cps1-wasm.data",
+   "size": 1031240,
+   "status": "excluded",
+   "why": "p4 profile: EmulatorJS cores (18 MB): the player probes the SD first and fetches the exact core from cdn.emulatorjs.org when it is absent"
+  },
+  {
+   "path": "apps/arcade/www/emulatorjs/cores/fbalpha2012_cps2-wasm.data",
+   "size": 992866,
+   "status": "excluded",
+   "why": "p4 profile: EmulatorJS cores (18 MB): the player probes the SD first and fetches the exact core from cdn.emulatorjs.org when it is absent"
+  },
+  {
+   "path": "apps/arcade/www/emulatorjs/cores/fbneo-wasm.data",
+   "size": 8273551,
+   "status": "excluded",
+   "why": "p4 profile: EmulatorJS cores (18 MB): the player probes the SD first and fetches the exact core from cdn.emulatorjs.org when it is absent"
+  },
+  {
+   "path": "apps/arcade/www/emulatorjs/cores/fceumm-wasm.data",
+   "size": 1054015,
+   "status": "excluded",
+   "why": "p4 profile: EmulatorJS cores (18 MB): the player probes the SD first and fetches the exact core from cdn.emulatorjs.org when it is absent"
+  },
+  {
+   "path": "apps/arcade/www/emulatorjs/cores/gambatte-wasm.data",
+   "size": 967156,
+   "status": "excluded",
+   "why": "p4 profile: EmulatorJS cores (18 MB): the player probes the SD first and fetches the exact core from cdn.emulatorjs.org when it is absent"
+  },
+  {
+   "path": "apps/arcade/www/emulatorjs/cores/genesis_plus_gx-wasm.data",
+   "size": 1203661,
+   "status": "excluded",
+   "why": "p4 profile: EmulatorJS cores (18 MB): the player probes the SD first and fetches the exact core from cdn.emulatorjs.org when it is absent"
+  },
+  {
+   "path": "apps/arcade/www/emulatorjs/cores/handy-wasm.data",
+   "size": 862304,
+   "status": "excluded",
+   "why": "p4 profile: EmulatorJS cores (18 MB): the player probes the SD first and fetches the exact core from cdn.emulatorjs.org when it is absent"
+  },
+  {
+   "path": "apps/arcade/www/emulatorjs/cores/mednafen_ngp-wasm.data",
+   "size": 871904,
+   "status": "excluded",
+   "why": "p4 profile: EmulatorJS cores (18 MB): the player probes the SD first and fetches the exact core from cdn.emulatorjs.org when it is absent"
+  },
+  {
+   "path": "apps/arcade/www/emulatorjs/cores/mednafen_pce-wasm.data",
+   "size": 994844,
+   "status": "excluded",
+   "why": "p4 profile: EmulatorJS cores (18 MB): the player probes the SD first and fetches the exact core from cdn.emulatorjs.org when it is absent"
+  },
+  {
+   "path": "apps/arcade/www/emulatorjs/cores/mgba-wasm.data",
+   "size": 1055616,
+   "status": "excluded",
+   "why": "p4 profile: EmulatorJS cores (18 MB): the player probes the SD first and fetches the exact core from cdn.emulatorjs.org when it is absent"
+  },
+  {
+   "path": "apps/arcade/www/emulatorjs/cores/package.json",
+   "size": 2693,
+   "status": "excluded",
+   "why": "p4 profile: EmulatorJS cores (18 MB): the player probes the SD first and fetches the exact core from cdn.emulatorjs.org when it is absent"
+  },
+  {
+   "path": "apps/arcade/www/emulatorjs/cores/reports/fbalpha2012_cps1.json",
+   "size": 186,
+   "status": "excluded",
+   "why": "p4 profile: EmulatorJS cores (18 MB): the player probes the SD first and fetches the exact core from cdn.emulatorjs.org when it is absent"
+  },
+  {
+   "path": "apps/arcade/www/emulatorjs/cores/reports/fbalpha2012_cps2.json",
+   "size": 186,
+   "status": "excluded",
+   "why": "p4 profile: EmulatorJS cores (18 MB): the player probes the SD first and fetches the exact core from cdn.emulatorjs.org when it is absent"
+  },
+  {
+   "path": "apps/arcade/www/emulatorjs/cores/reports/fbneo.json",
+   "size": 175,
+   "status": "excluded",
+   "why": "p4 profile: EmulatorJS cores (18 MB): the player probes the SD first and fetches the exact core from cdn.emulatorjs.org when it is absent"
+  },
+  {
+   "path": "apps/arcade/www/emulatorjs/cores/reports/fceumm.json",
+   "size": 177,
+   "status": "excluded",
+   "why": "p4 profile: EmulatorJS cores (18 MB): the player probes the SD first and fetches the exact core from cdn.emulatorjs.org when it is absent"
+  },
+  {
+   "path": "apps/arcade/www/emulatorjs/cores/reports/gambatte.json",
+   "size": 179,
+   "status": "excluded",
+   "why": "p4 profile: EmulatorJS cores (18 MB): the player probes the SD first and fetches the exact core from cdn.emulatorjs.org when it is absent"
+  },
+  {
+   "path": "apps/arcade/www/emulatorjs/cores/reports/genesis_plus_gx.json",
+   "size": 185,
+   "status": "excluded",
+   "why": "p4 profile: EmulatorJS cores (18 MB): the player probes the SD first and fetches the exact core from cdn.emulatorjs.org when it is absent"
+  },
+  {
+   "path": "apps/arcade/www/emulatorjs/cores/reports/handy.json",
+   "size": 176,
+   "status": "excluded",
+   "why": "p4 profile: EmulatorJS cores (18 MB): the player probes the SD first and fetches the exact core from cdn.emulatorjs.org when it is absent"
+  },
+  {
+   "path": "apps/arcade/www/emulatorjs/cores/reports/mednafen_ngp.json",
+   "size": 183,
+   "status": "excluded",
+   "why": "p4 profile: EmulatorJS cores (18 MB): the player probes the SD first and fetches the exact core from cdn.emulatorjs.org when it is absent"
+  },
+  {
+   "path": "apps/arcade/www/emulatorjs/cores/reports/mednafen_pce.json",
+   "size": 182,
+   "status": "excluded",
+   "why": "p4 profile: EmulatorJS cores (18 MB): the player probes the SD first and fetches the exact core from cdn.emulatorjs.org when it is absent"
+  },
+  {
+   "path": "apps/arcade/www/emulatorjs/cores/reports/mgba.json",
+   "size": 173,
+   "status": "excluded",
+   "why": "p4 profile: EmulatorJS cores (18 MB): the player probes the SD first and fetches the exact core from cdn.emulatorjs.org when it is absent"
+  },
+  {
+   "path": "apps/arcade/www/emulatorjs/cores/reports/smsplus.json",
+   "size": 177,
+   "status": "excluded",
+   "why": "p4 profile: EmulatorJS cores (18 MB): the player probes the SD first and fetches the exact core from cdn.emulatorjs.org when it is absent"
+  },
+  {
+   "path": "apps/arcade/www/emulatorjs/cores/reports/snes9x.json",
+   "size": 177,
+   "status": "excluded",
+   "why": "p4 profile: EmulatorJS cores (18 MB): the player probes the SD first and fetches the exact core from cdn.emulatorjs.org when it is absent"
+  },
+  {
+   "path": "apps/arcade/www/emulatorjs/cores/smsplus-wasm.data",
+   "size": 855876,
+   "status": "excluded",
+   "why": "p4 profile: EmulatorJS cores (18 MB): the player probes the SD first and fetches the exact core from cdn.emulatorjs.org when it is absent"
+  },
+  {
+   "path": "apps/arcade/www/emulatorjs/cores/snes9x-wasm.data",
+   "size": 1093765,
+   "status": "excluded",
+   "why": "p4 profile: EmulatorJS cores (18 MB): the player probes the SD first and fetches the exact core from cdn.emulatorjs.org when it is absent"
+  },
+  {
+   "path": "apps/paint/www/vendor/onnxruntime-web/ort-wasm-simd-threaded.asyncify.wasm",
+   "size": 23678474,
+   "status": "excluded",
+   "why": "p4 profile: heavy runtime or model the app fetches from its CDN when it is not on the card (Vosk, WebLLM/wllama, ONNX); also kept out of the P4 repo, which commits sd/web"
+  },
+  {
+   "path": "apps/paint/www/vendor/onnxruntime-web/ort-wasm-simd-threaded.asyncify.wasm.000",
+   "size": 7340032,
+   "status": "excluded",
+   "why": "p4 profile: heavy runtime or model the app fetches from its CDN when it is not on the card (Vosk, WebLLM/wllama, ONNX); also kept out of the P4 repo, which commits sd/web"
+  },
+  {
+   "path": "apps/paint/www/vendor/onnxruntime-web/ort-wasm-simd-threaded.asyncify.wasm.001",
+   "size": 7340032,
+   "status": "excluded",
+   "why": "p4 profile: heavy runtime or model the app fetches from its CDN when it is not on the card (Vosk, WebLLM/wllama, ONNX); also kept out of the P4 repo, which commits sd/web"
+  },
+  {
+   "path": "apps/paint/www/vendor/onnxruntime-web/ort-wasm-simd-threaded.asyncify.wasm.002",
+   "size": 7340032,
+   "status": "excluded",
+   "why": "p4 profile: heavy runtime or model the app fetches from its CDN when it is not on the card (Vosk, WebLLM/wllama, ONNX); also kept out of the P4 repo, which commits sd/web"
+  },
+  {
+   "path": "apps/paint/www/vendor/onnxruntime-web/ort-wasm-simd-threaded.asyncify.wasm.003",
+   "size": 1658378,
+   "status": "excluded",
+   "why": "p4 profile: heavy runtime or model the app fetches from its CDN when it is not on the card (Vosk, WebLLM/wllama, ONNX); also kept out of the P4 repo, which commits sd/web"
+  },
+  {
+   "path": "apps/video-studio/www/vendor/ffmpeg/ffmpeg-core.wasm",
+   "size": 32129114,
+   "status": "app not in this build"
+  },
+  {
+   "path": "apps/arcade/www/emulatorjs/compression/libunrar.js",
+   "size": 66684,
+   "status": "excluded",
+   "why": "unRAR license is not free software: out until verified (external-resources.json)"
+  },
+  {
+   "path": "apps/arcade/www/emulatorjs/compression/libunrar.wasm",
+   "size": 173799,
+   "status": "excluded",
+   "why": "unRAR license is not free software: out until verified (external-resources.json)"
+  }
+ ],
+ "files": 1254,
+ "format": 1,
+ "generator": "nucleo-webos tools/build.py",
+ "gz_twins": 564,
+ "hash": "e61b196f363843001409abf9c20971ba44d829203db0aeecff46ea9894bded60",
+ "left_out": [
+  {
+   "id": "automation-studio",
+   "missing": [
+    "runtime.service"
+   ]
+  },
+  {
+   "id": "cast",
+   "missing": [
+    "cast"
+   ]
+  },
+  {
+   "id": "console",
+   "missing": [
+    "games.library"
+   ]
+  },
+  {
+   "id": "dictation",
+   "missing": [
+    "device.mic"
+   ]
+  },
+  {
+   "id": "ir-remote",
+   "missing": [
+    "device.ir"
+   ]
+  },
+  {
+   "id": "library",
+   "missing": [
+    "games.library"
+   ]
+  },
+  {
+   "id": "mail",
+   "missing": [
+    "mail.smtp"
+   ]
+  },
+  {
+   "id": "nearby",
+   "missing": [
+    "device.link"
+   ]
+  },
+  {
+   "id": "passkeys",
+   "missing": [
+    "device.fido"
+   ]
+  },
+  {
+   "id": "roms",
+   "missing": [
+    "games.roms"
+   ]
+  },
+  {
+   "id": "swarm",
+   "missing": [
+    "device.link",
+    "runtime.service"
+   ]
+  },
+  {
+   "id": "updates",
+   "missing": [
+    "ota"
+   ]
+  },
+  {
+   "id": "voice-manager",
+   "missing": [
+    "device.voice"
+   ]
+  }
+ ],
+ "left_out_by_profile": [
+  "community",
+  "scoreboard",
+  "video-studio"
+ ],
+ "never_shipped": {
+  "app sources, tests and docs outside www/ (only manifest.json and www/ ship)": 12,
+  "build metadata: decides which apps enter a build, never read at runtime": 43,
+  "build scripts": 1,
+  "channel metadata: read by nucleoos-webapps-store's publishing tool": 1,
+  "decoder sources and their build scripts (the built .wasm sits in www/)": 4,
+  "git/npm metadata (.gitattributes, .npmignore...)": 2,
+  "p4 profile: heavy runtime or model the app fetches from its CDN when it is not on the card (Vosk, WebLLM/wllama, ONNX); also kept out of the P4 repo, which commits sd/web": 13,
+  "p4 profile: in-browser speech for ANIMA's own page, which the P4 does not list (its voice is on the device)": 1,
+  "p4 profile: not in the P4's app list (sd/web/apps.json): built, never shown": 26,
+  "tests": 6
+ },
+ "profile_sha256": "f8f00db260d45854cddd428accebf5017d976e83d558a5a066c6b8daf06cd2bb",
+ "shell": {
+  "cache": "nucleo-shell-v161-8ea2b19d64b6",
+  "hash": "8ea2b19d64b6"
+ },
+ "shell_dir": "",
+ "uncommitted_files": 0
+}

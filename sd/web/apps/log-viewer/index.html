@@ -1,10 +1,14 @@
 <!doctype html>
+<!-- SPDX-License-Identifier: AGPL-3.0-or-later -->
 <html lang="en">
 <head>
 <meta charset="utf-8">
+<script>/* NucleoOS resource guard: a lost same-origin script/stylesheet makes the shell reload this window once (wm.js retryFrame) */addEventListener('error',function(e){var t=e.target,u;if(!t||t===window||parent===window||(t.tagName!=='SCRIPT'&&t.tagName!=='LINK'))return;try{u=new URL(t.src||t.href,location.href);if(u.origin===location.origin)parent.postMessage({type:'app-resource-failed',src:u.pathname},location.origin)}catch(_){}},true)</script>
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>Log Viewer</title>
 <style>
+    /* Native controls and scrollbars follow the app theme. */
+    :root { color-scheme: dark; } html[data-theme="light"] { color-scheme: light; }
   :root { --bg:#0b1220; --panel:#18233a; --panel2:#1f2d4a; --accent:#4ea1ff;
           --text:#e8eefc; --muted:#8aa0c8; --line:#2a3a5e; --ok:#3ddc97; --warn:#ffb454; --crit:#ff6b81; }
   * { box-sizing: border-box; }
@@ -196,14 +200,20 @@
       if (r.ok) {
         const text = await r.text();
         const lines = text.split('\n').filter((l) => l.trim());
+        // Newest CAP *events*, walking back from the end: a torn or garbled line (power loss mid-append,
+        // a truncated payload, a bare `null`) is skipped on its own — it used to throw and lose them all.
         const hist = [];
-        for (const line of lines.slice(-CAP)) { try { hist.push(JSON.parse(line)); } catch {} }
+        for (let i = lines.length - 1; i >= 0 && hist.length < CAP; i--) {
+          let e = null; try { e = JSON.parse(lines[i]); } catch {}
+          if (e && typeof e === 'object' && typeof e.t === 'string' && e.t) hist.push(e);
+        }
+        hist.reverse();
         const seen = new Set(hist.map((h) => h.seq));
         const live = events.filter((e) => e.seq == null || !seen.has(e.seq));
         events.length = 0; events.push(...hist, ...live);
         if (events.length > CAP) events.splice(0, events.length - CAP);
         srcEl.textContent = t('src_journal', { lines: lines.length });
-      } else { srcEl.textContent = t('src_none'); }
+      } else { srcEl.textContent = t(r.status === 404 ? 'src_none' : 'src_error'); }   // 503/401 = unreadable, not absent
     } catch { srcEl.textContent = t('src_error'); }
     restoreBtn();
     render();
@@ -212,11 +222,11 @@
   // ── Live tail: the shell forwards every device event into this iframe as a postMessage ──────────
   window.addEventListener('message', (e) => {
     const m = e.data;
-    if (!m || typeof m.t !== 'string') return;
-    if (m.type === 'os-shortcut') {
+    if (m && m.type === 'os-shortcut') {
       if (m.action === 'refresh') loadHistory();
       return;
     }
+    if (!m || typeof m.t !== 'string') return;
     if (paused) return;
     add(m); render();
   });
@@ -224,6 +234,9 @@
   // ── Adaptive health probe: prefers /api/diag (rich), falls back to /api/status. Visibility-gated,
   //    skips while a heavy job holds the arbiter, backs off when nothing changes. Never on the hot path.
   const probe = { on: true, mode: null, prev: null, timer: null };
+  // Diagnostics (/api/diag, /api/heap, /api/cpu, /api/logs) are asked only where the capability list has 'diag';
+  // elsewhere /api/status alone. If the capability module cannot be loaded, the endpoints decide as before.
+  const diagCapP = import('/nucleo-caps.js').then((m) => m.default.has('diag'), () => true);
   function setLive(on) { liveDot.classList.toggle('live', on); }
 
   function bandsDelta(prev, u) {
@@ -264,6 +277,7 @@
     if (!probe.on || document.visibilityState !== 'visible') { setLive(false); schedule(20000); return; }
     await diagReady;
     let raw = null, partial = false;
+    if (probe.mode === null && !(await diagCapP)) probe.mode = 'status';
     try {
       if (probe.mode !== 'status') {
         const r = await fetch('/api/diag', { cache: 'no-store' });
@@ -302,13 +316,15 @@
 
   async function gather() {
     const out = { events: events.slice(), nowSec: Math.floor(Date.now() / 1000) };
-    try { const r = await fetch('/api/diag', { cache: 'no-store' }); if (r.ok) out.diag = await r.json(); } catch {}
+    const hasDiag = await diagCapP;
+    if (hasDiag) try { const r = await fetch('/api/diag', { cache: 'no-store' }); if (r.ok) out.diag = await r.json(); } catch {}
     if (!out.diag) {     // legacy device → assemble from the three classic read-only endpoints
+      // One at a time: three parallel reads would flood the single-task PSRAM-less httpd.
       const grab = (p) => fetch(p, { cache: 'no-store' }).then((r) => (r.ok ? r.json() : null)).catch(() => null);
-      const [s, h, c] = await Promise.all([grab('/api/status'), grab('/api/heap'), grab('/api/cpu')]);
-      out.status = s; out.heap = h; out.cpu = c;
+      out.status = await grab('/api/status');
+      if (hasDiag) { out.heap = await grab('/api/heap'); out.cpu = await grab('/api/cpu'); }
     }
-    try { const r = await fetch('/api/logs', { cache: 'no-store' }); if (r.ok) out.logsText = await r.text(); } catch {}
+    if (hasDiag) try { const r = await fetch('/api/logs', { cache: 'no-store' }); if (r.ok) out.logsText = await r.text(); } catch {}
     return out;
   }
 

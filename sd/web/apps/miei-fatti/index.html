@@ -1,10 +1,14 @@
 <!doctype html>
-<html lang="it">
+<!-- SPDX-License-Identifier: AGPL-3.0-or-later -->
+<html lang="en">
 <head>
 <meta charset="utf-8">
+<script>/* NucleoOS resource guard: a lost same-origin script/stylesheet makes the shell reload this window once (wm.js retryFrame) */addEventListener('error',function(e){var t=e.target,u;if(!t||t===window||parent===window||(t.tagName!=='SCRIPT'&&t.tagName!=='LINK'))return;try{u=new URL(t.src||t.href,location.href);if(u.origin===location.origin)parent.postMessage({type:'app-resource-failed',src:u.pathname},location.origin)}catch(_){}},true)</script>
 <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
 <title>I Miei Fatti</title>
 <style>
+    /* Native controls (audio/video bars, date/time pickers, file inputs, selects) follow the app theme. */
+    :root { color-scheme: dark; } html[data-theme="light"] { color-scheme: light; }
   :root { --bg:#0e1830; --panel:#18233a; --panel2:#1f2d4a; --text:#e8eefc; --muted:#8aa0c8;
     --accent:#8a5cff; --accent2:#21d4c4; --line:#2a3a5e; --field:#0b1220; --ok:#2fd07a; --hi:#e2576b; --med:#f5b13d; }
   html[data-theme="light"] { --bg:#eef2fb; --panel:#ffffff; --panel2:#e9edf8; --text:#10203a; --muted:#5a6a86;
@@ -58,6 +62,7 @@
   .chip.taught { background:color-mix(in srgb,var(--accent) 22%,transparent); color:var(--accent); }
   .chip.verified { background:color-mix(in srgb,var(--ok) 22%,transparent); color:var(--ok); }
   .chip.volatile,.chip.fail { background:color-mix(in srgb,var(--hi) 22%,transparent); color:var(--hi); }
+  .chip.abstain { background:var(--field); color:var(--muted); }
   .chain { color:var(--muted); font-size:11.5px; margin-top:3px; font-family:ui-monospace,Menlo,Consolas,monospace; }
   .chain span { display:block; }
   .empty { color:var(--muted); text-align:center; padding:18px 10px; font-size:13px; }
@@ -180,15 +185,23 @@
 </footer>
 
 <script type="module">
+  import Caps from '/nucleo-caps.js';   // what this device can do (anima.device)
   const FILE = '/data/miei-fatti.json';
   const SETTINGS = '/system/config/settings.json';
   const $ = (id) => document.getElementById(id);
   const esc = (s) => String(s).replace(/[&<>]/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;'}[c]));
-  const lang = () => (localStorage.getItem('anima.lang') === 'en' ? 'en' : 'it');
+  const lang = () => { const l=(localStorage.getItem('anima.lang')||'en').slice(0,2); return ['it','en','es','fr','de'].includes(l)?l:'en'; };
 
   // ---- ANIMA teach grammar (matches firmware tool_teach: LEAD + copula è/sono/significa) -----
-  const LEAD = { it:'ricorda che ', en:'remember that ' };
-  const COPW = { is:{it:'è',en:'is'}, are:{it:'sono',en:'are'}, means:{it:'significa',en:'means'} };
+  const LEAD = { it:'ricorda che ', en:'remember that ', es:'recuerda que ', fr:'souviens-toi que ', de:'merke dir, dass ' };
+  const COPW = { is:{it:'è',en:'is',es:'es',fr:'est',de:'ist'}, are:{it:'sono',en:'are',es:'son',fr:'sont',de:'sind'}, means:{it:'significa',en:'means',es:'significa',fr:'signifie',de:'bedeutet'} };
+  // Per-language particles for the derived relation sentences (kept copula-free in the subject — see NB below).
+  const CONJ = { it:'e', en:'and', es:'y', fr:'et', de:'und' };                 // "A e B" / "A and B"
+  const SIBV = { it:'fratelli', en:'siblings', es:'hermanos', fr:'frères et sœurs', de:'Geschwister' };
+  const MARV = { it:'sposati', en:'married', es:'casados', fr:'mariés', de:'verheiratet' };
+  const FRIV = { it:'amici', en:'friends', es:'amigos', fr:'amis', de:'Freunde' };
+  const GW   = { it:{f:'la nonna',m:'il nonno'}, en:{f:'grandmother',m:'grandfather'}, es:{f:'la abuela',m:'el abuelo'}, fr:{f:'la grand-mère',m:'le grand-père'}, de:{f:'die Großmutter',m:'der Großvater'} };
+  const PW   = { it:{f:'mamma',m:'papà'}, en:{f:'mother',m:'father'}, es:{f:'madre',m:'padre'}, fr:{f:'mère',m:'père'}, de:{f:'Mutter',m:'Vater'} };
   // NB: derived subjects must never contain a standalone copula word (è/sono/significa | is/are/means),
   // because tool_teach splits on the FIRST copula. All templates below are copula-free in the subject.
   function sentence(subject, value, cop, l){ return LEAD[l] + subject.trim() + ' ' + COPW[cop][l] + ' ' + value.trim(); }
@@ -199,87 +212,44 @@
   // relation type -> { picker label, derived fact (subject/value/cop), graph kind }
   // graph kinds: loc | parent(g) | sib  used by the deduction engine
   const REL = {
-    loc:   { kind:'loc',      lab:{it:'si trova / è in', en:'is located in'},
-             fact:(a,b,l)=> l==='en'?{s:`the location of ${a}`,v:b,c:'is'}:{s:`dove si trova ${a}`,v:b,c:'is'} },
-    abita: { kind:'loc',      lab:{it:'abita a / vive a', en:'lives in'},
-             fact:(a,b,l)=> l==='en'?{s:`where ${a} lives`,v:b,c:'is'}:{s:`dove abita ${a}`,v:b,c:'is'} },
-    mamma: { kind:'parent', g:'f', lab:{it:'è la mamma di', en:'is the mother of'},
-             fact:(a,b,l)=> l==='en'?{s:`the mother of ${b}`,v:a,c:'is'}:{s:`la mamma di ${b}`,v:a,c:'is'} },
-    papa:  { kind:'parent', g:'m', lab:{it:'è il papà di', en:'is the father of'},
-             fact:(a,b,l)=> l==='en'?{s:`the father of ${b}`,v:a,c:'is'}:{s:`il papà di ${b}`,v:a,c:'is'} },
-    fratelli:{ kind:'sib',  lab:{it:'è fratello/sorella di', en:'is a sibling of'},
-             fact:(a,b,l)=> l==='en'?{s:`${a} and ${b}`,v:'siblings',c:'are'}:{s:`${a} e ${b}`,v:'fratelli',c:'are'} },
-    sposati:{ kind:'pair',  lab:{it:'è sposato/a con', en:'is married to'},
-             fact:(a,b,l)=> l==='en'?{s:`${a} and ${b}`,v:'married',c:'are'}:{s:`${a} e ${b}`,v:'sposati',c:'are'} },
-    amici: { kind:'pair',   lab:{it:'è amico/a di', en:'is a friend of'},
-             fact:(a,b,l)=> l==='en'?{s:`${a} and ${b}`,v:'friends',c:'are'}:{s:`${a} e ${b}`,v:'amici',c:'are'} },
+    loc:   { kind:'loc',      lab:{it:'si trova / è in', en:'is located in', es:'se encuentra en', fr:'se trouve à', de:'befindet sich in'},
+             fact:(a,b,l)=>({ s:({it:`dove si trova ${a}`,en:`the location of ${a}`,es:`la ubicación de ${a}`,fr:`l’emplacement de ${a}`,de:`der Standort von ${a}`}[l]||`the location of ${a}`), v:b, c:'is' }) },
+    abita: { kind:'loc',      lab:{it:'abita a / vive a', en:'lives in', es:'vive en', fr:'habite à', de:'wohnt in'},
+             fact:(a,b,l)=>({ s:({it:`dove abita ${a}`,en:`where ${a} lives`,es:`dónde vive ${a}`,fr:`où habite ${a}`,de:`wo ${a} wohnt`}[l]||`where ${a} lives`), v:b, c:'is' }) },
+    mamma: { kind:'parent', g:'f', lab:{it:'è la mamma di', en:'is the mother of', es:'es la madre de', fr:'est la mère de', de:'ist die Mutter von'},
+             fact:(a,b,l)=>({ s:({it:`la mamma di ${b}`,en:`the mother of ${b}`,es:`la madre de ${b}`,fr:`la mère de ${b}`,de:`die Mutter von ${b}`}[l]||`the mother of ${b}`), v:a, c:'is' }) },
+    papa:  { kind:'parent', g:'m', lab:{it:'è il papà di', en:'is the father of', es:'es el padre de', fr:'est le père de', de:'ist der Vater von'},
+             fact:(a,b,l)=>({ s:({it:`il papà di ${b}`,en:`the father of ${b}`,es:`el padre de ${b}`,fr:`le père de ${b}`,de:`der Vater von ${b}`}[l]||`the father of ${b}`), v:a, c:'is' }) },
+    fratelli:{ kind:'sib',  lab:{it:'è fratello/sorella di', en:'is a sibling of', es:'es hermano/a de', fr:'est frère/sœur de', de:'ist Geschwister von'},
+             fact:(a,b,l)=>({ s:`${a} ${CONJ[l]||'and'} ${b}`, v:(SIBV[l]||'siblings'), c:'are' }) },
+    sposati:{ kind:'pair',  lab:{it:'è sposato/a con', en:'is married to', es:'está casado/a con', fr:'est marié(e) à', de:'ist verheiratet mit'},
+             fact:(a,b,l)=>({ s:`${a} ${CONJ[l]||'and'} ${b}`, v:(MARV[l]||'married'), c:'are' }) },
+    amici: { kind:'pair',   lab:{it:'è amico/a di', en:'is a friend of', es:'es amigo/a de', fr:'est ami(e) de', de:'ist befreundet mit'},
+             fact:(a,b,l)=>({ s:`${a} ${CONJ[l]||'and'} ${b}`, v:(FRIV[l]||'friends'), c:'are' }) },
   };
   const REL_ORDER = ['loc','abita','mamma','papa','fratelli','sposati','amici'];
 
   // ---- i18n ------------------------------------------------------------------
-  const S = {
-    it: { sub:'Insegna fatti ad ANIMA — e ANIMA ne deduce di nuovi.',
-      mfact:'Fatto', mrel:'Relazione',
-      addhint:'ANIMA imparerà questo fatto sul dispositivo e potrai chiederglielo a parole tue.',
-      relhint:'Collega due entità: ANIMA impara la relazione E deduce i fatti che ne derivano.',
-      cat:'Categoria', subj:'Soggetto', val:'Valore', teach:'Insegna ad ANIMA',
-      rela:'Entità A', relr:'Relazione', relb:'Entità B', addrel:'Aggiungi relazione',
-      dedh:'Deduzioni di ANIMA', dedhint:'Fatti che ANIMA NON gli hai detto, dedotti dalle tue relazioni (logica deterministica, zero invenzioni). Insegnali e ANIMA li ricorderà.',
-      teachded:'Insegna tutte le deduzioni', graph:'Grafo',
-      listh:'Memorizzati', reteach:'Re-insegna tutto', verifyall:'Verifica tutti',
-      profh:'Chi sono', profhint:'Dati personali deterministici: ANIMA li richiama esatti (nome, età, città…).',
-      saveprof:'Salva e insegna profilo', askprof:'Cosa sa ANIMA di me?',
-      p:{name:'Nome',age:'Età',city:'Città',job:'Lavoro',email:'Email',birthday:'Compleanno'},
-      foot:'Offline · sul dispositivo', footk:'cerca', footk2:'insegna',
-      empty:'Nessun fatto ancora. Aggiungi un fatto o una relazione qui sopra.',
-      listhint:(n)=>`${n}/128 fatti insegnabili ad ANIMA. Oltre, i più vecchi vengono dimenticati dal dispositivo (la lista qui resta).`,
-      cats:{person:'👤 Persona / Contatto',place:'📍 Luogo / Oggetto',define:'📖 Definizione',generic:'🔖 Generico'},
-      ph:{ person:['il numero di mamma','333 123 4567'], place:['il passaporto','nel cassetto blu'],
-           define:['HTTP','HyperText Transfer Protocol'], generic:['la mia auto','una Fiat Panda rossa'] },
-      phrel:{a:'Marco', b:'Anna'},
-      willlearn:'ANIMA imparerà:', dedwill:'Deduzione:', needboth:'Inserisci soggetto e valore.', needrel:'Inserisci entità A e B.',
-      teaching:'Insegno ad ANIMA…', taught:'Imparato! ANIMA ora lo ricorda.', relAdded:'Relazione aggiunta e insegnata.',
-      volatile:'ANIMA non lo memorizza: sembra temporaneo (oggi/adesso/meteo…).',
-      failteach:'ANIMA non è riuscita a impararlo ora.', noconn:'Dispositivo non raggiungibile.',
-      verifying:'Verifico con ANIMA…', vok:'✓ ANIMA risponde:', vno:'✗ ANIMA non l’ha ricordato.',
-      del:'Elimina', edit:'Modifica', verify:'Verifica', teach1:'Insegna',
-      reteachDone:(o,n)=>`Re-insegnati ${o}/${n}.`, verifyDone:(o,n)=>`Verificati ${o}/${n}.`,
-      dedDone:(o,n)=>`Insegnate ${o}/${n} deduzioni.`, profSaved:'Profilo salvato e insegnato.', asking:'Chiedo ad ANIMA…',
-      noded:'Aggiungi più relazioni (es. due genitori, o due luoghi collegati) e qui appariranno le deduzioni.',
-      chip:{new:'da insegnare',taught:'insegnato',verified:'verificato',volatile:'temporaneo',fail:'errore'},
-      tagRel:'relazione', tagDed:'dedotto', because:'perché' },
-    en: { sub:'Teach facts to ANIMA — and ANIMA deduces new ones.',
-      mfact:'Fact', mrel:'Relation',
-      addhint:'ANIMA learns this fact on the device; ask it back in your own words.',
-      relhint:'Link two entities: ANIMA learns the relation AND deduces the facts that follow.',
-      cat:'Category', subj:'Subject', val:'Value', teach:'Teach ANIMA',
-      rela:'Entity A', relr:'Relation', relb:'Entity B', addrel:'Add relation',
-      dedh:'ANIMA’s deductions', dedhint:'Facts you never told ANIMA, deduced from your relations (deterministic logic, no guessing). Teach them and ANIMA will remember them.',
-      teachded:'Teach all deductions', graph:'Graph',
-      listh:'Stored', reteach:'Re-teach all', verifyall:'Verify all',
-      profh:'About me', profhint:'Deterministic personal data: ANIMA recalls these exactly (name, age, city…).',
-      saveprof:'Save & teach profile', askprof:'What does ANIMA know about me?',
-      p:{name:'Name',age:'Age',city:'City',job:'Job',email:'Email',birthday:'Birthday'},
-      foot:'Offline · on device', footk:'search', footk2:'teach',
-      empty:'No facts yet. Add a fact or a relation above.',
-      listhint:(n)=>`${n}/128 facts teachable to ANIMA. Beyond that the device forgets the oldest (this list stays).`,
-      cats:{person:'👤 Person / Contact',place:'📍 Place / Object',define:'📖 Definition',generic:'🔖 General'},
-      ph:{ person:['mum’s phone number','333 123 4567'], place:['the passport','in the blue drawer'],
-           define:['HTTP','HyperText Transfer Protocol'], generic:['my car','a red Fiat Panda'] },
-      phrel:{a:'Marco', b:'Anna'},
-      willlearn:'ANIMA will learn:', dedwill:'Deduction:', needboth:'Enter a subject and a value.', needrel:'Enter entity A and B.',
-      teaching:'Teaching ANIMA…', taught:'Learned! ANIMA now remembers it.', relAdded:'Relation added and taught.',
-      volatile:'ANIMA won’t store it: looks temporary (today/now/weather…).',
-      failteach:'ANIMA could not learn it now.', noconn:'Device unreachable.',
-      verifying:'Verifying with ANIMA…', vok:'✓ ANIMA answers:', vno:'✗ ANIMA didn’t recall it.',
-      del:'Delete', edit:'Edit', verify:'Verify', teach1:'Teach',
-      reteachDone:(o,n)=>`Re-taught ${o}/${n}.`, verifyDone:(o,n)=>`Verified ${o}/${n}.`,
-      dedDone:(o,n)=>`Taught ${o}/${n} deductions.`, profSaved:'Profile saved and taught.', asking:'Asking ANIMA…',
-      noded:'Add more relations (e.g. two parents, or two linked places) and deductions will appear here.',
-      chip:{new:'to teach',taught:'taught',verified:'verified',volatile:'temporary',fail:'error'},
-      tagRel:'relation', tagDed:'deduced', because:'because' }
-  };
-  const t = () => S[lang()];
+  // Strings live in i18n.<lang>.json like every other app (flat dot-keyed catalogs, tracked by the
+  // i18n gate at 5-language parity). The whole app was written against a NESTED view — x.p.name,
+  // x.ph[cat][0], x.chip[state] — so the active catalog is unflattened back into that shape, one
+  // cached view per language. t() stays synchronous (40+ call sites): boot awaits loadStrings()
+  // before the first paint, and every language-switch path reloads the view before repainting.
+  const _views = {};                                   // lang -> nested strings view
+  const unflatten = (flat) => { const o = {};
+    for (const [k, v] of Object.entries(flat)) { if (k === '_lang') continue;
+      const parts = k.split('.'); let cur = o;
+      for (let i = 0; i < parts.length - 1; i++) cur = (cur[parts[i]] ||= {});
+      cur[parts[parts.length - 1]] = v; }
+    return o; };
+  async function loadStrings(l) {
+    if (_views[l]) return _views[l];
+    try { const r = await fetch('./i18n.' + l + '.json');
+      if (r.ok) return (_views[l] = unflatten(await r.json())); } catch {}
+    return l === 'en' ? null : loadStrings('en');       // base language is the last resort
+  }
+  const t = () => _views[lang()] || _views.en;
+  const tf = (tpl, vars) => String(tpl||'').replace(/\{(\w+)\}/g, (_, k) => (k in vars ? vars[k] : '{'+k+'}'));
 
   // ---- storage ---------------------------------------------------------------
   let state = { schema:2, profile:{name:'',age:'',city:'',job:'',email:'',birthday:''}, facts:[], rels:[] };
@@ -288,28 +258,55 @@
 
   async function readJSON(p){ try{ const r=await fetch('/api/fs/read?path='+encodeURIComponent(p),{cache:'no-store'}); return r.ok?JSON.parse(await r.text()):null; }catch{ return null; } }
   async function writeJSON(p,o){ try{ const r=await fetch('/api/fs/write?path='+encodeURIComponent(p),{method:'POST',body:JSON.stringify(o,null,2)}); return r.ok; }catch{ return false; } }
-  async function anima(q){ try{ const r=await fetch('/api/anima?q='+encodeURIComponent(q)+'&lang='+lang(),{cache:'no-store'}); return r.ok?await r.json():null; }catch{ return null; } }
+  // ANIMA on the device (capability anima.device): where it lives in the browser the device would abstain — same
+  // neutral answer, no request.
+  async function anima(q){ if(!(await Caps.has('anima.device'))) return { none:true }; try{ const r=await fetch('/api/anima?q='+encodeURIComponent(q)+'&lang='+lang(),{cache:'no-store'}); return r.ok?await r.json():null; }catch{ return null; } }
 
-  function scheduleSave(){ dirty=true; $('save').textContent=t().teaching?'…':''; $('save').textContent='…'; clearTimeout(saveTimer);
+  // Typed read of the facts file. A FAILED read (offline, 401, 503, corrupt JSON) is NOT "no facts": the old
+  // code kept the empty default and the next teach/edit saved it over the real file. 404 = none yet.
+  async function readFacts(){
+    try{ const r=await fetch('/api/fs/read?path='+encodeURIComponent(FILE),{cache:'no-store'});
+      if(r.status===404) return {ok:true,data:null};
+      if(!r.ok) return {ok:false,status:r.status};
+      const txt=(await r.text()).trim(); if(!txt) return {ok:true,data:null};
+      const d=JSON.parse(txt);
+      if(d&&typeof d==='object'&&!Array.isArray(d)&&(Array.isArray(d.facts)||!Object.keys(d).length)) return {ok:true,data:Array.isArray(d.facts)?d:null};
+      return {ok:false,status:'corrupt'};
+    }catch(e){ return {ok:false,status:e instanceof SyntaxError?'corrupt':0}; }
+  }
+  let readOk=false, readStatus=0;            // saving is allowed only once the REAL file was read (or is known not to exist)
+  const readFailText=(st)=>st===401||st===403?t().notPaired:st==='corrupt'?t().readCorrupt:t().readFailed;
+  // Every edit asks first: while the real file is unknown, re-read it; if it still fails, say so and refuse.
+  async function canEdit(msgEl){
+    if(readOk) return true;
+    await load(); if(readOk){ if(msgEl!==$('profmsg')) loadProfileInputs(); render(); return true; }   // never wipe a profile being typed
+    if(msgEl){ msgEl.className='ask err'; msgEl.textContent=readFailText(readStatus); }
+    $('save').textContent='⚠'; return false;
+  }
+  function scheduleSave(){ if(!readOk) return; dirty=true; $('save').textContent=t().teaching?'…':''; $('save').textContent='…'; clearTimeout(saveTimer);
     saveTimer=setTimeout(async()=>{ const ok=await writeJSON(FILE,state); dirty=false; $('save').textContent=ok?'✓':'⚠'; setTimeout(()=>{ if(!dirty)$('save').textContent=''; },1400); },350); }
-  async function flushSave(){ clearTimeout(saveTimer); const ok=await writeJSON(FILE,state); dirty=false; $('save').textContent=ok?'✓':'⚠'; setTimeout(()=>{ if(!dirty)$('save').textContent=''; },1400); }
+  async function flushSave(){ if(!readOk) return; clearTimeout(saveTimer); const ok=await writeJSON(FILE,state); dirty=false; $('save').textContent=ok?'✓':'⚠'; setTimeout(()=>{ if(!dirty)$('save').textContent=''; },1400); }
 
   // ---- teach / verify engine -------------------------------------------------
   function classify(j){
     if(!j) return 'noconn';
+    if(j.none===true) return 'abstain';   // the device abstains (on the Handheld the ANIMA brain lives in the browser WASM) — NEUTRAL state, not an error
     const reply=String(j.reply||'').toLowerCase();
-    if(/temporane|temporary/.test(reply)) return 'volatile';
-    if(/non riesc|can.?t learn|couldn.?t learn/.test(reply)) return 'fail';
-    if(j.intent==='teach'||j.intent==='profile'||/impara|ricord|got it|i.?ll remember|remember/.test(reply)) return 'ok';
+    if(/tempor|vorübergehend/.test(reply)) return 'volatile';   // it/en/es/fr temporane*/temporary/temporal/temporaire · de temporär/vorübergehend
+    if(/non riesc|can.?t learn|couldn.?t learn|no puedo|no pude|ne peux|n.ai pas pu|kann nicht|konnte nicht/.test(reply)) return 'fail';
+    if(j.intent==='teach'||j.intent==='profile'||/impara|ricord|got it|i.?ll remember|remember|aprend|recuerd|appris|retiens|mémor|souvien|gelernt|merke|erinner/.test(reply)) return 'ok';   // Cardputer's /api/anima carries `intent`; other backends may not → the reply text decides
     return 'fail';
   }
   function replyHasValue(reply,value){ const r=String(reply||'').toLowerCase();
     const toks=String(value||'').toLowerCase().split(/[\s,]+/).filter(x=>x.length>=2); return toks.length>0 && toks.every(x=>r.includes(x)); }
   // teach an item that exposes {subject,value,cop,status}
   async function teachItem(it){ const j=await anima(sentence(it.subject,it.value,it.cop,lang())); const k=classify(j);
-    it.status = k==='ok'?'taught' : k==='volatile'?'volatile' : k==='noconn'?(it.status||'new') : 'fail'; return {k,reply:j&&j.reply}; }
-  async function verifyItem(it){ const j=await anima(it.subject); const ok=j&&replyHasValue(j.reply,it.value);
-    if(ok) it.status='verified'; else if(it.status==='verified') it.status='taught'; return {ok,reply:j&&j.reply}; }
+    it.status = k==='ok'?'taught' : k==='volatile'?'volatile' : k==='abstain'?'abstain' : k==='noconn'?(it.status||'new') : 'fail'; return {k,reply:j&&j.reply}; }
+  async function verifyItem(it){ const j=await anima(it.subject);
+    if(!j) return {ok:false,reply:null};                                                        // noconn
+    if(j.none===true || !String(j.reply||'').trim()) return {ok:false,reply:'',abstain:true};    // device abstains → NEUTRAL, do not downgrade
+    const ok=replyHasValue(j.reply,it.value);
+    if(ok) it.status='verified'; else if(it.status==='verified') it.status='taught'; return {ok,reply:j.reply}; }
 
   // ---- model helpers: a unified "fact view" over flat facts + relations ------
   const norm = (s)=>String(s||'').trim().toLowerCase();
@@ -334,7 +331,7 @@
       else if(k==='sib') sib.push([r.a.trim(),r.b.trim()]); }
     // exclude facts already stored (by normalized subject|value)
     const stored=new Set(allViews().map(v=>norm(v.subject)+'|'+norm(v.value)));
-    const locSubj=(a)=> l==='en'?`the location of ${a}`:`dove si trova ${a}`;
+    const locSubj=(a)=> ({it:`dove si trova ${a}`,en:`the location of ${a}`,es:`la ubicación de ${a}`,fr:`l’emplacement de ${a}`,de:`der Standort von ${a}`}[l]||`the location of ${a}`);
     const because = t().because;
     const add=(s,v,c,chain)=>{ const key=norm(s)+'|'+norm(v); if(seen.has(key)||stored.has(key))return; seen.add(key); out.push({subject:s,value:v,cop:c,chain}); };
     const line=(s,v,c)=> sentence(s,v,c,l).slice(LEAD[l].length); // human premise text without the lead
@@ -348,9 +345,9 @@
     // 2) Grandparent: parent(A,B) ∧ parent(B,C) ⟹ grandparent(A,C); gender from A's parent relation
     for(const p1 of parent) for(const p2 of parent){
       if(norm(p1.b)===norm(p2.a) && norm(p1.a)!==norm(p2.b)){
-        const gw = p1.g==='f' ? (l==='en'?'grandmother':'la nonna') : (l==='en'?'grandfather':'il nonno');
-        const subj = l==='en'? `the ${gw} of ${p2.b}` : `${gw} di ${p2.b}`;
-        const pw = (g)=> g==='f'?(l==='en'?'mother':'mamma'):(l==='en'?'father':'papà');
+        const gm = GW[l]||GW.en; const gw = p1.g==='f' ? gm.f : gm.m;
+        const subj = ({it:`${gw} di ${p2.b}`,en:`the ${gw} of ${p2.b}`,es:`${gw} de ${p2.b}`,fr:`${gw} de ${p2.b}`,de:`${gw} von ${p2.b}`}[l]||`the ${gw} of ${p2.b}`);
+        const pw = (g)=>{ const m=PW[l]||PW.en; return g==='f'?m.f:m.m; };
         add(subj, p1.a, 'is', [`${p1.a} = ${pw(p1.g)} (${p1.b})`, `${p1.b} = ${pw(p2.g)} (${p2.b})`]);
       }
     }
@@ -363,8 +360,8 @@
       const direct=new Set(); sib.forEach(([a,b])=>{ uni(norm(a),norm(b)); direct.add(norm(a)+'|'+norm(b)); direct.add(norm(b)+'|'+norm(a)); });
       for(let i=0;i<ents.length;i++) for(let j=i+1;j<ents.length;j++){ const a=ents[i],b=ents[j];
         if(find(a)===find(b) && !direct.has(a+'|'+b)){
-          const subj=l==='en'?`${disp[a]} and ${disp[b]}`:`${disp[a]} e ${disp[b]}`;
-          add(subj, l==='en'?'siblings':'fratelli', 'are', [`${disp[a]} ⋈ … ⋈ ${disp[b]}`]);
+          const subj=`${disp[a]} ${CONJ[l]||'and'} ${disp[b]}`;
+          add(subj, (SIBV[l]||'siblings'), 'are', [`${disp[a]} ⋈ … ⋈ ${disp[b]}`]);
         } }
     }
     return out;
@@ -381,7 +378,7 @@
     const views = allViews();
     // stored list
     const ul=$('facts'), n=views.length;
-    $('t-listhint').textContent=t().listhint(n);
+    $('t-listhint').textContent=tf(t().listhint,{n});
     $('empty').hidden=n>0; ul.hidden=n===0;
     ul.innerHTML='';
     for(const v of views){ const ch=v.status||'new';
@@ -391,7 +388,7 @@
         <div class="val">${esc(v.value)}</div><div class="ask" data-role="msg"></div></div>${actionsHtml()}`;
       ul.appendChild(li);
     }
-    if(n===0) $('empty').textContent=t().empty;
+    if(n===0) $('empty').textContent=readOk?t().empty:readFailText(readStatus);
     // deductions
     deds = deduce();
     $('ded-card').hidden = state.rels.length===0;
@@ -431,6 +428,7 @@
   async function doTeach(){
     const subject=$('subj').value.trim(), value=$('val').value.trim(), cat=$('cat').value, msg=$('addmsg');
     if(!subject||!value){ msg.className='ask err'; msg.textContent=t().needboth; return; }
+    if(!(await canEdit(msg))) return;                         // what was typed stays in the fields
     msg.className='ask'; msg.textContent=t().teaching; $('teach').disabled=true;
     const rec={ id:nextId(), kind:'flat', cat, subject, value, cop:copulaForCat(cat), status:'new', ts:Date.now() };
     const {k,reply}=await teachItem(viewOf(rec,lang())); $('teach').disabled=false;
@@ -439,6 +437,7 @@
     $('subj').value=''; $('val').value=''; renderPreview(); $('subj').focus();
     if(k==='ok'){ msg.className='ask'; msg.innerHTML='<b>'+t().taught+'</b>'; }
     else if(k==='volatile'){ msg.className='ask err'; msg.textContent=t().volatile; }
+    else if(k==='abstain'){ msg.className='ask'; msg.textContent=t().chip.abstain; }
     else { msg.className='ask err'; msg.textContent=t().failteach+(reply?(' — '+reply):''); }
   }
 
@@ -449,6 +448,7 @@
   async function addRel(){
     const a=$('rel-a').value.trim(), b=$('rel-b').value.trim(), type=$('rel-r').value, msg=$('relmsg');
     if(!a||!b){ msg.className='ask err'; msg.textContent=t().needrel; return; }
+    if(!(await canEdit(msg))) return;
     msg.className='ask'; msg.textContent=t().teaching; $('addrel').disabled=true;
     const rec={ id:nextId(), kind:'rel', type, a, b, status:'new', ts:Date.now() };
     const {k,reply}=await teachItem(viewOf(rec,lang())); $('addrel').disabled=false;
@@ -457,6 +457,7 @@
     $('rel-a').value=''; $('rel-b').value=''; renderRelPreview(); $('rel-a').focus();
     if(k==='ok'||k==='taught'){ msg.className='ask'; msg.innerHTML='<b>'+t().relAdded+'</b>'; }
     else if(k==='volatile'){ msg.className='ask err'; msg.textContent=t().volatile; }
+    else if(k==='abstain'){ msg.className='ask'; msg.textContent=t().chip.abstain; }
     else { msg.className='ask err'; msg.textContent=t().failteach+(reply?(' — '+reply):''); }
   }
 
@@ -473,8 +474,9 @@
       state.rels=state.rels.filter(x=>x.id!==id); state.facts=state.facts.filter(x=>x.id!==id); scheduleSave(); render(); return;
     }
     if(btn.dataset.act==='verify'){ const msg=li.querySelector('[data-role="msg"]'); msg.className='ask'; msg.textContent=t().verifying; btn.disabled=true;
-      const {ok,reply}=await verifyItem(v); btn.disabled=false; scheduleSave(); render();
-      const m2=$('facts').querySelector(`li[data-id="${id}"] [data-role="msg"]`); if(m2){ m2.className=ok?'ask':'ask err'; m2.innerHTML=ok?(t().vok+' '+esc(reply)):t().vno; } return; }
+      const {ok,reply,abstain}=await verifyItem(v); btn.disabled=false; scheduleSave(); render();
+      const m2=$('facts').querySelector(`li[data-id="${id}"] [data-role="msg"]`);
+      if(m2){ if(abstain){ m2.className='ask'; m2.textContent=t().chip.abstain; } else { m2.className=ok?'ask':'ask err'; m2.innerHTML=ok?(t().vok+' '+esc(reply)):t().vno; } } return; }
   }
   async function onDedClick(e){
     const btn=e.target.closest('button[data-act="teachded"]'); if(!btn) return;
@@ -488,25 +490,36 @@
   async function teachAllDeds(){ if(!deds.length) return; $('teachded').disabled=true; let ok=0; const snapshot=[...deds];
     for(const d of snapshot){ const rec={ id:nextId(), kind:'flat', cat:'generic', subject:d.subject, value:d.value, cop:d.cop, status:'new', src:'deduced', ts:Date.now() };
       const r=await teachItem(viewOf(rec,lang())); if(r.k==='ok') ok++; state.facts.unshift(rec); }
-    scheduleSave(); render(); flash($('dedmsg'), t().dedDone(ok,snapshot.length)); }
+    scheduleSave(); render(); flash($('dedmsg'), tf(t().dedDone,{o:ok,n:snapshot.length})); }
   async function reteachAll(){ const vs=allViews(); if(!vs.length) return; $('reteach').disabled=true; let ok=0;
-    for(const v of vs){ const r=await teachItem(v); if(r.k==='ok') ok++; } $('reteach').disabled=false; scheduleSave(); render(); flash($('addmsg'),t().reteachDone(ok,vs.length)); }
+    for(const v of vs){ const r=await teachItem(v); if(r.k==='ok') ok++; } $('reteach').disabled=false; scheduleSave(); render(); flash($('addmsg'),tf(t().reteachDone,{o:ok,n:vs.length})); }
   async function verifyAll(){ const vs=allViews(); if(!vs.length) return; $('verifyall').disabled=true; let ok=0;
-    for(const v of vs){ const r=await verifyItem(v); if(r.ok) ok++; } $('verifyall').disabled=false; scheduleSave(); render(); flash($('addmsg'),t().verifyDone(ok,vs.length)); }
+    for(const v of vs){ const r=await verifyItem(v); if(r.ok) ok++; } $('verifyall').disabled=false; scheduleSave(); render(); flash($('addmsg'),tf(t().verifyDone,{o:ok,n:vs.length})); }
   function flash(el,txt){ el.className='ask'; el.textContent=txt; setTimeout(()=>{ if(el.textContent===txt) el.textContent=''; },4000); }
 
   // ---- profile ---------------------------------------------------------------
   const PF=['name','age','city','job','email','birthday'];
   function loadProfileInputs(){ for(const k of PF) $('p-'+k).value=state.profile[k]||''; }
   function profileSentence(field,value,l){ value=value.trim(); if(!value) return null;
-    const it={name:`mi chiamo ${value}`,age:`ho ${value} anni`,city:`abito a ${value}`,job:`il mio lavoro è ${value}`,email:`la mia email è ${value}`,birthday:`il mio compleanno è ${value}`};
-    const en={name:`my name is ${value}`,age:`i am ${value} years old`,city:`i live in ${value}`,job:`my job is ${value}`,email:`my email is ${value}`,birthday:`my birthday is ${value}`};
-    return (l==='en'?en:it)[field]||null; }
-  async function saveProfile(){ $('saveprof').disabled=true; const msg=$('profmsg'); msg.className='ask'; msg.textContent=t().teaching;
-    for(const k of PF){ const v=$('p-'+k).value.trim(); state.profile[k]=v; const s=profileSentence(k,v,lang()); if(s) await anima(s); }
-    scheduleSave(); $('saveprof').disabled=false; msg.innerHTML='<b>'+t().profSaved+'</b>'; }
+    const M={
+      it:{name:`mi chiamo ${value}`,age:`ho ${value} anni`,city:`abito a ${value}`,job:`il mio lavoro è ${value}`,email:`la mia email è ${value}`,birthday:`il mio compleanno è ${value}`},
+      en:{name:`my name is ${value}`,age:`i am ${value} years old`,city:`i live in ${value}`,job:`my job is ${value}`,email:`my email is ${value}`,birthday:`my birthday is ${value}`},
+      es:{name:`me llamo ${value}`,age:`tengo ${value} años`,city:`vivo en ${value}`,job:`mi trabajo es ${value}`,email:`mi email es ${value}`,birthday:`mi cumpleaños es ${value}`},
+      fr:{name:`je m’appelle ${value}`,age:`j’ai ${value} ans`,city:`j’habite à ${value}`,job:`mon travail est ${value}`,email:`mon email est ${value}`,birthday:`mon anniversaire est ${value}`},
+      de:{name:`ich heiße ${value}`,age:`ich bin ${value} Jahre alt`,city:`ich wohne in ${value}`,job:`mein Beruf ist ${value}`,email:`meine E-Mail ist ${value}`,birthday:`mein Geburtstag ist ${value}`},
+    };
+    return (M[l]||M.en)[field]||null; }
+  async function saveProfile(){ if(!(await canEdit($('profmsg')))) return; $('saveprof').disabled=true; const msg=$('profmsg'); msg.className='ask'; msg.textContent=t().teaching;
+    // The file is saved either way; "taught" only when ANIMA confirmed every field. It used to say so even when
+    // the device answered "I don't know" to all of them (web profile), and the profile was never learned.
+    let bad=0, off=false;
+    for(const k of PF){ const v=$('p-'+k).value.trim(); state.profile[k]=v; const s=profileSentence(k,v,lang());
+      if(!s || off) continue; const c=classify(await anima(s)); if(c==='noconn') off=true; else if(c!=='ok') bad++; }
+    scheduleSave(); $('saveprof').disabled=false;
+    if(off||bad){ msg.className='ask err'; msg.textContent=t().profNotTaught+(off?' — '+t().noconn:''); return; }
+    msg.innerHTML='<b>'+t().profSaved+'</b>'; }
   async function askProfile(){ const msg=$('profmsg'); msg.className='ask'; msg.textContent=t().asking;
-    const j=await anima(lang()==='en'?'what do you know about me':'cosa sai di me'); msg.textContent=j?(j.reply||''):t().noconn; }
+    const j=await anima(({it:'cosa sai di me',en:'what do you know about me',es:'qué sabes de mí',fr:'que sais-tu sur moi',de:'was weißt du über mich'}[lang()]||'cosa sai di me')); msg.textContent=j?(j.reply||''):t().noconn; }
 
   // ---- mode + i18n -----------------------------------------------------------
   function setMode(m){ mode=m; $('m-flat').hidden=m!=='flat'; $('m-rel').hidden=m!=='rel';
@@ -530,14 +543,20 @@
     renderPreview(); renderRelPreview(); render();
   }
   async function loadTheme(){ const s=await readJSON(SETTINGS); if(s?.ui?.theme) document.documentElement.dataset.theme=s.ui.theme;
-    if(s?.ui?.language==='it'||s?.ui?.language==='en') localStorage.setItem('anima.lang',s.ui.language); }
+    // Mirror the OS language to the canonical anima.lang signal, but only as a FALLBACK: localStorage is
+    // authoritative (the Settings app + i18n engine keep it live), so never clobber an already-set language.
+    const cur=localStorage.getItem('anima.lang');
+    if(!['it','en','es','fr','de'].includes(cur) && ['it','en','es','fr','de'].includes(s?.ui?.language)) localStorage.setItem('anima.lang',s.ui.language); }
 
   // ---- boot ------------------------------------------------------------------
-  async function load(){ const d=await readJSON(FILE);
-    if(d&&typeof d==='object'&&Array.isArray(d.facts)){ state={ schema:2, profile:{name:'',age:'',city:'',job:'',email:'',birthday:''}, facts:[], rels:[], ...d };
+  async function load(){ const r=await readFacts(); readOk=r.ok; readStatus=r.ok?0:r.status;
+    if(!r.ok){ $('save').textContent='⚠'; $('save').title=readFailText(r.status); return; }
+    if($('save').textContent==='⚠'){ $('save').textContent=''; $('save').title=''; }
+    const d=r.data;
+    if(d){ state={ schema:2, profile:{name:'',age:'',city:'',job:'',email:'',birthday:''}, facts:[], rels:[], ...d };
       state.profile={name:'',age:'',city:'',job:'',email:'',birthday:'',...(d.profile||{})}; state.rels=Array.isArray(d.rels)?d.rels:[]; }
     seq=[...state.facts,...state.rels].reduce((m,x)=>Math.max(m,(x.id|0)+1),1); }
-  async function init(){ await loadTheme(); await load(); applyStrings(); loadProfileInputs();
+  async function init(){ await loadTheme(); await loadStrings('en'); if(lang()!=='en') await loadStrings(lang()); await load(); applyStrings(); loadProfileInputs();
     $('seg').addEventListener('click',(e)=>{ const b=e.target.closest('button[data-mode]'); if(b) setMode(b.dataset.mode); });
     $('cat').addEventListener('change',()=>{ applyPlaceholders(); renderPreview(); });
     $('subj').addEventListener('input',renderPreview); $('val').addEventListener('input',renderPreview);
@@ -558,13 +577,13 @@
 
   // Single re-render entry for an external language switch: repaint all labels + reload profile fields.
   // Reused by the OS-wide i18n live-sync hook below (and harmless if called any time).
-  window.__mieiFattiRelang = () => { applyStrings(); loadProfileInputs(); };
+  window.__mieiFattiRelang = () => { loadStrings(lang()).then(() => { applyStrings(); loadProfileInputs(); }); };
 
   // ---- live: theme, language, external edits, OS shortcuts -------------------
   window.addEventListener('message',(e)=>{ const d=e.data||{};
     if(d.type==='set-theme'&&d.theme) document.documentElement.dataset.theme=d.theme;
-    if(d.type==='set-language'&&(d.lang==='it'||d.lang==='en')){ localStorage.setItem('anima.lang',d.lang); applyStrings(); loadProfileInputs(); }
-    if(d.t==='fs.changed'&&typeof d.d?.path==='string'){ if(d.d.path.endsWith('settings.json')) loadTheme().then(applyStrings); else if(d.d.path===FILE&&!dirty) load().then(()=>{ loadProfileInputs(); render(); }); }
+    if(d.type==='set-language'&&['it','en','es','fr','de'].includes(d.lang)){ localStorage.setItem('anima.lang',d.lang); loadStrings(d.lang).then(()=>{ applyStrings(); loadProfileInputs(); }); }
+    if(d.t==='fs.changed'&&typeof d.d?.path==='string'){ if(d.d.path.endsWith('settings.json')) loadTheme().then(()=>window.__mieiFattiRelang()); else if(d.d.path===FILE&&!dirty) load().then(()=>{ loadProfileInputs(); render(); }); }
     if(d.type==='os-shortcut'){ const a=d.action; if(a==='new') (mode==='flat'?$('subj'):$('rel-a')).focus(); else if(a==='save') flushSave(); else if(a==='refresh') load().then(()=>{ loadProfileInputs(); render(); }); }
   });
   addEventListener('keydown',(e)=>{ if(e.key==='/'&&!/^(INPUT|SELECT|TEXTAREA)$/.test(document.activeElement?.tagName||'')){ e.preventDefault(); (mode==='flat'?$('subj'):$('rel-a')).focus(); } });

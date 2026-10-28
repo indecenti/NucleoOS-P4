@@ -1,10 +1,14 @@
 <!doctype html>
+<!-- SPDX-License-Identifier: AGPL-3.0-or-later -->
 <html lang="en">
 <head>
   <meta charset="utf-8">
+  <script>/* NucleoOS resource guard: a lost same-origin script/stylesheet makes the shell reload this window once (wm.js retryFrame) */addEventListener('error',function(e){var t=e.target,u;if(!t||t===window||parent===window||(t.tagName!=='SCRIPT'&&t.tagName!=='LINK'))return;try{u=new URL(t.src||t.href,location.href);if(u.origin===location.origin)parent.postMessage({type:'app-resource-failed',src:u.pathname},location.origin)}catch(_){}},true)</script>
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <title>WiFi Scanner</title>
   <style>
+    /* Native controls and scrollbars follow the app theme. */
+    :root { color-scheme: dark; } html[data-theme="light"] { color-scheme: light; }
     :root { --bg:#0e1830; --panel:#18233a; --text:#e8eefc; --muted:#8aa0c8; --accent:#4ea1ff;
       --line:#2a3a5e; --field:#0b1220; --ok:#2fd07a; --warn:#f5b13d; --err:#e2576b; }
     html[data-theme="light"] { --bg:#eef2fb; --panel:#ffffff; --text:#10203a; --muted:#5a6a86;
@@ -98,6 +102,7 @@
 
   <script type="module">
     import I18N from '/nucleo-i18n.js';
+    import Caps from '/nucleo-caps.js';   // what this device can do (wifi.manage)
     const t = await I18N.init('wifi-scanner');
     const $ = (id) => document.getElementById(id);
     const SETTINGS = '/system/config/settings.json';
@@ -138,7 +143,8 @@
         const r = await fetch('/api/wifi/known', { cache: 'no-store' });
         if (!r.ok) { known = new Map(); return; }
         const j = await r.json();
-        known = new Map((j.networks || []).map((n) => [n.ssid, { priority: n.priority | 0, current: !!n.current }]));
+        // has_pass absent (older firmware) -> assume the password is stored, the old behaviour.
+        known = new Map((j.networks || []).map((n) => [n.ssid, { priority: n.priority | 0, current: !!n.current, hasPass: n.has_pass !== false }]));
         if (j.ssid) connectedSSID = j.ssid;
       } catch { known = new Map(); }
     }
@@ -163,8 +169,10 @@
         const r = await fetch('/api/wifi/forget', { method: 'POST', headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify({ ssid }) });
         if (r.status === 401) { toast(t('need_pair')); return; }
-        toast(t('forgotten'));
-      } catch {}
+        // A refused forget must not read as done: the network would still be there on the next scan.
+        const j = await r.json().catch(() => ({}));
+        toast(!r.ok || j.ok === false ? t('forget_failed') : t('forgotten'));
+      } catch { toast(t('forget_failed')); }
       await fetchKnown(); if (lastNets) render(lastNets);
     }
 
@@ -177,12 +185,13 @@
       closeActions();
       const saved = known.get(n.ssid);
       const cur = connectedSSID && n.ssid === connectedSSID;
-      // Show a password field for any secured network. For a saved one it's optional (leave blank to
-      // reuse the stored password) — but always available so a wrong/empty stored password can be fixed.
+      // Show a password field for any secured network. For a saved one WITH a stored password it's
+      // optional (leave blank to reuse it) — but always available so a wrong stored password can be fixed.
+      // A saved one WITHOUT (recovered from the password-free SD mirror) asks for it like a new network.
       const needPass = !isOpen(n.auth);
       const act = document.createElement('div'); act.className = 'act';
       act.innerHTML =
-        (needPass ? `<input class="pw" type="password" placeholder="${saved ? t('password_keep') : t('password')}" autocomplete="off">` : ``) +
+        (needPass ? `<input class="pw" type="password" placeholder="${saved && saved.hasPass ? t('password_keep') : t('password')}" autocomplete="off">` : ``) +
         `<button class="join">${cur ? t('reconnect') : t('connect')}</button>` +
         (saved ? `<button class="forget">${t('forget')}</button>` : ``);
       act.onclick = (e) => e.stopPropagation();
@@ -193,8 +202,20 @@
       if (pw) pw.addEventListener('keydown', (e) => { if (e.key === 'Enter') joinNet(n.ssid, pw.value); });
     }
 
+    // No scan result at all (the first scan failed): say why instead of an empty "no networks" list.
+    let failedKey = null;
+    function renderFailed(key) {
+      failedKey = key;
+      const list = $('list'); list.innerHTML = '';
+      const li = document.createElement('li'); li.style.borderBottom = '0';
+      li.innerHTML = `<div class="empty"><span class="big">📡</span><span></span></div>`;
+      li.querySelector('.empty span:last-child').textContent = t(key);
+      list.appendChild(li);
+      $('count').textContent = '—';
+    }
+
     function render(nets) {
-      lastNets = nets;
+      lastNets = nets; failedKey = null;
       const list = $('list');
       list.innerHTML = '';
       if (!nets.length) {
@@ -251,34 +272,22 @@
     }
 
     // Try the device scan endpoint; normalise a few likely field names.
+    // Returns { nets } or { err } (HTTP status, or 0 = unreachable / not a scan answer).
     async function deviceScan() {
       try {
         const r = await fetch('/api/wifi/scan', { cache: 'no-store' });
-        if (!r.ok) return null;
+        if (!r.ok) return { err: r.status };
         const j = await r.json();
         const arr = Array.isArray(j) ? j : (j.networks || j.aps || j.results || null);
-        if (!Array.isArray(arr)) return null;
-        return arr.map((n) => ({
+        if (!Array.isArray(arr)) return { err: 0 };
+        return { nets: arr.map((n) => ({
           ssid: n.ssid ?? n.SSID ?? n.name ?? '',
           rssi: n.rssi ?? n.RSSI ?? n.signal ?? -90,
           channel: n.channel ?? n.ch ?? n.primary ?? null,
           auth: n.auth ?? n.security ?? n.encryption ?? n.authmode ?? null,
           bssid: n.bssid ?? n.BSSID ?? n.mac ?? null,
-        }));
-      } catch { return null; }
-    }
-
-    // Demo set so the app is fully explorable in preview / before the API exists.
-    function demoScan() {
-      return [
-        { ssid: 'NucleoOS-Mesh', rssi: -41, channel: 6,  auth: 'WPA2', bssid: '4C:11:AE:0B:2F:90' },
-        { ssid: 'HomeFiber-5G',  rssi: -57, channel: 36, auth: 'WPA3', bssid: '8C:DE:52:1A:77:01' },
-        { ssid: 'device-AP',  rssi: -63, channel: 1,  auth: 'WPA2', bssid: 'A0:B7:65:34:9C:12' },
-        { ssid: 'GuestZone',     rssi: -71, channel: 11, auth: 'Open', bssid: 'F8:1A:67:22:0D:88' },
-        { ssid: 'IoT-Lab',       rssi: -78, channel: 6,  auth: 'WPA2', bssid: '24:6F:28:5E:31:AA' },
-        { ssid: '',              rssi: -84, channel: 9,  auth: 'WPA2', bssid: 'DC:A6:32:11:8E:43' },
-        { ssid: 'eduroam',       rssi: -88, channel: 44, auth: 'WPA2-Enterprise', bssid: '00:0C:E6:7B:55:10' },
-      ];
+        })) };
+      } catch { return { err: 0 }; }
     }
 
     // Driven from the shell when embedded: status.snapshot keeps connectedSSID fresh (no own
@@ -287,30 +296,23 @@
     const EMBEDDED = window.top !== window.self;
     let osVisible = true;
     let scanning = false;
+    let wifiOk = null;                         // capability wifi.manage, set by init()
     async function scan() {
-      if (scanning || !osVisible) return;
+      if (wifiOk === false || scanning || !osVisible) return;
       scanning = true; $('hd').classList.add('scanning');
       if (!EMBEDDED) await fetchStatus();        // standalone: refresh "connected" highlight (embedded: from snapshot)
       await fetchKnown();                        // refresh the saved-network set (cheap, no scan block)
-      let nets = await deviceScan(), live = true;
-      if (!nets) {                               // no scan API: at least show the connected AP, else demo
-        if (connectedSSID) {
-          const s = await fetchStatus();
-          nets = [{ ssid: connectedSSID, rssi: s?.network?.rssi ?? -55, channel: s?.network?.channel ?? null,
-                    auth: s?.network?.auth ?? 'WPA2', bssid: s?.network?.bssid ?? null }];
-          setSrc('src_connected_only', false);
-          live = false;
-        } else {
-          nets = demoScan(); setSrc('src_demo', false); live = false;
-          if (!known.size) { connectedSSID = 'NucleoOS-Mesh';   // seed the manager UI for offline preview
-            known = new Map([['NucleoOS-Mesh', { priority: 1, current: true }], ['HomeFiber-5G', { priority: 0 }]]); }
-        }
-      } else {
-        setSrc('src_live', true);
+      const res = await deviceScan();
+      if (res.nets) { setSrc('src_live', true); render(res.nets); }
+      else {
+        // A failed scan (offline, busy, not paired — the firmware gates /api/wifi/scan) never invents
+        // networks or a "connected" badge: keep the last REAL scan on screen and say why this one failed.
+        const key = res.err === 401 || res.err === 403 ? 'src_need_pair' : 'src_failed';
+        setSrc(key, false);
+        if (!lastNets) renderFailed(key);
       }
-      render(nets);
       scanning = false; $('hd').classList.remove('scanning');
-      if (live) setSrc('src_live', true, ' · ' + new Date().toLocaleTimeString());
+      if (res.nets) setSrc('src_live', true, ' · ' + new Date().toLocaleTimeString());
     }
 
     // ---- controls --------------------------------------------------------------
@@ -344,13 +346,19 @@
     // On a live language switch, re-render the imperatively-built rows + footer
     // (the observer handles [data-i18n] nodes; these strings are set via t()).
     I18N.onChange(() => {
-      if (lastNets) render(lastNets);
+      if (lastNets) render(lastNets); else if (failedKey) renderFailed(failedKey);
       if (lastSrc) setSrc(lastSrc.key, lastSrc.live, lastSrc.suffix);
     });
 
     // ---- boot ------------------------------------------------------------------
     async function init() {
       await loadTheme();
+      // Scanning and joining are the device's (capability wifi.manage): elsewhere say so, and never scan.
+      // Unknown caps (the device did not answer at all) are not "no Wi-Fi": scan anyway, so the user is told
+      // the real reason (unreachable, not paired) by the scan's own failure path.
+      const ci = await Caps.info().catch(() => ({ source: 'none', caps: [] }));
+      wifiOk = ci.source === 'none' ? null : ci.caps.includes('wifi.manage');
+      if (wifiOk === false) { $('auto').style.display = 'none'; $('scan').style.display = 'none'; renderFailed('wifi_unavailable'); return; }
       scan();
     }
     init();

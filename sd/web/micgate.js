@@ -1,13 +1,14 @@
-// micgate.js — OS-wide microphone gate for NucleoOS (the device's single PDM mic).
+/* SPDX-License-Identifier: AGPL-3.0-or-later */
+// micgate.js — OS-wide microphone gate for NucleoOS (the Cardputer's single PDM mic).
 //
-// The device has exactly ONE physical microphone (PDM on I2S). The firmware already makes a
+// The Cardputer has exactly ONE physical microphone (PDM on I2S). The firmware already makes a
 // double-open impossible at the hardware level — record-to-SD (s_recording) and the live PCM stream
 // (s_streaming) are mutually exclusive atomics, and a loser gets HTTP 409. But that backstop says
 // nothing ABOUT WHO holds the mic, and every web app used to talk to /api/rec/* on its own: ANIMA,
 // the Dettatura app and the Recorder each re-implemented fetch + 409 + reconnect, drifted apart, and
 // could only discover a conflict by blindly trying and catching a 409 (sometimes after ~9s of retries).
 //
-// This module is THE single way web code touches the device mic. Like the download gate
+// This module is THE single way web code touches the Cardputer mic. Like the download gate
 // (dlgate.js) it is built on Web Locks, which coordinate across every same-origin context — so the
 // 'nucleo-mic' lock is genuinely OS-wide: no two apps, tabs or iframes the device serves can hold the
 // mic at once, and the holder's human label is broadcast so anyone can show "🎤 in uso da …".
@@ -68,7 +69,8 @@ export async function withMicLock(label, fn, opts = {}) {
 
 // The label of whoever holds the mic right now across the OS, or null. Sees web holders (any tab) via
 // the lock-label broadcast; the on-device native Recorder holds no web lock, so use micBusy() for that.
-export function activeMicLabel() { return _local || _remote || null; }
+// Not exported, but NOT dead: every busy/error report below names the holder with it.
+function activeMicLabel() { return _local || _remote || null; }
 
 // Best-effort OS-wide busy check INCLUDING the native on-device recorder (which the Web Lock can't see):
 // combines the web lock label with the firmware's /api/rec/status. Returns {busy, label}.
@@ -220,13 +222,26 @@ async function _runRecord(signal, opts) {
   // 600 ms, not 300: the handler reads only static vars (~150 B JSON, no SD), but a take can last
   // minutes, so halving the rate halves the steady load on the single httpd task for an imperceptible
   // VU-meter difference (the consumer interpolates between samples).
+  // The loop MUST be able to end without the firmware's help: if the device drops off the network
+  // mid-take, an unbounded poll would spin forever AND keep the OS-wide mic lock held for the life of
+  // the tab, silencing ANIMA/Dettatura everywhere. Abort ends it immediately; ~15 consecutive misses
+  // (~9 s dark) end it as a fault.
   return await new Promise((resolve) => {
+    let misses = 0, abortDeadline = 0;
+    // After an abort the stop() above is in flight: give the firmware a short grace window to flip
+    // recording:false (so the caller still gets the take's final status), then end regardless.
+    signal.addEventListener('abort', () => { abortDeadline = Date.now() + 5000; }, { once: true });
+    if (signal.aborted) abortDeadline = Date.now() + 5000;
     const poll = setInterval(async () => {
+      if (abortDeadline && Date.now() > abortDeadline) { clearInterval(poll); resolve(null); return; }
       try {
         const s = await (await fetch('/api/rec/status', { cache: 'no-store' })).json();
+        misses = 0;
         onstatus && onstatus(s);
         if (!s.recording) { clearInterval(poll); resolve(s); }
-      } catch { /* transient; keep polling */ }
+      } catch {
+        if (++misses >= 15) { clearInterval(poll); onerror && onerror('audio'); resolve(null); }
+      }
     }, 600);
   });
 }

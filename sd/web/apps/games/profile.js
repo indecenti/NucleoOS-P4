@@ -1,6 +1,7 @@
+/* SPDX-License-Identifier: AGPL-3.0-or-later */
 // profile.js — NucleoOS player identity + stats ("gamercard"). The Xbox-gamertag analogue, but
 // local-first and device-owned: profile and per-game stats live in localStorage AND on the SD
-// (/data/play/*.json) so every surface (device, web, another browser) shares one identity.
+// (/data/play/*.json) so every surface (Cardputer, web, another browser) shares one identity.
 //
 // The stat mutation is a PURE function (applyResult) so it can be unit-tested off-device.
 import { _fs as FS } from '/apps/games/nucleo-play.js';
@@ -52,11 +53,27 @@ export async function loadStats() {
   return s || {};
 }
 
+// The read half of a read-modify-write. ONLY a 404 (or an empty file) means "no stats yet": a busy device
+// (503), a lost session (401), a network drop or a garbled body THROWS. loadStats() above reads any of those
+// as {} — fine for painting the card, fatal here, where it rewrote stats.json with this one match and wiped
+// the player's whole record.
+async function readStatsForUpdate() {
+  const r = await fetch('/api/fs/read?path=' + encodeURIComponent(STATS_PATH), { credentials: 'same-origin', cache: 'no-store' });
+  if (r.status === 404) return {};
+  if (!r.ok) throw new Error('stats read failed: HTTP ' + r.status);
+  const txt = (await r.text()).trim();
+  if (!txt) return {};
+  const s = JSON.parse(txt);                          // a garbled body throws: never rebuild over it
+  if (!s || typeof s !== 'object' || Array.isArray(s)) throw new Error('stats file is not an object');
+  return s;
+}
+
+// Rejects (nothing written) when the current record cannot be read or the write fails.
 export async function recordResult(gameId, outcome) {
-  const cur = await loadStats();
+  const cur = await readStatsForUpdate();
   const next = applyResult(cur, gameId, outcome);
   await FS.mkdir('/data/play');
-  await FS.writeJSON(STATS_PATH, next);
+  if (!(await FS.writeJSON(STATS_PATH, next))) throw new Error('stats write failed');
   return next;
 }
 

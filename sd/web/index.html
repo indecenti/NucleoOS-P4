@@ -1,4 +1,5 @@
 <!doctype html>
+<!-- SPDX-License-Identifier: AGPL-3.0-or-later -->
 <html lang="en">
 <head>
   <meta charset="utf-8">
@@ -19,7 +20,7 @@
   <!-- Boot Splash Screen: full-screen animated atom (Nucleo = nucleus), the web twin of the
        on-device firmware boot splash. Inline + element styles so it paints correctly DURING parse,
        before style.css/shell.js load. The IIFE stops itself when shell.js adds .hidden (saves CPU). -->
-  <div id="boot-screen" class="boot-screen" role="status" aria-label="Avvio di NucleoOS in corso"
+  <div id="boot-screen" class="boot-screen" role="status" aria-label="Starting NucleoOS"
        style="position:fixed;inset:0;z-index:999999;overflow:hidden;background:radial-gradient(circle at 50% 43%,#0a1430 0%,#05070f 55%,#02030a 100%);">
     <canvas id="boot-atom" aria-hidden="true" style="position:absolute;inset:0;width:100%;height:100%;display:block;"></canvas>
   </div>
@@ -27,6 +28,12 @@
   (function(){
     var cv=document.getElementById('boot-atom'); if(!cv||!cv.getContext) return;
     var ctx=cv.getContext('2d'), raf=0, stopped=false, t0=0;
+    // Accessibility + first-boot CPU. This canvas is the heaviest thing on screen (radial gradients,
+    // 280 stars, shadowBlur, ~60 fps) and it runs during boot, competing with the very work it is
+    // waiting for. Honour prefers-reduced-motion: paint ONE settled frame and stop — no rAF loop,
+    // no vestibular trigger, and a weak client gets its cycles back for booting the OS.
+    var REDUCE=false; try{ REDUCE=matchMedia('(prefers-reduced-motion: reduce)').matches; }catch(e){}
+    function nowMs(){ return (window.performance&&performance.now)?performance.now():Date.now(); }
     var DPR=Math.min(window.devicePixelRatio||1,2), W=0, H=0;
     var TILTS=[0,Math.PI/3,2*Math.PI/3], SPD=[2.0,-2.45,2.95], PH=[0,2.1,4.2];
     var stars=[], dust=[], nebula=[], NUC=[];
@@ -53,7 +60,11 @@
       g.addColorStop(0,'rgba('+col+','+a+')');g.addColorStop(1,'rgba('+col+',0)');
       ctx.fillStyle=g;ctx.beginPath();ctx.arc(x,y,r,0,6.2832);ctx.fill();}
     function frame(ts){
-      if(stopped)return; if(!t0)t0=ts; ensureSize(); if(!W||!H){raf=requestAnimationFrame(frame);return;} var t=(ts-t0)/1000;
+      if(stopped)return;
+      // Reduced motion: bias t so the first (and only) frame shows the SETTLED composition —
+      // nucleus lit, rings drawn, wordmark in — instead of the blank start of the ignition ramp.
+      if(!t0)t0=REDUCE?ts-2200:ts;
+      ensureSize(); if(!W||!H){ if(REDUCE)return; raf=requestAnimationFrame(frame);return;} var t=(ts-t0)/1000;
       var cx=W/2, cy=H*0.42, R=Math.max(74,Math.min(168,Math.min(W,H)*0.18)), B=R*0.32;
       var nucR=R*0.22, eR=Math.max(2.4,R*0.05), fs=Math.max(22,Math.min(48,Math.min(W,H)*0.064));
       var ign=Math.min(1,t/0.6), ringR=Math.min(1,Math.max(0,(t-0.3)/0.8)),
@@ -144,27 +155,32 @@
       ctx.fillStyle=lg;ctx.fillRect(bx-hw,by-2,bw+hw*2,7);ctx.restore();
       var vg=ctx.createRadialGradient(cx,cy,Math.min(W,H)*0.3,cx,cy,Math.max(W,H)*0.72);  // vignette
       vg.addColorStop(0,'rgba(0,0,0,0)');vg.addColorStop(1,'rgba(0,0,6,0.55)');ctx.fillStyle=vg;ctx.fillRect(0,0,W,H);
+      if(REDUCE)return;                 // one static frame — never schedule the animation loop
       raf=requestAnimationFrame(frame);
     }
-    function stop(){if(stopped)return;stopped=true;if(raf)cancelAnimationFrame(raf);window.removeEventListener('resize',ensureSize);}
+    // Repaint the static frame when the viewport changes, so reduced-motion isn't left with a
+    // stale canvas after a resize/rotate (the animated path redraws every frame anyway).
+    function onResize(){ var w0=W,h0=H; ensureSize(); if(REDUCE&&!stopped&&(W!==w0||H!==h0)){ t0=0; frame(nowMs()); } }
+    function stop(){if(stopped)return;stopped=true;if(raf)cancelAnimationFrame(raf);window.removeEventListener('resize',onResize);}
     var bs=document.getElementById('boot-screen');
     if(bs){if(bs.classList.contains('hidden'))stop();
       else if(window.MutationObserver){var mo=new MutationObserver(function(){if(bs.classList.contains('hidden')){setTimeout(stop,500);mo.disconnect();}});mo.observe(bs,{attributes:true,attributeFilter:['class']});}}
     setTimeout(stop,60000);   // hard backstop: never spin forever if the hide signal is missed
-    window.addEventListener('resize',ensureSize);
-    try{ensureSize();raf=requestAnimationFrame(frame);}catch(e){}
+    window.addEventListener('resize',onResize);
+    try{ensureSize();if(REDUCE)frame(nowMs());else raf=requestAnimationFrame(frame);}catch(e){}
   })();
   </script>
 
   <!-- Pairing overlay: blocks the OS until this browser is paired with the device. The
-       6-digit code is shown on the device screen (proof of physical proximity). -->
+       6-digit code is shown on the Cardputer screen (proof of physical proximity). -->
   <div id="pair-overlay" class="pair-overlay hidden" role="dialog" aria-modal="true" aria-labelledby="pair-title">
     <form id="pair-form" class="pair-card">
       <div class="pair-logo">
         <svg viewBox="0 0 20 20" width="34" height="34" fill="currentColor" aria-hidden="true"><rect x="2" y="2" width="7" height="7" rx="2"/><rect x="11" y="2" width="7" height="7" rx="2"/><rect x="2" y="11" width="7" height="7" rx="2"/><rect x="11" y="11" width="7" height="7" rx="2"/></svg>
       </div>
       <h1 id="pair-title" data-i18n="pair_title">Associa questo dispositivo</h1>
-      <p class="pair-sub" data-i18n="pair_sub">Inserisci il codice a 6 cifre mostrato sullo schermo del device.</p>
+      <p class="pair-sub" data-i18n="pair_sub">Inserisci il codice a 6 cifre mostrato sullo schermo del dispositivo.</p>
+      <button id="pair-speak" type="button" class="pair-speak" data-i18n="pair_speak" hidden>🔊 Leggi il codice sulla console</button>
       <input id="pair-pin" inputmode="numeric" pattern="[0-9]*" maxlength="6" autocomplete="one-time-code"
              placeholder="••••••" data-i18n-attr="aria-label:pair_pin_aria" aria-label="Codice di accoppiamento" autofocus>
       <div id="pair-msg" class="pair-msg" role="alert"></div>
@@ -172,12 +188,28 @@
     </form>
   </div>
 
-  <!-- Mobile Placeholder (visibile solo su schermi piccoli) -->
+  <!-- Mobile notice (small screens): a suggestion, never a wall. The old version
+       was a dead end that promised a phone app that does not exist. -->
   <div id="mobile-placeholder" class="hidden-desktop">
     <svg viewBox="0 0 24 24" width="48" height="48" fill="none" stroke="currentColor" stroke-width="1.5"><rect x="5" y="2" width="14" height="20" rx="2" ry="2"/><line x1="12" y1="18" x2="12.01" y2="18"/></svg>
-    <h2 data-i18n="mobile_title">App Telefono in Arrivo</h2>
-    <p data-i18n="mobile_body">Collega lo smartphone al monitor (Desktop Mode) per usare NucleoOS, oppure ruota il dispositivo.</p>
+    <h2 data-i18n="mobile_title2">Schermo piccolo</h2>
+    <p data-i18n="mobile_body2">NucleoOS è pensato per uno schermo grande: ruota il telefono in orizzontale per lavorare meglio.</p>
+    <button id="mobile-continue" type="button" data-i18n="mobile_continue">Continua comunque</button>
   </div>
+  <script>
+    (function () {
+      var ph = document.getElementById('mobile-placeholder');
+      if (!ph) return;
+      // The hide rules are gated on body.mobile-ok; setting only the placeholder's
+      // inline display cannot beat the `!important` desktop-hide rules, so toggle
+      // the body class instead (that reveals BOTH the desktop and hides the notice).
+      var go = function () { document.body.classList.add('mobile-ok'); };
+      // localStorage can throw (private mode, blocked storage): the button must still work.
+      try { if (localStorage.getItem('nucleo.mobileOk') === '1') { go(); return; } } catch (e) {}
+      var b = document.getElementById('mobile-continue');
+      if (b) b.onclick = function () { try { localStorage.setItem('nucleo.mobileOk', '1'); } catch (e) {} go(); };
+    })();
+  </script>
 
   <!-- Desktop: app icons live here -->
   <main id="desktop" aria-label="Desktop"></main>
@@ -199,6 +231,12 @@
     <div class="sm-body">
       <!-- Home view: pinned apps + recommended files -->
       <div id="sm-home" class="sm-view">
+        <!-- Giochi recenti: le copertine delle ultime partite (le stesse della console) -->
+        <div class="sm-sechead" id="sm-games-head" hidden>
+          <span class="sm-sectitle" data-i18n="start_games">Giochi recenti</span>
+          <button class="sm-pill" id="sm-lib-btn" type="button"><span data-i18n="gf_open_library">Apri Libreria</span> <svg viewBox="0 0 16 16" width="12" height="12" fill="none" stroke="currentColor" stroke-width="1.8"><path d="M6 4l4 4-4 4" stroke-linecap="round" stroke-linejoin="round"/></svg></button>
+        </div>
+        <div id="sm-games" class="sm-games"></div>
         <div class="sm-sechead">
           <span class="sm-sectitle" data-i18n="start_pinned">Aggiunte</span>
           <button class="sm-pill" id="sm-allapps-btn" type="button"><span data-i18n="start_allApps">Tutte le app</span> <svg viewBox="0 0 16 16" width="12" height="12" fill="none" stroke="currentColor" stroke-width="1.8"><path d="M6 4l4 4-4 4" stroke-linecap="round" stroke-linejoin="round"/></svg></button>
@@ -248,7 +286,7 @@
   <div id="drop-overlay" class="hidden" aria-hidden="true">
     <div class="drop-inner">
       <svg viewBox="0 0 24 24" width="48" height="48" fill="none" stroke="currentColor" stroke-width="1.2" stroke-linecap="round" stroke-linejoin="round"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="17 8 12 3 7 8"/><line x1="12" y1="3" x2="12" y2="15"/></svg>
-      <p data-i18n="drop_text">Rilascia per caricare sulla SD del device</p>
+      <p data-i18n="drop_text">Rilascia per caricare sulla SD del dispositivo</p>
       <span class="drop-dest">/data/uploads/</span>
     </div>
   </div>
@@ -296,6 +334,18 @@
         <svg viewBox="0 0 24 24" width="18" height="18" fill="none" stroke="currentColor" stroke-width="1.5"><rect x="2" y="7" width="16" height="10" rx="2" ry="2" stroke-linecap="round" stroke-linejoin="round"/><line x1="22" y1="11" x2="22" y2="13" stroke-linecap="round" stroke-linejoin="round"/></svg>
         <span data-i18n="ac_eco">Eco</span>
       </button>
+      <button class="ac-btn" id="ac-night" data-i18n-attr="title:ac_night_title" title="Luce notturna">
+        <svg viewBox="0 0 24 24" width="18" height="18" fill="none" stroke="currentColor" stroke-width="1.5"><circle cx="12" cy="12" r="4"/><path d="M12 2v2M12 20v2M4.9 4.9l1.4 1.4M17.7 17.7l1.4 1.4M2 12h2M20 12h2M4.9 19.1l1.4-1.4M17.7 6.3l1.4-1.4" stroke-linecap="round"/></svg>
+        <span data-i18n="ac_night">Notturna</span>
+      </button>
+      <button class="ac-btn" id="ac-lock" data-i18n-attr="title:ac_lock_title" title="Blocca">
+        <svg viewBox="0 0 24 24" width="18" height="18" fill="none" stroke="currentColor" stroke-width="1.5"><rect x="4" y="10" width="16" height="10" rx="2"/><path d="M8 10V7a4 4 0 0 1 8 0v3" stroke-linecap="round"/></svg>
+        <span data-i18n="ac_lock">Blocca</span>
+      </button>
+      <button class="ac-btn" id="ac-keys" data-i18n-attr="title:ac_keys_title" title="Scorciatoie">
+        <svg viewBox="0 0 24 24" width="18" height="18" fill="none" stroke="currentColor" stroke-width="1.5"><rect x="2" y="6" width="20" height="12" rx="2"/><path d="M6 10h.01M10 10h.01M14 10h.01M18 10h.01M6 14h.01M18 14h.01M9 14h6" stroke-linecap="round"/></svg>
+        <span data-i18n="ac_keys">Tasti</span>
+      </button>
     </div>
     <div class="ac-slider">
       <svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="5"/><line x1="12" y1="1" x2="12" y2="3"/><line x1="12" y1="21" x2="12" y2="23"/><line x1="4.22" y1="4.22" x2="5.64" y2="5.64"/><line x1="18.36" y1="18.36" x2="19.78" y2="19.78"/><line x1="1" y1="12" x2="3" y2="12"/><line x1="21" y1="12" x2="23" y2="12"/><line x1="4.22" y1="19.78" x2="5.64" y2="18.36"/><line x1="18.36" y1="5.64" x2="19.78" y2="4.22"/></svg>
@@ -304,10 +354,24 @@
   </section>
 
   <!-- Taskbar — Windows-11 style: app cluster centered, system tray on the right -->
+  <!-- Pannello giochi: si apre dal pulsante "Continua" della barra (shell.js, gameFlyout).
+       Come i widget di Windows 11: non copre le icone, si chiude cliccando fuori. -->
+  <section id="game-flyout" class="hidden" aria-label="Giochi">
+    <div class="gf-hero" id="gf-hero"></div>
+    <div class="gf-head"><span class="sm-sectitle" data-i18n="gf_recent">Giocati di recente</span>
+      <button class="sm-pill" id="gf-lib" type="button"><span data-i18n="gf_open_library">Apri Libreria</span> <svg viewBox="0 0 16 16" width="12" height="12" fill="none" stroke="currentColor" stroke-width="1.8"><path d="M6 4l4 4-4 4" stroke-linecap="round" stroke-linejoin="round"/></svg></button></div>
+    <div class="gf-row" id="gf-row"></div>
+  </section>
+
   <footer id="taskbar">
-    <div class="tb-side tb-left"></div>
+    <div class="tb-side tb-left">
+      <button id="tb-game" type="button" hidden>
+        <span class="tbg-cover"></span>
+        <span class="tbg-txt"><span class="tbg-k" data-i18n="tb_game_continue">Continua</span><span class="tbg-n"></span></span>
+      </button>
+    </div>
     <div class="tb-center">
-      <button id="start-btn" title="Start">
+      <button id="start-btn" title="Start" aria-haspopup="menu" aria-expanded="false">
         <svg viewBox="0 0 20 20" width="18" height="18" fill="currentColor" aria-hidden="true"><rect x="2" y="2" width="7" height="7" rx="2"/><rect x="11" y="2" width="7" height="7" rx="2"/><rect x="2" y="11" width="7" height="7" rx="2"/><rect x="11" y="11" width="7" height="7" rx="2"/></svg>
       </button>
       <div id="search" data-i18n-attr="title:tb_search_title" title="Cerca app e file">
@@ -324,10 +388,21 @@
     <div id="tray">
       <span id="tray-remote" title="" hidden></span>
       <span id="tray-busy" title="" hidden></span>
-      <span id="tray-ws" data-i18n-attr="title:tray_ws_title" title="Connessione al device"><span class="ws-dot offline"></span></span>
+      <span id="tray-update" class="tray-update" role="button" tabindex="0" data-i18n-attr="title:up_pill_title" title="Update available" hidden>
+        <svg viewBox="0 0 16 16" width="13" height="13" fill="none" stroke="currentColor" stroke-width="1.7" aria-hidden="true"><path d="M8 13V3.5M8 3.5 4.5 7M8 3.5 11.5 7" stroke-linecap="round" stroke-linejoin="round"/></svg>
+        <span class="tu-tag"></span>
+      </span>
+      <span id="tray-ws" data-i18n-attr="title:tray_ws_title" title="Connessione al dispositivo"><span class="ws-dot offline"></span></span>
       <span id="tray-net" data-i18n-attr="title:tray_net_title" title="Rete"></span>
       <span id="tray-storage">
         <svg viewBox="0 0 16 16" width="14" height="14" fill="none" stroke="currentColor" stroke-width="1.3" aria-hidden="true"><path d="M3.5 2.5h5L12 6v7.5H3.5z" stroke-linejoin="round"/><line x1="6" y1="2.8" x2="6" y2="5"/><line x1="8" y1="2.8" x2="8" y2="5"/><line x1="10" y1="3.4" x2="10" y2="5"/></svg>
+        <span class="v">—</span>
+      </span>
+      <!-- La batteria DELLA CONSOLE, vista dalla scrivania. Nascosta finche' il
+           dispositivo non ne dichiara una: su una board senza batteria una cella
+           vuota sembrerebbe un guasto. -->
+      <span id="tray-batt" hidden data-i18n-attr="title:tray_batt_title" title="Batteria della console">
+        <svg viewBox="0 0 16 16" width="14" height="14" fill="none" stroke="currentColor" stroke-width="1.3" aria-hidden="true"><rect x="1.5" y="4.5" width="11" height="7" rx="1.5"/><path d="M14.2 7v2"/><rect class="bfill" x="3" y="6" width="8" height="4" rx="0.6" fill="currentColor" stroke="none"/></svg>
         <span class="v">—</span>
       </span>
       <span id="clock" data-i18n-attr="title:tray_clock_title" title="Mostra la data"><span class="ck-time">--:--</span><span class="ck-date"></span></span>

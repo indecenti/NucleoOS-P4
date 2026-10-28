@@ -1,3 +1,4 @@
+/* SPDX-License-Identifier: AGPL-3.0-or-later */
 // byte-source.js — accesso a blocchi a un file remoto (/api/fs/read) o locale (File/Blob).
 //
 // Il file è visto come una sequenza di blocchi da BLOCK byte. Due modalità di rete:

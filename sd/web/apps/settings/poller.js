@@ -1,13 +1,14 @@
+/* SPDX-License-Identifier: AGPL-3.0-or-later */
 // poller.js — the ONE adaptive live-data poller for the Settings app.
 //
-// The device is a single-task, no-PSRAM HTTP server: concurrency is the enemy. So every live
+// The Cardputer is a single-task, no-PSRAM HTTP server: concurrency is the enemy. So every live
 // tile in the Control Center is fed by exactly ONE poller that:
 //   • keeps at most one request in flight (overlapping ticks are dropped),
 //   • round-robins its sources so two heavy reads never overlap,
 //   • backs off geometrically when readings are calm and tightens when a value crosses a threshold,
 //   • pauses entirely when the page is hidden,
 //   • can be frozen by the user,
-//   • backs off N ticks on a 503 / arbiter-busy instead of retry-storming.
+//   • backs off N ticks on a 503 / busy answer instead of retry-storming.
 //
 // It is pure timing logic: `fetchJson`, `hidden`, `now` and the change/threshold predicates are all
 // injected, so the whole control loop is unit-testable with a fake clock and fake fetch. `start()`
@@ -72,15 +73,30 @@ export function createPoller(opts = {}) {
     }
   }
 
+  // `gen` guards the async gap in the loop: stop() during an in-flight tick would otherwise let the
+  // trailing `timer = setTimeout(...)` re-arm a "stopped" poller (and a start() in that same gap
+  // would spawn a second loop, since `timer` is briefly null).
+  let gen = 0;
   function start() {
     if (timer) return;
-    const loop = async () => { await tick(); timer = setTimeout(loop, interval); };
+    const g = ++gen;
+    const loop = async () => { await tick(); if (g !== gen) return; timer = setTimeout(loop, interval); };
     loop();
   }
-  function stop() { if (timer) { clearTimeout(timer); timer = null; } }
+  function stop() { gen++; if (timer) { clearTimeout(timer); timer = null; } }
+
+  // One sequential sweep over ALL sources (one at a time, awaited) so every tile paints within the
+  // first moments of the app instead of one-source-per-interval (~3 s each). Still one request in
+  // flight, still respects frozen/hidden; ticks that get skipped don't consume a source.
+  async function prime() {
+    for (let i = 0; i < sources.length; i++) {
+      const r = await tick();
+      if (r && r.skipped) break;               // frozen/hidden/inflight → stop sweeping, the loop resumes later
+    }
+  }
 
   return {
-    tick, start, stop,
+    tick, start, stop, prime,
     setFrozen(v) { frozen = !!v; if (frozen) stop(); else if (!timer) start(); },
     refreshNow() { if (!frozen && !hidden()) return tick(); },
     get frozen() { return frozen; },

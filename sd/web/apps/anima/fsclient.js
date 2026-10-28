@@ -1,3 +1,4 @@
+/* SPDX-License-Identifier: AGPL-3.0-or-later */
 // fsclient.js — workspace-scoped file tools for ANIMA.
 // A DOM-free layer over /api/fs/{list,read,write,delete,mkdir,move} that confines every
 // operation to a chosen workspace root on the SD, the way Claude Code confines its tools to
@@ -8,6 +9,8 @@
 // joins the root; an absolute path must already sit inside the root or it is refused.
 
 // Text-ish files we are willing to read for search / preview (everything else is opaque blob).
+import { tolerantReplace } from './edit-replace.js';
+
 const TEXT_EXT = new Set(['txt','md','markdown','json','jsonl','ndjson','csv','tsv','log','c','h','cpp','hpp','cc','cxx',
   'js','mjs','cjs','ts','tsx','jsx','py','sh','bash','zsh','lua','html','htm','css','scss','xml','yml','yaml','toml','ini',
   'cfg','conf','env','sql','rs','go','java','kt','rb','php','pl','r','swift','vue','svelte','tex','rtf','srt','vtt','diff','patch']);
@@ -93,11 +96,16 @@ export function makeFS(initialRoot) {
   const baseDir = () => (cwd ? normPath(root + '/' + cwd) : root);
   // Resolve a user/agent path to an SD-absolute path confined to the workspace.
   // Relative paths join the current dir (root + cwd); absolute paths must sit inside root.
+  // A relative path that starts with the root itself ("data/proj/x" in /data/proj) names the root: models drop the
+  // leading slash of a path they were shown absolute, and joining it nested every write at /data/proj/data/proj/x
+  // (the claim check then said "not written", and the stray data/ folder misled every later turn).
   function resolve(p) {
     if (!root) throw new RangeError('no-workspace');
     const raw = String(p == null ? '' : p).trim();
     const base = baseDir();
-    const joined = raw === '' ? base : (raw[0] === '/' ? raw : base + '/' + raw);
+    const rootRel = root.slice(1), bare = raw.replace(/^(\.\/)+/, '');
+    const rootPrefixed = raw[0] !== '/' && rootRel !== '' && (bare === rootRel || bare.startsWith(rootRel + '/'));
+    const joined = raw === '' ? base : (raw[0] === '/' ? raw : rootPrefixed ? '/' + bare : base + '/' + raw);
     const full = normPath(joined);
     if (full !== root && !full.startsWith(root + '/')) throw new RangeError('escape');
     return full;
@@ -132,13 +140,34 @@ export function makeFS(initialRoot) {
   }
   const exists = async (p) => (await stat(p)).exists;
 
-  // mkdir -p: create each segment below the root in order (idempotent; ignore "exists").
+  // The root itself may not exist yet: the agent's default sandbox (/data/agent) is created by nobody, so on a
+  // fresh card EVERY first write failed with "500 open" (the device does not create parent folders). Create
+  // the root's own chain once per client (idempotent; "exists" is ignored), before anything below it.
+  let rootReady = null;
+  function ensureRoot() {
+    if (!rootReady) rootReady = (async () => {
+      let cur = '';
+      for (const seg of root.split('/').filter(Boolean)) { cur += '/' + seg; try { await api('mkdir', { method: 'POST', path: cur }); } catch {} }
+    })();
+    return rootReady;
+  }
+
+  // mkdir -p: create each segment below the root in order (idempotent; "already exists" is ok).
+  // Every backend's /api/fs/mkdir is idempotent (200 on an existing dir: the Cardputer maps EEXIST to ok), so a
+  // non-ok status is a real failure — e.g. 401 pairing_required — and must be reported, not swallowed into {ok:true}.
   async function mkdirp(dirPath) {
     const full = typeof dirPath === 'string' && dirPath[0] === '/' && dirPath.startsWith(root) ? normPath(dirPath) : resolve(dirPath);
+    await ensureRoot();
     if (full === root || full.length <= root.length) return { ok: true };
     const tail = full.slice(root.length + 1).split('/');
     let cur = root;
-    for (const seg of tail) { cur += '/' + seg; try { await api('mkdir', { method: 'POST', path: cur }); } catch {} }
+    for (const seg of tail) {
+      cur += '/' + seg;
+      try {
+        const r = await api('mkdir', { method: 'POST', path: cur });
+        if (!r.ok) return { ok: false, error: 'http-' + r.status, path: rel(cur) };
+      } catch (e) { return { ok: false, error: String(e.message || e), path: rel(cur) }; }
+    }
     return { ok: true };
   }
 
@@ -172,7 +201,7 @@ export function makeFS(initialRoot) {
     let full; try { full = resolve(p); } catch (e) { return { ok: false, error: e.message }; }
     const had = await exists(full);
     if (had && !overwrite) return { ok: false, error: 'exists', path: rel(full), abs: full };
-    if (mkdir) { const d = parentOf(full); if (d && d !== root) await mkdirp(d); }
+    if (mkdir) await mkdirp(parentOf(full) || root);   // also when the file sits right in the root (see ensureRoot)
     try {
       const r = await api('write', { method: 'POST', path: full, body: content });
       if (!r.ok) return { ok: false, error: 'http-' + r.status, path: rel(full) };
@@ -195,13 +224,14 @@ export function makeFS(initialRoot) {
     const cur = await read(p, {});
     if (!cur.ok) return { ok: false, error: cur.error, path: cur.path };
     const text = cur.content;
-    const count = text.split(oldStr).length - 1;
-    if (count === 0) return { ok: false, error: 'not-found', path: cur.path };
-    if (count > 1 && !all) return { ok: false, error: 'not-unique', count, path: cur.path };
-    const next = all ? text.split(oldStr).join(newStr) : text.replace(oldStr, newStr);
+    // Tolerant matching (edit-replace.js, from OpenCode): an old text that differs from the file only in
+    // indentation / trailing spaces / escaping still lands — once, never a guess between several places.
+    const r = tolerantReplace(text, oldStr, newStr, { all });
+    if (!r.ok) return { ok: false, error: r.error, message: r.message, path: cur.path };
+    const next = r.text;
     const w = await write(p, next, { overwrite: true });
     if (!w.ok) return w;
-    return { ok: true, path: cur.path, abs: cur.abs, replaced: all ? count : 1, ...diffStat(text, next), before: text, after: next };
+    return { ok: true, path: cur.path, abs: cur.abs, replaced: r.count, strategy: r.strategy, ...diffStat(text, next), before: text, after: next };
   }
 
   async function del(p) {
@@ -215,7 +245,7 @@ export function makeFS(initialRoot) {
 
   async function move(from, to, { overwrite = false } = {}) {
     let f, t; try { f = resolve(from); t = resolve(to); } catch (e) { return { ok: false, error: e.message }; }
-    const d = parentOf(t); if (d && d !== root) await mkdirp(d);
+    await mkdirp(parentOf(t) || root);
     try {
       const r = await api('move', { method: 'POST', qs: 'from=' + enc(f) + '&to=' + enc(t) + (overwrite ? '&overwrite=1' : '') });
       if (!r.ok) { const txt = await r.text().catch(() => ''); return { ok: false, error: r.status === 403 ? 'protected' : /exist/i.test(txt) ? 'dest-exists' : 'http-' + r.status, from: rel(f), to: rel(t) }; }
@@ -224,8 +254,10 @@ export function makeFS(initialRoot) {
   }
 
   async function mkdir(p) {
-    try { const full = resolve(p); await mkdirp(full); return { ok: true, path: rel(full), abs: full }; }
-    catch (e) { return { ok: false, error: e.message }; }
+    let full; try { full = resolve(p); } catch (e) { return { ok: false, error: e.message }; }
+    const r = await mkdirp(full);
+    if (!r.ok) return { ok: false, error: r.error, path: rel(full) };
+    return { ok: true, path: rel(full), abs: full };
   }
 
   // Breadth-first recursive listing to a depth, bounded by maxEntries.
@@ -283,7 +315,7 @@ export function makeFS(initialRoot) {
   }
 
   return {
-    setRoot(p) { root = p ? normPath(p) : ''; cwd = ''; return root; },
+    setRoot(p) { root = p ? normPath(p) : ''; cwd = ''; rootReady = null; return root; },
     getRoot() { return root; },
     hasRoot() { return !!root; },
     setCwd(p) { try { const full = resolve(p); cwd = full === root ? '' : full.slice(root.length + 1); } catch {} return cwd; },

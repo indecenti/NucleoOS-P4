@@ -18,6 +18,7 @@
   "mi_clearAll": "Cancella tutto",
 
   "tt_animaCopilot": "Integrazione Assistente ANIMA",
+  "tt_selectAll": "Seleziona tutto",
   "tt_bold": "Grassetto (Ctrl+B)",
   "tt_italic": "Corsivo (Ctrl+I)",
   "tt_alignLeft": "Allinea a sinistra",
@@ -97,6 +98,7 @@
   "dlg_save_title": "Salva foglio",
   "dlg_open_title": "Apri foglio",
   "confirm_new": "Creare un nuovo foglio? Le modifiche andranno perse.",
+  "confirm_open": "Aprire un altro file? Le modifiche non salvate andranno perse.",
   "confirm_exit": "Uscire senza salvare?",
 
   "find_results": "{n} risultati",

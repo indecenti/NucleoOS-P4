@@ -1,7 +1,8 @@
+/* SPDX-License-Identifier: AGPL-3.0-or-later */
 // Resilient boot/data fetch for the desktop shell — EXTRACTED so it is unit-testable in node with a
-// mock fetch (tools/shell-boot-fetch.test.mjs). The device serves the WHOLE OS from a SINGLE-TASK,
+// mock fetch (tools/shell-boot-fetch.test.mjs). The Cardputer serves the WHOLE OS from a SINGLE-TASK,
 // 6-socket, PSRAM-less web server: when several requests land at once it answers 503 (busy / low-heap)
-// or stalls. So each attempt gets a hard timeout (it must never hang the boot splash) and we RETRY
+// or stalls (bigger servers — the Linux handheld — can still answer 503 to a cold-boot burst). So each attempt gets a hard timeout (it must never hang the boot splash) and we RETRY
 // 503/502/504 + timeouts + network errors with growing backoff — SPACING the load so the device
 // reclaims heap between calls instead of being flooded. This is what lets the web OS attach + load
 // reliably; a slower first boot is the accepted trade. A 4xx is deterministic (a retry can't fix it),
@@ -35,11 +36,56 @@ export function makeFetchJSON({ fetch, sleep, log = () => {}, AbortSignal: AS } 
         if (!last) await sleep(wait);
         continue;
       }
-      if (!r.ok) throw new Error('HTTP ' + r.status);     // 4xx → deterministic, fail fast (no retry)
+      if (!r.ok) { const e = new Error('HTTP ' + r.status); e.status = r.status; throw e; }   // 4xx → deterministic, fail fast (no retry)
       if (i > 0) log('ok', path, 'after', i, 'retr' + (i === 1 ? 'y' : 'ies'));
-      return r.json();
+      // A body we cannot parse is NOT a transport problem, and the difference matters upstream: the
+      // device answers a 0-byte file with 200 and an EMPTY body, and Response.json() always rejects
+      // on that. Tagging it lets loadState re-seed a corrupt file instead of concluding the device is
+      // unreachable — which would put the store read-only and make the corrupt file unfixable.
+      try { return await r.json(); }
+      catch (e) { e.parseFailure = true; throw e; }
     }
     log('GAVE UP', path, 'after', tries, 'tries');
     throw lastErr || new Error('exhausted retries: ' + path);
+  };
+}
+
+// Load a small piece of USER STATE (desktop layout, window session, clipboard history) with a TYPED
+// outcome, because the caller must treat "the device has nothing saved yet" and "I could not reach the
+// device" completely differently. Conflating them is a DATA-LOSS bug, and it was a real one: the shell
+// read each store with a bare un-retried fetch, took ANY failure as "first run", seeded defaults — and
+// then WROTE THOSE DEFAULTS BACK over the user's real state. One 503 from a 4-socket, PSRAM-less device
+// during boot was enough to replace a desktop layout with the factory one, permanently.
+//
+// The distinction is clean because of how the firmware answers (nucleo_fsapi.c, read_get): a MISSING
+// /system/config/*.json is deliberately served as 200 with "{}" (not 404) so a fresh SD doesn't spam the
+// console. So:
+//   { state:'found',       data }   real saved state came back
+//   { state:'absent'  }             the device answered, and there is genuinely nothing yet → seed + save
+//   { state:'unreachable', error }  network error / busy / 4xx after retries → the store goes READ-ONLY
+// "Unreachable" must NEVER lead to a write: better a session that cannot save than one that destroys.
+export function makeLoadState(fetchJSON) {
+  if (typeof fetchJSON !== 'function') throw new Error('makeLoadState: fetchJSON dependency required');
+  return async function loadState(path, { tries = 4, timeout = 5000 } = {}) {
+    let data;
+    try {
+      data = await fetchJSON('/api/fs/read?path=' + encodeURIComponent(path), { tries, timeout });
+    } catch (e) {
+      // Corrupt/empty file → treat as "nothing usable saved", exactly as the pre-loadState code did
+      // (it caught JSON.parse and re-seeded). Calling it unreachable froze the store FOREVER: writes
+      // were blocked, so the unreadable file could never be replaced, on every boot.
+      if (e && e.parseFailure) return { state: 'absent', corrupt: true };
+      // 404 is the device ANSWERING that the file is not there (the Handheld's server and the browser
+      // edition's service worker say it this way; the Cardputer firmware answers 200 "{}"). Treating it as
+      // unreachable locked a fresh device read-only for good: nothing was ever seeded, nothing ever saved.
+      // 401/403 (not paired) and every transport failure stay unreachable: those say nothing about the file.
+      if (e && e.status === 404) return { state: 'absent' };
+      return { state: 'unreachable', error: String((e && e.message) || e) };
+    }
+    // A non-object (or a null) is not state we can merge — treat it as nothing saved rather than
+    // spreading garbage over the defaults.
+    if (!data || typeof data !== 'object' || Array.isArray(data)) return { state: 'absent' };
+    if (Object.keys(data).length === 0) return { state: 'absent' };   // the firmware's "{}" for a fresh SD
+    return { state: 'found', data };
   };
 }

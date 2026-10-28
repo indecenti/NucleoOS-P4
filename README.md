@@ -364,7 +364,7 @@ dependencies are pinned by `dependencies.lock`.
 | `apps/` | app packages: sources, manifests, store screenshots |
 | `ports/` | third-party ports (Doom, ScummVM, Lua, the Books reader, the ZIM reader, CLI tools…) |
 | `sdk/` | WASM app C SDK (`nucleo_sdk.h`) |
-| `sd/web` | web OS companion (PWA served over Wi-Fi) |
+| `sd/web` | web OS companion (PWA served over Wi-Fi): the P4 build of the shared web OS, **pinned from nucleo-webos** (`webos.lock`, `tools/webos-sync.py`); fixes go in nucleo-webos, never here |
 | `server/appstore` | the store's catalog sources |
 | `tools/` | builds, store and OTA publishing, HIL tests, asset generators |
 | `tests/host` | host unit tests and fuzzers |

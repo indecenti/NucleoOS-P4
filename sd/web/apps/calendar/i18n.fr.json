@@ -1,0 +1,16 @@
+{
+  "_lang": "fr",
+  "prev_month": "Mois précédent",
+  "next_month": "Mois suivant",
+  "new_event_ph": "Nouvel événement… (Entrée)",
+  "pick_day": "Choisissez un jour",
+  "empty_events": "Aucun événement. Ajoutez-en un ci-dessous.",
+  "saved_device": "Enregistré sur l'appareil",
+  "save_failed": "Échec de l'enregistrement — appareil injoignable",
+  "more_events": {
+    "one": "+{count} autre",
+    "other": "+{count} autres"
+  },
+  "read_failed": "Impossible de lire le calendrier de l’appareil. La modification est suspendue pour ne rien écraser — réessayez dans un instant.",
+  "not_paired": "Ce navigateur n'est pas associé à l'appareil — associez-le pour enregistrer le calendrier."
+}

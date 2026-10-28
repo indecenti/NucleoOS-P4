@@ -1,3 +1,4 @@
+/* SPDX-License-Identifier: AGPL-3.0-or-later */
 // mpeg1-player.js — motore MPEG-1 (.mpg/.mpeg program stream, .m1v elementary stream) per il
 // Video Player web. Il browser non decodifica MPEG-1: lo fa pl_mpeg compilato in WebAssembly
 // (mpeg1.wasm, sorgenti e script di build in ./wasm/). Qui: alimentazione a blocchi dalla rete,

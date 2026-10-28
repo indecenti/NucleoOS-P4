@@ -1,0 +1,21 @@
+{
+  "_lang": "de",
+  "app_title": "Aufgaben",
+  "filter_active": "Aktiv",
+  "add_ph": "Aufgabe hinzufügen und Enter drücken…",
+  "priority": "Priorität",
+  "clear_done": "Erledigte löschen",
+  "saving": "Wird gespeichert…",
+  "saved_locally": "Lokal gespeichert",
+  "copied": "Kopiert",
+  "empty_done": "Noch keine erledigten Aufgaben.",
+  "empty_active": "Nichts zu tun — alles erledigt! 🎉",
+  "empty_all": "Noch keine Aufgaben.<br>Oben eingeben und Enter drücken.",
+  "toggle": "Umschalten",
+  "count": "{active} aktiv · {total} gesamt",
+  "read_failed": "Die Aufgaben konnten nicht vom Gerät gelesen werden. Bearbeiten ist pausiert, damit nichts überschrieben wird – versuche es gleich erneut.",
+  "read_corrupt": "Die Aufgabendatei auf dem Gerät ist nicht lesbar: sie bleibt unverändert, damit nichts verloren geht.",
+  "not_paired": "Dieser Browser ist nicht mit dem Gerät gekoppelt – kopple ihn, um die Aufgaben zu speichern.",
+  "save_failed": "Nicht gespeichert — das Gerät antwortet nicht, neuer Versuch läuft",
+  "not_loaded": "Aufgaben noch nicht vom Gerät geladen."
+}

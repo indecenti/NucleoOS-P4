@@ -9,8 +9,11 @@ What this branch adds to NucleoOS (ESP32-P4, ESP-IDF 5.5.2, LVGL 9.5) and how to
 - Host tests (no hardware): `make -C tests/host CC=gcc CXX=g++ ARCHES=x64 build/x64/unit_anima build/x64/unit_wake`
   then run the binaries. `tests/host/anima/anima_stubs.c` has a **fake network**
   (`anima_fakenet.h`: fixtures by URL substring), so online features are testable offline.
-- Web: static files in `sd/web`; after editing a file regenerate its twin with `gzip -9 -n -k -f <file>`
-  and bump `CACHE` in `sd/web/sw.js`.
+- Web: `sd/web` is the P4 build of the shared web OS, pinned from `../nucleo-webos` in `webos.lock`. Never edit
+  it here: fix it in nucleo-webos, then `python tools/webos-sync.py update` (rebuilds with the .gz twins and the
+  service-worker cache name, rewrites the lock) and commit; `python tools/webos-sync.py --check --strict` fails on a
+  hand edit. This repo keeps only what nucleo-webos does not have (`sd/web/apps.json`, the list nv_web serves as
+  /api/apps; `wallpaper.png`; `i18n/coverage.json`'s old copy is replaced by the build's).
 - Remote text shell / tests on a real board: `tools/anima.py` (`--test tools/anima/smoke.txt`).
 - MCP server for agents: `tools/anima_mcp.py` (`--selftest`).
 

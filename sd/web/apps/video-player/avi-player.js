@@ -1,3 +1,4 @@
+/* SPDX-License-Identifier: AGPL-3.0-or-later */
 // avi-player.js — motore AVI (RIFF) con video Motion-JPEG e audio PCM, per le registrazioni della
 // fotocamera della board (/DCIM/VID_*.avi) e qualunque AVI MJPEG (ffmpeg, webcam, fotocamere).
 //

@@ -1,3 +1,4 @@
+/* SPDX-License-Identifier: AGPL-3.0-or-later */
 // ===========================================================================
 // ANIMA voice dictation — runs entirely in the browser, no key, no cloud server.
 //
@@ -21,6 +22,7 @@
 // ===========================================================================
 
 import { streamMic } from '/micgate.js';   // OS-wide single-owner gate for the Cardputer mic
+import Caps from '/nucleo-caps.js';        // what this device can do (device.mic)
 
 // Local-first (served from SD next to the app), with an online CDN fallback so
 // dictation still works if the model/lib weren't deployed to SD.
@@ -31,6 +33,13 @@ const MODELS    = {
   it: { local: './vosk/models/vosk-model-small-it-0.4.tar.gz',    cdn: 'https://ccoreilly.github.io/vosk-browser/models/vosk-model-small-it-0.4.tar.gz' },
   en: { local: './vosk/models/vosk-model-small-en-us-0.15.tar.gz', cdn: 'https://ccoreilly.github.io/vosk-browser/models/vosk-model-small-en-us-0.15.tar.gz' },
 };
+// BCP-47 for the Web Speech recognizer, one row per OS language. Web Speech understands all five —
+// so for the languages Vosk has no model for, it is not a "fallback", it is the CORRECT engine.
+const SPEECH_LOCALES = { it: 'it-IT', en: 'en-US', es: 'es-ES', fr: 'fr-FR', de: 'de-DE' };
+// Vosk ships it/en only (~34 MB each on the SD). Asking it for Spanish used to hand it the ITALIAN
+// model — it happily returned confident nonsense. Anything without a model routes to Web Speech.
+const hasVoskModel = (lang) => Object.prototype.hasOwnProperty.call(MODELS, lang);
+
 // Worklet source, inlined as a last-resort fallback if the SD file is missing.
 const WORKLET_SRC = `class P extends AudioWorkletProcessor{constructor(o){super(o);this.port.onmessage=e=>{if(e.data.action==='init'){this._id=e.data.recognizerId;this._p=e.ports[0];}};}process(i){const d=i[0][0];if(this._p&&d){const a=d.map(v=>v*0x8000);this._p.postMessage({action:'audioChunk',data:a,recognizerId:this._id,sampleRate},{transfer:[a.buffer]});}return true;}}registerProcessor('recognizer-processor',P);`;
 
@@ -98,7 +107,7 @@ export function createVoice() {
   // CDN attempt fails fast (navigator offline) and we drop straight to SD. Records source, caches.
   async function getModel(Vosk, lang) {
     if (_modelCache[lang]) { if (_srcCache[lang]) v.source = _srcCache[lang]; return _modelCache[lang]; }
-    const m = MODELS[lang] || MODELS.it;
+    const m = MODELS[lang] || MODELS.en;   // no model for this language -> the OS base one, not Italian
     // Bound an SD load: the device webfs can't sustain a large single read — it resets the connection
     // a few MB into a 34 MB model, so Vosk.createModel(local) STALLS forever (the mic stays stuck
     // "loading"). A timeout abandons that dead load and falls through. The orphaned worker just emits
@@ -136,9 +145,12 @@ export function createVoice() {
     try { local = (await fetch(VOSK_LIB, { method: 'GET', headers: { Range: 'bytes=0-0' }, cache: 'force-cache' })).ok; } catch {}
     const voskLoadable = local || navigator.onLine;   // SD copy first, CDN otherwise
 
-    // The Cardputer path needs Vosk (Web Speech can't accept arbitrary PCM). The app is served BY
-    // the device, so /api/rec/stream is same-origin and present — availability hinges on the model.
-    v.deviceAvailable = voskLoadable;
+    // The Cardputer path needs Vosk (Web Speech can't accept arbitrary PCM) AND a device with a microphone:
+    // only the Cardputer firmware serves /api/rec/* (the Handheld, the P4 and the Web edition do not). The device's
+    // capability list says so (device.mic); a stream that still fails is reported by micgate at start.
+    let devMic = false;
+    try { devMic = await Caps.has('device.mic'); } catch {}
+    v.deviceAvailable = voskLoadable && devMic;
 
     if (secure && media && voskLoadable) { v.engine = 'vosk'; v.browserAvailable = true; v.reason = ''; }
     else if (secure && media && SR)      { v.engine = 'webspeech'; v.browserAvailable = true; v.reason = ''; }
@@ -153,8 +165,12 @@ export function createVoice() {
   v.start = function start(lang, h, source) {
     v._h = h || {};
     if (source === 'cardputer') { v._active = 'cardputer'; return startCardputer(lang); }
-    v._active = v.engine === 'vosk' ? 'vosk' : 'webspeech';
-    return v.engine === 'vosk' ? startVosk(lang) : startWeb(lang);
+    // Vosk is preferred ONLY where it has a model for the requested language. For es/fr/de it has
+    // none, and a wrong-language model produces confident garbage — Web Speech, which does speak
+    // them, wins there. With no Web Speech at all we still run Vosk (degraded, base model).
+    const useVosk = v.engine === 'vosk' && (hasVoskModel(lang) || !(SR && v.browserAvailable));
+    v._active = useVosk ? 'vosk' : 'webspeech';
+    return useVosk ? startVosk(lang) : startWeb(lang);
   };
 
   v.stop = function stop() {
@@ -270,7 +286,7 @@ export function createVoice() {
     const rec = new SR();
     v._sr = rec;
     rec.continuous = true; rec.interimResults = true;
-    rec.lang = lang === 'en' ? 'en-US' : 'it-IT';
+    rec.lang = SPEECH_LOCALES[lang] || SPEECH_LOCALES.en;
     rec.onstart = () => { v.recognizing = true; h.onstart && h.onstart(); };
     rec.onerror = (e) => { h.onerror && h.onerror(e && e.error === 'not-allowed' ? 'denied' : 'generic'); };
     rec.onend = () => { v.recognizing = false; v._sr = null; h.onend && h.onend(); };

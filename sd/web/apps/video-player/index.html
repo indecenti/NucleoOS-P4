@@ -1,12 +1,16 @@
 <!doctype html>
-<html lang="it">
+<!-- SPDX-License-Identifier: AGPL-3.0-or-later -->
+<html lang="en">
 <head>
   <meta charset="utf-8">
+  <script>/* NucleoOS resource guard: a lost same-origin script/stylesheet makes the shell reload this window once (wm.js retryFrame) */addEventListener('error',function(e){var t=e.target,u;if(!t||t===window||parent===window||(t.tagName!=='SCRIPT'&&t.tagName!=='LINK'))return;try{u=new URL(t.src||t.href,location.href);if(u.origin===location.origin)parent.postMessage({type:'app-resource-failed',src:u.pathname},location.origin)}catch(_){}},true)</script>
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <title>Video Player</title>
   <!-- Offline-first: rely on the system font stack ('Outfit', system-ui, sans-serif) instead of a
        render-blocking remote webfont — the device often has no internet. -->
   <style>
+    /* Native controls (audio/video bars, date/time pickers, file inputs, selects) follow the app theme. */
+    :root { color-scheme: dark; } html[data-theme="light"] { color-scheme: light; }
     :root {
       --bg: #070a12;
       --panel: #0f1521;
@@ -158,6 +162,12 @@
     @keyframes bounce { from { transform: translateY(0); } to { transform: translateY(-10px); } }
 
     /* Center action flash (play/pause feedback) */
+    /* Audio-only playback badge (the same <video> element decodes audio files;
+       this overlay is the visual stage while no video frames exist) */
+    .audio-badge { position: absolute; top: 50%; left: 50%; transform: translate(-50%,-50%); width: 110px; height: 110px; border-radius: 28px; background: var(--accent-alpha); color: var(--accent); display: none; place-items: center; z-index: 3; pointer-events: none; }
+    .audio-badge svg { width: 54px; height: 54px; }
+    .player-container.audio-mode:not(.idle) .audio-badge { display: grid; }
+
     .center-flash { position: absolute; top: 50%; left: 50%; transform: translate(-50%,-50%) scale(0.6); width: 76px; height: 76px; border-radius: 50%; background: rgba(0,0,0,0.55); display: grid; place-items: center; opacity: 0; pointer-events: none; z-index: 6; }
     .center-flash svg { width: 36px; height: 36px; color: #fff; }
     .center-flash.flash { animation: flashAnim 0.5s ease-out; }
@@ -189,6 +199,7 @@
     .explorer-icon svg { width: 15px; height: 15px; }
     .explorer-icon.dir { color: #f59e0b; }
     .explorer-icon.video { color: var(--accent); }
+    .explorer-icon.audio { color: #34d399; }
     .explorer-name { flex: 1; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
     .explorer-size { font-size: 10px; color: var(--text-muted); font-family: monospace; }
     .explorer-msg { padding: 16px; text-align: center; color: var(--text-muted); font-size: 12px; }
@@ -273,6 +284,10 @@
           <div class="dropdown-item" id="mi-open-local"><span data-i18n="openLocal">Apri file locale…</span><span class="shortcut">Ctrl+O</span></div>
           <div class="dropdown-item" id="mi-open-sd"><span data-i18n="openSd">Apri da MicroSD…</span><span class="shortcut">Ctrl+Shift+O</span></div>
           <div class="dropdown-divider"></div>
+          <!-- Sources: shown only when there is a real choice (more than one detected source) -->
+          <div class="dropdown-label" id="mi-sources-label" data-i18n="sourcesLabel" hidden>Sorgenti</div>
+          <div id="mi-sources" hidden></div>
+          <div class="dropdown-divider" id="mi-sources-divider" hidden></div>
           <div class="dropdown-item" id="mi-clear"><span data-i18n="closeMedia">Chiudi media</span><span class="shortcut">Esc</span></div>
         </div>
       </div>
@@ -327,7 +342,7 @@
     </nav>
   </header>
 
-  <input type="file" id="input-file" accept="video/*,.avi,.mpg,.mpeg,.m1v" style="display:none;">
+  <input type="file" id="input-file" accept="video/*,audio/*,.avi,.mpg,.mpeg,.m1v,.nfv" style="display:none;">
   <input type="file" id="input-sub" accept=".srt,.vtt,.webvtt" style="display:none;">
 
   <main class="player-container idle" id="player-container">
@@ -362,6 +377,11 @@
         </button>
       </div>
       <div class="welcome-hint" data-i18n="dragHint">…oppure trascina un file video in questa finestra</div>
+    </div>
+
+    <!-- Audio-only badge (visible while an audio file plays in the shared <video> element) -->
+    <div class="audio-badge">
+      <svg viewBox="0 0 24 24" fill="currentColor"><path d="M12 3v9.28a4.39 4.39 0 0 0-1.5-.28C8.01 12 6 13.79 6 16s2.01 4 4.5 4S15 18.21 15 16V7h4V3h-7z"/></svg>
     </div>
 
     <!-- Center play/pause flash -->
@@ -486,6 +506,7 @@
 
   <script type="module">
     import I18N from '/nucleo-i18n.js';
+    import Caps from '/nucleo-caps.js';   // fs.mounts: whether /api/fs/mounts exists here
     const t = await I18N.init('video-player');   // loads core + this app's catalog, paints [data-i18n], live-switches
     // Re-render imperatively-built text after a live language change. The engine's apply() already
     // repaints every [data-i18n] node — but #title-sub carries a (live) file name while playing and
@@ -493,6 +514,7 @@
     I18N.onChange(() => {
       refreshTitleSub();
       renderSdStatus();
+      renderSourcesMenu();
       playlistTitleLabel.textContent = t('playlistTitle', { dir: playlistDir });
       if (subPop.classList.contains('open')) renderSubPop();
       if (audioPop.classList.contains('open')) renderAudioPop();
@@ -501,11 +523,18 @@
       if (statsOn) renderStats();
     });
 
-    // Dove stanno davvero i video sulla MicroSD: registrazioni della fotocamera e film convertiti.
-    const DEFAULT_DIRS = ['/Video', '/DCIM'];
-    const VIDEO_RE = /\.(mp4|webm|mov|mkv|m4v|ogv|avi|mpg|mpeg|m1v)$/i;
+    // Dove stanno i video: la convenzione data/ (Cardputer, Handheld) oppure, sulla MicroSD piatta
+    // del P4, i film convertiti (/Video) e le registrazioni della fotocamera (/DCIM).
+    const DEFAULT_VIDS_DIR = '/data/Videos';
+    const FLAT_VIDS_DIRS = [['/Video', 'srcVideoteca'], ['/DCIM', 'srcLocalVideos']];
+    const DEFAULT_DIRS = [DEFAULT_VIDS_DIR, ...FLAT_VIDS_DIRS.map(([d]) => d)];
+    const VIDEO_RE = /\.(mp4|webm|mov|mkv|m4v|ogv|avi|mpg|mpeg|m1v|nfv)$/i;
+    const AUDIO_RE = /\.(mp3|flac|ogg|m4a|wav)$/i;
+    const MEDIA_RE = /\.(mp4|webm|mov|mkv|m4v|ogv|avi|mpg|mpeg|m1v|nfv|mp3|flac|ogg|m4a|wav)$/i;
     // Formati che il browser non decodifica da solo: li riproducono i motori software (canvas).
     const SOFT_RE = /\.(avi|mpg|mpeg|m1v)$/i;
+    // The Cardputer's own format (.nfv v4: JPEG frames + IMA ADPCM sound in one file), played by nfv4.js on a canvas.
+    const NFV_RE = /\.nfv$/i;
 
     const $ = (id) => document.getElementById(id);
     const v = $('v');
@@ -552,6 +581,8 @@
     let playlistLoaded = false;
     let subTracks = [];          // [{label, lang, cues:[{start, end, html}]}]
     let activeSub = -1;          // index into subTracks, -1 = off
+    // Read-only view for the browser tests (like File Commander's window._fc): the parsed subtitle tracks.
+    window._vp = { get subTracks() { return subTracks.map((tr) => ({ label: tr.label, lang: tr.lang, cues: tr.cues.map((c) => [c.start, c.end, c.html]) })); } };
     let subScale = 1.0;          // intelligent-sizing multiplier
     const SUB_RE = /\.(srt|vtt|webvtt)$/i;
 
@@ -587,7 +618,13 @@
       setupControls();
       setupDragAndDrop();
       setupKeybindings();
-      probeSd();
+      // Sources are DETECTED, never assumed: the mount list comes from the server
+      // (multi-console: K36 has no second SD, so 'media' may simply not exist).
+      discoverSources().then(() => {
+        if (!playlistLoaded) playlistDir = primaryDir();   // a launched file already set its own folder
+        probeSd();
+        renderSourcesMenu();
+      });
 
       const q = new URLSearchParams(location.search).get('path');
       if (q) {
@@ -597,6 +634,123 @@
         loadPlaylist(dir, false).finally(() => playVideo(q));
       }
       // No autoplay otherwise: the welcome screen is shown until the user picks a file.
+    }
+
+    /* ---------- Media sources (asked to the server, never hardcoded) ---------- */
+    let sources = [];   // [{key, dir, kind:'video'|'audio'}] — only dirs that really exist
+
+    // Where the media USED to live ("/roms/media"): set by fetchMountNames from the
+    // server's media_alt, '' when there is no such place (or an older server).
+    let mediaAlt = '';
+    async function fetchMountNames() {
+      // GET /api/fs/mounts -> {"mounts":[{"name":...,"writable":...}], "media_alt": "..."}
+      // (existing mounts only). If the endpoint is missing (older server) fall back
+      // to the fs convention roots.
+      try {
+        if (!await Caps.has('fs.mounts')) throw new Error();   // a device without the route: the convention roots
+        const res = await fetch('/api/fs/mounts');
+        if (!res.ok) throw new Error();
+        const data = await res.json();
+        mediaAlt = typeof data.media_alt === 'string' ? data.media_alt : '';
+        return (data.mounts || []).map(m => m.name);
+      } catch { mediaAlt = ''; return ['system', 'data']; }
+    }
+
+    // NOTE: /api/fs/list answers 200 with entries:[] for a MISSING dir, so "the
+    // fetch was ok" can never mean "the folder exists" — a source is real only
+    // if its listing has entries. And the card usually mounts one level below
+    // /media with a per-unit label (/media/MEDIA here, anything elsewhere):
+    // never hardcode the label — scan depth-1.
+    async function listEntries(path) {
+      try {
+        const r = await fetch('/api/fs/list?path=' + encodeURIComponent(path));
+        if (!r.ok) return null;
+        return ((await r.json()).entries) || [];
+      } catch { return null; }
+    }
+
+    async function cardRoots() {
+      // '/media' itself + its first-level directories (the mounted card(s)).
+      const roots = ['/media'];
+      for (const e of (await listEntries('/media')) || [])
+        if (e.type === 'dir') roots.push('/media/' + e.name);
+      return roots;
+    }
+
+    async function firstNonEmpty(roots, names) {
+      for (const root of roots)
+        for (const d of names)
+          if ((((await listEntries(root + '/' + d)) || []).length)) return root + '/' + d;
+      return null;
+    }
+
+    async function discoverSources() {
+      const mounts = await fetchMountNames();
+      const found = [];
+      // The data/ convention already symlinks the card's library when present
+      // (data/Videos -> the real Video dir), so it is the primary source on
+      // every board. Scan the card directly ONLY when the convention comes up
+      // empty (a unit without the symlink) — avoids listing the same folder
+      // twice under two names.
+      const dataVids = (await listEntries(DEFAULT_VIDS_DIR)) || [];
+      // Flat card layout (P4: camera recordings in /DCIM, converted films in /Video at the card root).
+      // Looked at only when the data/ convention comes up empty, so a filled library costs nothing more.
+      const flat = [];
+      if (!dataVids.length)
+        for (const [d, key] of FLAT_VIDS_DIRS)
+          if (((await listEntries(d)) || []).length) flat.push({ key, dir: d, kind: 'video' });
+      if (flat.length) found.push(...flat);
+      else found.push({ key: dataVids.length ? 'srcVideoteca' : 'srcLocalVideos', dir: DEFAULT_VIDS_DIR, kind: 'video' });
+      let roots = null;
+      if (!dataVids.length && mounts.includes('media')) {
+        roots = await cardRoots();
+        const d = await firstNonEmpty(roots, ['Video', 'Videos', 'video']);
+        if (d) found.push({ key: 'srcVideoteca', dir: d, kind: 'video' });
+      }
+      // Audio (la vecchia app musicale è stata assorbita: quest'app è il player unico).
+      const dataMusic = (await listEntries('/data/Music')) || [];
+      if (dataMusic.length) found.push({ key: 'srcMusic', dir: '/data/Music', kind: 'audio' });
+      else if (mounts.includes('media')) {
+        if (!roots) roots = await cardRoots();
+        const d = await firstNonEmpty(roots, ['Music', 'Musica', 'music']);
+        if (d) found.push({ key: 'srcMusicSd', dir: d, kind: 'audio' });
+      }
+      // Films and music put on the console while it had ONE card stay on the ROM
+      // card (<roms>/media) when the second SD takes over as the media dir: the
+      // links above point at the new card only, so they vanished from here the
+      // moment a second card went in. The server says where they are.
+      if (mediaAlt) {
+        const altVids = mediaAlt + '/Video', altMusic = mediaAlt + '/Music';
+        if (((await listEntries(altVids)) || []).length) found.push({ key: 'srcVideoRoms', dir: altVids, kind: 'video' });
+        if (((await listEntries(altMusic)) || []).length) found.push({ key: 'srcMusicRoms', dir: altMusic, kind: 'audio' });
+      }
+      // The first source is what opens at start: an empty library must not win
+      // over the old card that has the films on it.
+      if (found[0] && found[0].key === 'srcLocalVideos') {
+        const i = found.findIndex(f => f.key === 'srcVideoRoms');
+        if (i > 0) found.unshift(found.splice(i, 1)[0]);
+      }
+      sources = found;
+    }
+
+    function primaryDir() { return (sources[0] && sources[0].dir) || DEFAULT_VIDS_DIR; }
+
+    // The Sources menu appears only when there is a real choice to make (e.g. the Handheld's old ROM card next to
+    // the library); with a single source it stays hidden and that source is used directly (primaryDir()).
+    function renderSourcesMenu() {
+      const box = $('mi-sources');
+      if (!box) return;
+      const choice = sources.length > 1;
+      box.hidden = $('mi-sources-label').hidden = $('mi-sources-divider').hidden = !choice;
+      box.innerHTML = '';
+      if (!choice) return;
+      sources.forEach(src => {
+        const item = document.createElement('div');
+        item.className = 'dropdown-item';
+        item.innerHTML = '<span>' + esc(t(src.key)) + '</span><span class="shortcut">' + esc(src.dir) + '</span>';
+        item.onclick = () => { loadPlaylist(src.dir, false); togglePlaylist(true); };
+        box.appendChild(item);
+      });
     }
 
     /* ---------- Menus ---------- */
@@ -700,8 +854,14 @@
       currentPath = path;
       clearSubs();
       const isLocal = path.startsWith('blob:') || path.startsWith('data:');
+      // a different file replaces the open local one: revoke its object URL or the whole file stays pinned in RAM
+      if (localUrl && path !== localUrl) { URL.revokeObjectURL(localUrl); localUrl = ''; localFile = null; }
       const name = isLocal ? (localName || t('localFile')) : path.split('/').pop();
       const fileName = isLocal ? (localFile ? localFile.name : '') : name;
+      // Audio files ride the same <video> element (it decodes them fine); the app
+      // just switches the stage to the audio badge instead of black frames.
+      const isAudio = opts.audio != null ? !!opts.audio : AUDIO_RE.test(fileName);
+      playerContainer.classList.toggle('audio-mode', isAudio);
       playerContainer.classList.remove('idle');
       titleSub.removeAttribute('data-i18n');   // file name is live data — keep the engine from repainting it
       titleSub.textContent = '— ' + name;
@@ -710,9 +870,50 @@
       highlightActiveChip();
       updatePlayIcon(true);
       resetControlsTimeout();
-      if (!isLocal) detectSidecarSubs(path);   // auto-load matching .srt/.vtt from the SD folder
+      // Sidecar-sub detection costs an extra /api/fs/list — let the stream win the race for the
+      // device's few sockets and only look for subs once playback can start (never for audio).
+      const wantSubs = !isLocal && !isAudio && !NFV_RE.test(fileName);
+      const findSubs = () => { if (token === playToken) detectSidecarSubs(path); };
 
-      if (SOFT_RE.test(fileName)) {
+      if (NFV_RE.test(fileName)) {
+        // NfvMedia speaks the <video> API (events included) on its own canvas: it plugs into the same
+        // engine slot as the AVI and MPEG-1 decoders, loaded only when an .nfv is opened.
+        showSpinner(true);
+        let NfvMedia;
+        try { ({ NfvMedia } = await import('./nfv4.js')); }
+        catch (e) {
+          if (token !== playToken) return;
+          showSpinner(false);
+          showError({ key: 'errDecoderLoad', detail: e && e.message });
+          return;
+        }
+        if (token !== playToken) return;
+        const canvas = document.createElement('canvas');
+        canvas.className = 'soft-canvas';
+        softStage.appendChild(canvas);
+        const m = new NfvMedia(canvas);
+        m.dataset.name = name;
+        m.destroy = () => { m.close(); canvas.remove(); };
+        // Its errors are plain Errors: give them this app's keys before onMediaError reads them.
+        m.addEventListener('error', () => {
+          const e = m.error;
+          if (e && !e.key) m.error = e.code === 'NFV_OLD' ? { key: 'nfvOld', vars: { v: e.version } } : { key: 'nfvError' };
+        });
+        m.getStats = () => {
+          const h = m.h || {};
+          return { engine: 'NFV v4', container: 'NFV v4', extra: {}, vcodec: 'JPEG', width: m.videoWidth, height: m.videoHeight,
+                   fpsReal: 0, fpsNominal: h.fps || 0, shown: 0, dropped: 0, corrupt: 0, decoded: 0,
+                   acodec: h.rate ? 'IMA ADPCM' : '', audioState: h.rate ? 'on' : 'none', clock: m._clock === 'audio' ? 'audio' : 'wall',
+                   ahead: 0, cached: 0, transport: isLocal ? 'file' : 'range', bytes: 0, requests: 0, retries: 0, size: 0 };
+        };
+        engine = m; media = m;
+        engineBound = bindMedia(m);
+        applyMediaState(m);
+        v.classList.add('engine-off');
+        softStage.classList.add('active');
+        m.open(isLocal && localFile ? localFile : getSdUrl(path))
+          .then(() => { if (token === playToken) m.play().catch(() => {}); }, () => {});
+      } else if (SOFT_RE.test(fileName)) {
         showSpinner(true);
         let Engine;
         try {
@@ -733,6 +934,7 @@
         engine.dataset.name = name;
         media = engine;
         engineBound = bindMedia(engine);
+        if (wantSubs) engine.addEventListener('canplay', findSubs, { once: true });
         v.classList.add('engine-off');
         softStage.classList.add('active');
         engine.play().catch(() => {});
@@ -740,6 +942,7 @@
         media = v;
         v.src = isLocal ? path : getSdUrl(path);
         applyMediaState(v);
+        if (wantSubs) v.addEventListener('canplay', findSubs, { once: true });
         startNative();
       }
     }
@@ -771,6 +974,8 @@
     function stopVideo() {
       ++playToken;
       teardownMedia(); clearSubs(); hideError(); hideHint();
+      if (localUrl) { URL.revokeObjectURL(localUrl); localUrl = ''; localFile = null; }
+      playerContainer.classList.remove('audio-mode');
       currentPath = '';
       playerContainer.classList.add('idle');
       updatePlayIcon(false);
@@ -843,17 +1048,30 @@
 
       bindMedia(v);   // the native element keeps its listeners for the whole session
 
-      progressArea.onmousedown = (e) => { isDraggingProgress = true; seekFromEvent(e); };
-      progressArea.onmousemove = (e) => {
+      // Pointer events: cercare dentro un film e' il gesto piu' frequente quando
+      // si guarda un video del dispositivo dal telefono, ed era l'unico che col
+      // dito non funzionava (su touch il browser non manda mousemove durante il
+      // trascinamento). touch-action: none, o il browser scorre la pagina invece.
+      progressArea.style.touchAction = 'none';
+      progressArea.addEventListener('pointerdown', (e) => {
+        if (e.button > 0) return;
+        isDraggingProgress = true;
+        try { progressArea.setPointerCapture(e.pointerId); } catch {}
+        seekFromEvent(e);
+      });
+      progressArea.addEventListener('pointermove', (e) => {
+        if (isDraggingProgress) seekFromEvent(e);
         const d = media.duration;
         if (!d || !isFinite(d)) return;
         const rect = progressArea.getBoundingClientRect();
         const pct = Math.max(0, Math.min(1, (e.clientX - rect.left) / rect.width));
         seekTooltip.style.left = (pct * 100) + '%';
         seekTooltip.textContent = formatTime(pct * d);
-      };
-      document.addEventListener('mousemove', (e) => { if (isDraggingProgress) seekFromEvent(e); });
-      document.addEventListener('mouseup', () => { isDraggingProgress = false; });
+      });
+      const endSeek = () => { isDraggingProgress = false; };
+      progressArea.addEventListener('pointerup', endSeek);
+      progressArea.addEventListener('pointercancel', endSeek);
+      document.addEventListener('pointerup', endSeek);
 
       function seekFromEvent(e) {
         const d = media.duration;
@@ -1073,7 +1291,8 @@
 
     // Senza un file aperto: la prima cartella predefinita che contiene video.
     async function loadDefaultPlaylist() {
-      for (const dir of DEFAULT_DIRS) {
+      const dirs = [...new Set([playlistDir, ...sources.map(s => s.dir)])];
+      for (const dir of dirs) {
         await loadPlaylist(dir, false);
         if (playlist.length) return;
       }
@@ -1084,11 +1303,12 @@
       playlistTitleLabel.textContent = t('playlistTitle', { dir });
       try {
         const res = await fetch('/api/fs/list?path=' + encodeURIComponent(dir));
-        if (!res.ok) throw new Error();
-        const data = await res.json();
+        // No such folder answers 404: the card is reachable, the playlist is just empty (like probeSd()).
+        if (!res.ok && res.status !== 404) throw new Error();
+        const data = res.status === 404 ? { entries: [] } : await res.json();
         const base = dir.endsWith('/') ? dir : dir + '/';
         playlist = (data.entries || [])
-          .filter(e => e.type === 'file' && VIDEO_RE.test(e.name))
+          .filter(e => e.type === 'file' && MEDIA_RE.test(e.name))
           .sort(byName)
           .map(e => ({ name: e.name, path: base + e.name, size: e.size }));
         playlistLoaded = true;
@@ -1107,7 +1327,10 @@
         const chip = document.createElement('div');
         chip.className = 'playlist-chip';
         chip.dataset.path = item.path;
-        chip.innerHTML = '<svg viewBox="0 0 24 24" width="12" height="12" fill="currentColor"><path d="M12 2C6.48 2 2 6.48 2 12s4.48 10 10 10 10-4.48 10-10S17.52 2 12 2zm-2 14.5v-9l6 4.5-6 4.5z"/></svg><span>' + esc(item.name) + '</span>';
+        chip.innerHTML = (AUDIO_RE.test(item.name)
+          ? '<svg viewBox="0 0 24 24" width="12" height="12" fill="currentColor"><path d="M12 3v9.28a4.39 4.39 0 0 0-1.5-.28C8.01 12 6 13.79 6 16s2.01 4 4.5 4S15 18.21 15 16V7h4V3h-7z"/></svg>'
+          : '<svg viewBox="0 0 24 24" width="12" height="12" fill="currentColor"><path d="M12 2C6.48 2 2 6.48 2 12s4.48 10 10 10 10-4.48 10-10S17.52 2 12 2zm-2 14.5v-9l6 4.5-6 4.5z"/></svg>')
+          + '<span>' + esc(item.name) + '</span>';
         chip.onclick = () => playVideo(item.path);
         playlistItems.appendChild(chip);
       });
@@ -1131,7 +1354,9 @@
     function currentIndex() { return playlist.findIndex(i => i.path === currentPath); }
     function playNext(auto = false) {
       const idx = currentIndex();
-      if (idx === -1 || !playlist.length) return;
+      if (!playlist.length) return;
+      // a local (blob:) file is never in the playlist: manual Next jumps into it, auto-advance only loops
+      if (idx === -1) { if (!auto || loopPlaylist) playVideo(playlist[0].path, { auto }); return; }
       if (idx + 1 < playlist.length) playVideo(playlist[idx + 1].path, { auto });
       else if (loopPlaylist) playVideo(playlist[0].path, { auto });
       else if (auto) { updatePlayIcon(false); }
@@ -1300,7 +1525,7 @@
         e.preventDefault(); dragDepth = 0; dragOverlay.style.display = 'none';
         const file = e.dataTransfer.files[0];
         if (!file) return;
-        if (file.type.startsWith('video/') || VIDEO_RE.test(file.name)) openLocalFile(file);
+        if (file.type.startsWith('video/') || file.type.startsWith('audio/') || MEDIA_RE.test(file.name)) openLocalFile(file);
         else if (SUB_RE.test(file.name)) { if (currentPath) loadLocalSub(file); }
       });
       inputFile.onchange = (e) => { const f = e.target.files[0]; if (f) openLocalFile(f); inputFile.value = ''; };
@@ -1311,7 +1536,7 @@
       localUrl = URL.createObjectURL(file);
       localFile = file;
       localName = file.name + ' (' + t('localTag') + ')';
-      playVideo(localUrl);
+      playVideo(localUrl, { audio: file.type.startsWith('audio/') || AUDIO_RE.test(file.name) });
     }
 
     /* ---------- Keybindings ---------- */
@@ -1389,20 +1614,22 @@
       let count = 0;
       cachedFiles.forEach(e => {
         const isDir = e.type === 'dir';
-        const isVideo = !isDir && VIDEO_RE.test(e.name);
-        if (!isDir && !isVideo) return;
+        const isAudio = !isDir && AUDIO_RE.test(e.name);
+        const isMedia = !isDir && MEDIA_RE.test(e.name);
+        if (!isDir && !isMedia) return;
         if (query && !e.name.toLowerCase().includes(query)) return;
         const fullPath = sdCwd.endsWith('/') ? sdCwd + e.name : sdCwd + '/' + e.name;
         const li = document.createElement('li'); li.className = 'explorer-item';
         if (fullPath === currentPath) li.classList.add('active');
-        li.innerHTML = '<div class="explorer-icon ' + (isDir ? 'dir' : 'video') + '">' +
+        li.innerHTML = '<div class="explorer-icon ' + (isDir ? 'dir' : (isAudio ? 'audio' : 'video')) + '">' +
           (isDir ? '<svg viewBox="0 0 24 24" fill="currentColor"><path d="M10 4H4c-1.1 0-1.99.9-1.99 2L2 18c0 1.1.9 2 2 2h16c1.1 0 2-.9 2-2V8c0-1.1-.9-2-2-2h-8l-2-2z"/></svg>'
+                  : isAudio ? '<svg viewBox="0 0 24 24" fill="currentColor"><path d="M12 3v9.28a4.39 4.39 0 0 0-1.5-.28C8.01 12 6 13.79 6 16s2.01 4 4.5 4S15 18.21 15 16V7h4V3h-7z"/></svg>'
                   : '<svg viewBox="0 0 24 24" fill="currentColor"><path d="M18 4l2 4h-3l-2-4h-2l2 4h-3l-2-4H8l2 4H7L5 4H4c-1.1 0-1.99.9-1.99 2L2 18c0 1.1.9 2 2 2h16c1.1 0 2-.9 2-2V4h-4z"/></svg>') +
           '</div><span class="explorer-name">' + esc(e.name) + '</span>' +
           (isDir ? '' : '<span class="explorer-size">' + formatBytes(e.size) + '</span>');
-        li.onclick = () => {
+        li.onclick = async () => {
           if (isDir) { sdCwd = fullPath; loadSdDir(); }
-          else { sdModal.classList.remove('visible'); loadPlaylist(sdCwd, false); playVideo(fullPath); }
+          else { sdModal.classList.remove('visible'); await loadPlaylist(sdCwd, false); playVideo(fullPath); }
         };
         explorerList.appendChild(li); count++;
       });
@@ -1423,18 +1650,22 @@
       const el = $('sd-status-text');
       el.removeAttribute('data-i18n');   // value is computed; keep the engine from repainting "SD —"
       if (!sdStatus) { el.textContent = t('sdDash'); el.setAttribute('data-i18n', 'sdDash'); return; }
-      if (sdStatus.online) el.textContent = sdStatus.count ? t('sdVideoCount', { count: sdStatus.count }) : t('sdReady');
+      if (sdStatus.online) el.textContent = sdStatus.count ? t('sdMediaCount', { count: sdStatus.count }) : t('sdReady');
       else el.textContent = t('sdOffline');
     }
     async function probeSd() {
+      // Every detected video source (P4 can have two), the convention folder before detection.
+      // A missing folder answers 404 on some boards: the card IS reachable, it just holds no videos.
+      const dirs = sources.length ? sources.filter(s => s.kind === 'video').map(s => s.dir) : [DEFAULT_VIDS_DIR];
       let online = false, n = 0;
-      for (const dir of DEFAULT_DIRS) {
+      for (const dir of dirs) {
         try {
           const res = await fetch('/api/fs/list?path=' + encodeURIComponent(dir));
-          if (!res.ok) continue;
-          const data = await res.json();
+          if (!res.ok && res.status !== 404) continue;
           online = true;
-          n += (data.entries || []).filter(e => e.type === 'file' && VIDEO_RE.test(e.name)).length;
+          if (res.status === 404) continue;
+          const data = await res.json();
+          n += (data.entries || []).filter(e => e.type === 'file' && MEDIA_RE.test(e.name)).length;
         } catch {}
       }
       $('sd-status-dot').classList.toggle('online', online);

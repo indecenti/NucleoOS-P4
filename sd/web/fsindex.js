@@ -1,22 +1,39 @@
+/* SPDX-License-Identifier: AGPL-3.0-or-later */
 // NucleoOS file index — the brains behind taskbar/Start search.
 //
 // The device exposes only /api/fs/list (no native search). Hitting it per keystroke is slow
-// and hammers the ESP, so instead we crawl the SD ONCE (breadth-first, capped), keep a flat
+// and floods the device, so instead we crawl the SD ONCE (breadth-first, capped), keep a flat
 // in-memory index, and answer every search from RAM — instant, zero network. The index is:
-//   • persisted to localStorage so a returning browser searches immediately (cold start),
-//     then silently revalidated against the live device in the background;
-//   • refreshed (debounced) whenever the device reports an fs.changed event, so results stay
-//     fresh without polling;
+//   • persisted to localStorage so a returning browser searches immediately (any age), and
+//     re-crawled only when someone searches and it is missing, stale or older than 10 min — never at
+//     boot (it used to walk /data on every boot, in the middle of the session restore);
+//   • MARKED stale by fs.changed (no request); re-crawled at once only while a search is open, so
+//     results stay fresh without polling or re-reading the SD after every save;
 //   • bounded (depth + total directory reads) to stay kind to the ESP32 and its SD card.
 //
-// Everything here is framework-free and self-contained; the shell just calls search()/ensure().
+// Everything here is framework-free and self-contained; the shell calls init() at boot, warm() + search()
+// from the search UI, invalidate() on fs.changed. Host-tested in tools/shell-fsindex.test.mjs.
 
 const ROOTS = ['/data'];
 const MAX_DEPTH = 6;            // how deep into /data we descend
-const MAX_DIRS = 600;          // hard cap on directory reads per full crawl (ESP-friendly)
+const MAX_DIRS = 600;          // hard cap on directory reads per full crawl (bounded work per boot)
 const PERSIST_KEY = 'nucleo.fsindex.v1';
 const PERSIST_TTL = 10 * 60 * 1000;   // a stored index is shown instantly if younger than this
 const REFRESH_DEBOUNCE = 1500;        // coalesce bursts of fs.changed into one re-crawl
+const PERSIST_MAX = 4000;             // entries actually written to localStorage (see persist)
+
+// The ROM tree is NOT crawled, and that is the single biggest thing this file does
+// for the device. /data/ROMs is a symlink to /roms and /api/fs/list resolves
+// symlinks, so the crawl walked the entire library — ~45 systems, each with
+// images/, manuals/, ports/ — as one SEQUENTIAL HTTP request per directory, one
+// stat per entry, on exFAT-over-FUSE, from the same card the emulator streams the
+// running game off. It also poisoned the feature it exists for: the 600-directory
+// budget burned itself inside artwork folders, so Notes and Documents fell out of
+// search behind thousands of boxart .png.
+// Games are not lost from search — they come from /api/library, which the DEVICE
+// owns and keeps in sync (and which counts them off the disk, not off gamelist.xml).
+const SKIP = new Set(['/data/ROMs', '/data/roms', '/data/play']);
+const skipped = (p) => SKIP.has(p) || [...SKIP].some((s) => p.startsWith(s + '/'));
 
 // Map an extension to a coarse category used for grouping + glyphs in the UI.
 const CAT = {
@@ -56,7 +73,17 @@ function loadPersisted() {
   } catch { return false; }
 }
 function persist() {
-  try { localStorage.setItem(PERSIST_KEY, JSON.stringify({ host, builtAt, items: index })); } catch {}
+  // Bounded on purpose: a scraped library used to serialise tens of thousands of
+  // entries, blow the localStorage quota, and fail inside a silent catch — which
+  // left the PREVIOUS (stale) index in place and meant the next load was never
+  // warm, so it re-crawled from scratch every single time. Cap what we store, and
+  // if it still doesn't fit, drop the key instead of keeping a lie.
+  try {
+    const items = index.length > PERSIST_MAX ? index.slice(0, PERSIST_MAX) : index;
+    localStorage.setItem(PERSIST_KEY, JSON.stringify({ host, builtAt, items }));
+  } catch {
+    try { localStorage.removeItem(PERSIST_KEY); } catch {}
+  }
 }
 
 // ---- crawl ----
@@ -79,6 +106,7 @@ async function crawl() {
     const entries = await listDir(path);
     if (!entries) continue;
     for (const e of entries) {
+      if (!e || typeof e.name !== 'string' || !e.name) continue;   // one malformed entry must not sink the crawl
       const isDir = e.type === 'dir';
       const full = path.endsWith('/') ? path + e.name : path + '/' + e.name;
       out.push({
@@ -87,7 +115,9 @@ async function crawl() {
         ext: isDir ? '' : (e.name.split('.').pop() || '').toLowerCase(),
         cat: categoryOf(e.name, isDir),
       });
-      if (isDir && depth + 1 < MAX_DEPTH) queue.push({ path: full, depth: depth + 1 });
+      // The folder itself stays in the index (it is a useful navigation target);
+      // what we refuse is to DESCEND into it.
+      if (isDir && depth + 1 < MAX_DEPTH && !skipped(full)) queue.push({ path: full, depth: depth + 1 });
     }
   }
   return out;
@@ -98,25 +128,43 @@ export function ensure(force = false) {
   if (building) return building;
   if (!force && builtAt && (now() - builtAt) < PERSIST_TTL) return Promise.resolve(index);
   building = (async () => {
-    const items = await crawl();
-    // A crawl that returns nothing (device unreachable mid-session) shouldn't wipe a good index.
-    if (items.length || !index.length) { index = items; builtAt = now(); persist(); }
-    building = null;
-    for (const cb of updateCbs) try { cb(); } catch {}
-    return index;
+    // finally: a throw anywhere in the crawl must clear `building`, or every later ensure()/
+    // invalidate() returns this same rejected promise and search is dead for the session.
+    try {
+      const items = await crawl();
+      // A crawl that returns nothing (device unreachable mid-session) shouldn't wipe a good index.
+      if (items.length || !index.length) { index = items; builtAt = now(); persist(); }
+      for (const cb of updateCbs) try { cb(); } catch {}
+      return index;
+    } finally {
+      building = null;
+    }
   })();
+  building.catch(() => {});   // invalidate()'s fire-and-forget path must not surface as an unhandled rejection
   return building;
 }
 
-// The device changed something on disk — schedule a debounced rebuild so search stays fresh.
-export function invalidate() {
+// The device changed something on disk. The index is only MARKED stale: re-crawling the whole SD after
+// every save (a note, a config file, ANIMA's learning) was the costliest thing the shell did to the
+// Cardputer. It is re-crawled when someone searches (warm), or right away only while a search is open.
+let stale = false;
+let isLive = () => false;      // set by init(): "is a search on screen right now?"
+// A change inside a subtree we never crawl (SKIP) cannot change the index, so it does not even mark it
+// stale: writing a save or a play-stat file must not cost a re-walk of /data.
+export function invalidate(path) {
+  if (path && skipped(path)) return;
+  stale = true;
   clearTimeout(refreshTimer);
-  refreshTimer = setTimeout(() => ensure(true), REFRESH_DEBOUNCE);
+  if (isLive()) refreshTimer = setTimeout(() => ensure(true), REFRESH_DEBOUNCE);
+}
+// Called by the search UI: answer from what we have, and refresh in the background if it is missing,
+// stale, or old. Concurrent calls share one crawl.
+export function warm() {
+  if (!builtAt || stale || (now() - builtAt) >= PERSIST_TTL) { stale = false; ensure(true); }   // a change DURING the crawl marks it stale again
 }
 
 export function onUpdate(cb) { updateCbs.add(cb); return () => updateCbs.delete(cb); }
 export const isReady = () => builtAt > 0;
-export const size = () => index.length;
 
 // ---- ranking ----
 // Higher is better. Rewards prefix and word-boundary matches over buried substrings, penalises
@@ -165,10 +213,11 @@ export function search(query, limit = 40) {
 }
 
 // Initialise from the persisted index (instant), then revalidate against the device.
-export function init() {
-  const warm = loadPersisted();
+// Boot: the index this browser kept (any age) answers searches instantly; NO crawl here. Every boot used
+// to walk /data (up to MAX_DIRS /api/fs/list) even when nobody searched — on a 4-socket, no-PSRAM device,
+// in the middle of the session restore. The crawl now happens on the first search (warm()).
+export function init({ live } = {}) {
+  if (typeof live === 'function') isLive = live;
+  loadPersisted();
   if (index.length) for (const cb of updateCbs) try { cb(); } catch {}
-  // Revalidate now if cold, or shortly after if warm (don't compete with first paint).
-  if (warm) setTimeout(() => ensure(true), 4000);
-  else ensure(true);
 }

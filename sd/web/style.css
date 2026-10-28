@@ -1,15 +1,63 @@
+/* SPDX-License-Identifier: AGPL-3.0-or-later */
 /* NucleoOS desktop shell — lightweight, no framework. */
+/* Native controls and scrollbars follow the OS theme. */
+:root { color-scheme: dark; }
+html[data-theme="light"] { color-scheme: light; }
 :root {
   --bg: #0b1220; --bg2: #101826; --panel: #18233a; --panel2: #1f2d4a;
   --accent: #4ea1ff; --text: #e8eefc; --muted: #8aa0c8; --line: #2a3a5e;
   --bg-glow: #16233f;          /* desktop/pairing backdrop glow — theme-aware (see light below) */
   --taskbar-h: 44px;
+
+  /* ── Design tokens (one source of truth for the whole shell) ─────────────────
+     Before this layer, glass surfaces / radii / shadows / motion were hand-typed
+     ad-hoc at every rule (#ffffff14 vs #ffffff16 vs #ffffff1f, radius 6..18, a
+     dozen shadow strings). Consolidating them here is what makes the chrome read
+     as ONE system in both themes. Adopt these instead of re-typing literals. */
+  --accent-2: #7d5cff;                                   /* secondary accent (violet) */
+  --accent-grad: linear-gradient(135deg, var(--accent), var(--accent-2));
+  --accent-soft: rgba(78,161,255,0.16);                  /* selection / active tint */
+  --accent-line: rgba(78,161,255,0.55);                  /* accent hairline / focus */
+
+  /* Translucent "glass" fills layered over dark chrome (hover/active/border). */
+  --glass-1: rgba(255,255,255,0.06);                     /* rest fill */
+  --glass-2: rgba(255,255,255,0.10);                     /* hover */
+  --glass-3: rgba(255,255,255,0.16);                     /* pressed / strong */
+  --glass-brd: rgba(255,255,255,0.10);                   /* hairline border */
+
+  --r-xs: 6px; --r-sm: 8px; --r-md: 10px; --r-lg: 14px; --r-xl: 18px;  /* radius scale */
+
+  /* Elevation — a consistent 4-step shadow ramp (chip → popover → menu → modal). */
+  --sh-1: 0 2px 8px rgba(0,0,0,0.30);
+  --sh-2: 0 12px 32px rgba(0,0,0,0.45);
+  --sh-3: 0 24px 64px rgba(0,0,0,0.55);
+  --sh-4: 0 40px 100px rgba(0,0,0,0.60);
+
+  /* Motion — shared easings + a 3-step duration scale (was .08/.1/.12/.14/.15/.18/.22/.26). */
+  --ease: cubic-bezier(0.22, 1, 0.36, 1);                /* decelerate — UI reveals */
+  --ease-spring: cubic-bezier(0.34, 1.56, 0.64, 1);      /* gentle overshoot — modals */
+  --dur-1: .12s; --dur-2: .18s; --dur-3: .26s;
+
+  --focus-ring: 0 0 0 2px var(--bg), 0 0 0 4px var(--accent);   /* keyboard focus halo */
 }
 /* Light theme — driven by the device setting (ui.theme), applied on <html>. */
 html[data-theme="light"] {
   --bg: #eef2fb; --bg2: #e6ecf8; --panel: #ffffff; --panel2: #e6ecf8;
   --accent: #2b6fd6; --text: #10203a; --muted: #5a6a86; --line: #cdd8ee;
   --bg-glow: #d4e2fb;          /* soft blue tint instead of the dark blob that marred light mode */
+
+  /* Token overrides for light mode: glass flips to black-alpha, shadows soften. */
+  --accent-2: #6b4de0;
+  --accent-soft: rgba(43,111,214,0.14);
+  --accent-line: rgba(43,111,214,0.5);
+  --glass-1: rgba(0,0,0,0.04);
+  --glass-2: rgba(0,0,0,0.07);
+  --glass-3: rgba(0,0,0,0.11);
+  --glass-brd: rgba(0,0,0,0.09);
+  --sh-1: 0 2px 8px rgba(0,0,0,0.10);
+  --sh-2: 0 12px 32px rgba(0,0,0,0.14);
+  --sh-3: 0 24px 64px rgba(0,0,0,0.16);
+  --sh-4: 0 40px 100px rgba(0,0,0,0.18);
 }
 html[data-theme="light"] body {
   /* Sfondo gestito globalmente per permettere i wallpaper */
@@ -22,6 +70,21 @@ body {
   background: radial-gradient(1200px 800px at 70% -10%, var(--bg-glow) 0%, var(--bg) 60%);
 }
 .hidden { display: none !important; }
+
+/* ── Keyboard focus: one accessible ring for every interactive control ─────────
+   Mouse/touch users see nothing (:focus-visible only fires for keyboard/AT), but
+   Tab-navigation now lands a consistent accent halo everywhere instead of the old
+   mix of outline:none, hover-only cues and per-widget rings. The 2px inner gap is
+   the page bg so the ring reads on glass, wallpaper or panels alike. */
+:where(button, a, input, [tabindex], .icon, .sm-item, .sm-row, .sm-reco-item,
+       .ac-btn, .task-btn, .ctx-item, #tray > span):focus-visible {
+  outline: none;
+  box-shadow: var(--focus-ring);
+  border-radius: var(--r-sm);
+  z-index: 7;
+}
+/* Controls that carry their own box-shadow at rest compose the ring on top. */
+.win.active:focus-visible, .toast:focus-visible { border-radius: var(--r-md); }
 
 /* Pairing overlay — covers the whole OS until this browser is paired with the device. */
 .pair-overlay {
@@ -46,10 +109,13 @@ body {
 .pair-card input:focus { outline: none; border-color: var(--accent); }
 .pair-msg { min-height: 16px; font-size: 12px; color: #ff8b8b; }
 .pair-card button {
-  width: 100%; padding: 11px; border: 0; border-radius: 10px; cursor: pointer;
-  font: 600 14px system-ui; color: #fff; background: var(--accent);
+  width: 100%; padding: 11px; border: 0; border-radius: var(--r-md); cursor: pointer;
+  font: 600 14px system-ui; color: #fff; background: var(--accent-grad);
+  box-shadow: 0 4px 14px rgba(78,161,255,0.3); transition: filter var(--dur-1) var(--ease), transform .08s var(--ease);
 }
-.pair-card button:disabled { opacity: .6; cursor: default; }
+.pair-card button:hover:not(:disabled) { filter: brightness(1.07); }
+.pair-card button:active:not(:disabled) { transform: scale(.98); }
+.pair-card button:disabled { opacity: .6; cursor: default; box-shadow: none; }
 
 /* Desktop icons */
 #desktop {
@@ -65,16 +131,19 @@ body {
 .icon:hover, .icon:focus { background: #ffffff14; outline: none; }
 .icon:active { transform: scale(.93); }
 .icon.dragging { opacity: .8; z-index: 5; background: #ffffff1f; }
-.icon.sel { background: #2b6fd64d; outline: 1px solid #4ea1ff66; }
-.icon.sel:hover { background: #2b6fd666; }
+/* Flat fallback first (browsers without color-mix()), then a tint that follows the theme accent. */
+.icon.sel { background: #2b6fd64d; outline: 1px solid #4ea1ff66;
+  background: color-mix(in srgb, var(--accent) 28%, transparent); outline: 1px solid color-mix(in srgb, var(--accent) 45%, transparent); }
+.icon.sel:hover { background: #2b6fd666; background: color-mix(in srgb, var(--accent) 36%, transparent); }
 .marquee { position: fixed; z-index: 4; border: 1px solid var(--accent);
-  background: #4ea1ff22; pointer-events: none; }
+  background: #4ea1ff22; background: color-mix(in srgb, var(--accent) 14%, transparent); pointer-events: none; }
 
 /* Alt+Tab Task Switcher */
 #task-switcher {
   position: fixed; top: 50%; left: 50%; transform: translate(-50%, -50%);
   background: #0e1830dd; border: 1px solid #ffffff1a; border-radius: 12px;
-  box-shadow: 0 24px 64px #000c; padding: 20px; z-index: 10002;
+  /* Above the copilot (100001): Alt+Tab must never cycle an invisible overlay behind it. */
+  box-shadow: 0 24px 64px #000c; padding: 20px; z-index: 100400;
   display: flex; gap: 12px; backdrop-filter: blur(30px) saturate(2);
   max-width: 90vw; overflow-x: auto;
 }
@@ -111,7 +180,11 @@ html[data-theme='light'] .boot-spinner { border-color: #0000001a; border-top-col
    Idle: clamp to 2 lines (Windows wraps long names instead of one-line ellipsis). */
 .icon .label { font-size: 12px; font-weight: 600; color: #fff; max-width: var(--icon-w, 84px);
   display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical; overflow: hidden;
-  overflow-wrap: anywhere; line-height: 1.2; padding: 1px 4px; border-radius: 6px;
+  /* Break long names at SYLLABLES in the OS language (<html lang> follows it), never mid-letter:
+     "Automation Studio" used to wrap as "Automatio / n Studio". break-word only splits a word that
+     cannot fit even on its own line (and hyphens:auto normally handles that first). */
+  overflow-wrap: break-word; word-break: normal; -webkit-hyphens: auto; hyphens: auto;
+  line-height: 1.2; padding: 1px 4px; border-radius: 6px;
   text-shadow: 0 1px 2px rgba(0,0,0,.95), 0 0 3px rgba(0,0,0,.85), 0 0 1px rgba(0,0,0,.9); }
 /* Selected / hovered / focused: reveal the FULL name (no clamp) on a readable backing that
    overlays neighbours, exactly like Windows. Raised z-index so the expansion wins. */
@@ -134,23 +207,36 @@ html[data-theme="light"] .icon:focus-visible .label { background: rgba(20,40,80,
 /* Windows */
 @keyframes winIn { from { opacity: 0; transform: scale(.965) translateY(8px); } to { opacity: 1; transform: none; } }
 .win {
-  position: absolute; min-width: 240px; min-height: 160px; width: 520px; height: 360px;
-  background: var(--panel); border: 1px solid var(--line); border-radius: 10px;
-  box-shadow: 0 16px 32px rgba(0,0,0,0.3), 0 2px 8px rgba(0,0,0,0.2); display: flex; flex-direction: column; overflow: hidden;
-  animation: winIn .15s ease-out; transition: box-shadow .15s ease, border-color .15s ease;
+  /* Default size scales with the viewport (real-OS feel: apps open comfortably readable, not in a
+     tiny fixed 520×360 box). Per-app geometry memory still wins the moment the user resizes. */
+  position: absolute; min-width: 240px; min-height: 160px;
+  width: min(860px, 84vw); height: min(580px, 78vh);
+  background: var(--panel); border: 1px solid var(--line); border-radius: var(--r-md);
+  box-shadow: var(--sh-2); display: flex; flex-direction: column; overflow: hidden;
+  animation: winIn var(--dur-2) var(--ease); transition: box-shadow var(--dur-2) var(--ease), border-color var(--dur-2) var(--ease);
 }
-.win.active { border-color: var(--accent); box-shadow: 0 32px 64px rgba(0,0,0,0.4), 0 4px 16px rgba(0,0,0,0.3); }
+.win.active { border-color: var(--accent); box-shadow: var(--sh-3), 0 0 0 1px var(--accent-line); }
 .win.max { left: 0 !important; top: 0 !important; width: 100vw !important;
-  height: calc(100vh - 44px) !important; border-radius: 0; box-shadow: none; }
+  height: calc(100vh - var(--taskbar-h)) !important; border-radius: 0; box-shadow: none; }
 .win .bar {
   height: 34px; display: flex; align-items: center; gap: 8px; padding: 0 8px;
-  background: var(--panel2); cursor: move; flex: none;
+  /* Subtle top-lit gradient + hairline reads as a real title bar, not a flat strip.
+     Flat fallback first: browsers without color-mix() keep the solid panel colour. */
+  background: var(--panel2);
+  background: linear-gradient(180deg, color-mix(in srgb, var(--panel2) 85%, #fff 5%), var(--panel2));
+  border-bottom: 1px solid var(--glass-brd); cursor: move; flex: none;
+  transition: background var(--dur-2) var(--ease);
 }
-.win .bar .t { font-size: 13px; flex: 1; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-.win .bar button { width: 26px; height: 22px; border: 0; border-radius: 5px;
-  background: #ffffff10; color: var(--text); cursor: pointer;
-  display: inline-flex; align-items: center; justify-content: center; }
-.win .bar button:hover { background: #ffffff24; }
+/* Focused window: warm the title bar with a faint accent wash (Windows-11 "active" cue). */
+.win.active .bar { background: var(--panel2);
+  background: linear-gradient(180deg, color-mix(in srgb, var(--panel2) 82%, var(--accent) 12%), var(--panel2)); }
+.win .bar .t { font-size: 13px; font-weight: 500; flex: 1; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; letter-spacing: .01em; }
+.win .bar button { width: 26px; height: 22px; border: 0; border-radius: var(--r-xs);
+  background: transparent; color: var(--text); cursor: pointer;
+  display: inline-flex; align-items: center; justify-content: center;
+  transition: background var(--dur-1) var(--ease), transform .08s var(--ease); }
+.win .bar button:hover { background: var(--glass-2); }
+.win .bar button:active { transform: scale(.9); }
 .win .bar .close:hover svg { stroke: #fff; }
 .win .bar .close:hover { background: #e0556b; }
 .win .body { flex: 1; background: var(--bg2); }
@@ -199,20 +285,28 @@ html[data-theme="light"] .icon:focus-visible .label { background: rgba(20,40,80,
   background: #0a1020aa; border-top: 1px solid #ffffff14; backdrop-filter: blur(30px) saturate(2);
 }
 .tb-center { display: flex; align-items: center; gap: 5px; justify-self: center; min-width: 0; }
+/* The left corner holds more than one pill at times (the running game + widgets; a host's own button):
+   as a block they stacked, the corner grew taller than the taskbar and pushed the bar under the screen edge */
+.tb-left { display: flex; align-items: center; min-width: 0; }
 .tb-divider { width: 1px; height: 22px; background: var(--line); margin: 0 3px; flex: none; }
 .tb-divider.hidden { display: none; }
 
-#start-btn { width: 40px; height: 36px; border: 0; border-radius: 8px; flex: none;
+#start-btn { width: 40px; height: 36px; border: 0; border-radius: var(--r-sm); flex: none;
   background: transparent; color: var(--accent); cursor: pointer;
-  display: inline-flex; align-items: center; justify-content: center; transition: background .12s, transform .08s; }
-#start-btn:hover { background: #ffffff18; }
+  display: inline-flex; align-items: center; justify-content: center;
+  transition: background var(--dur-1) var(--ease), transform .08s var(--ease), color var(--dur-1) var(--ease); }
+#start-btn:hover { background: var(--glass-2); transform: translateY(-1px); }
 #start-btn:active { transform: scale(.9); }
+/* Menu open: light the Start button with the accent gradient (clear "you are here" state). */
+#start-btn[aria-expanded="true"] { background: var(--accent-grad); color: #fff; box-shadow: 0 4px 14px rgba(78,161,255,0.4); }
+#start-btn[aria-expanded="true"]:hover { transform: none; filter: brightness(1.05); }
 
 /* Taskbar search box (apps + SD files) */
 #search { display: flex; align-items: center; gap: 6px; height: 34px; padding: 0 12px; flex: none;
-  width: 180px; border: 1px solid var(--line); border-radius: 18px; background: #ffffff0d; color: var(--muted);
-  transition: width .15s, border-color .15s, background .15s; }
-#search:focus-within { width: 220px; border-color: var(--accent); background: #ffffff14; color: var(--text); }
+  width: 180px; border: 1px solid var(--line); border-radius: 18px; background: var(--glass-1); color: var(--muted);
+  transition: width var(--dur-2) var(--ease), border-color var(--dur-2) var(--ease), background var(--dur-2) var(--ease), box-shadow var(--dur-2) var(--ease); }
+#search:focus-within { width: 220px; border-color: var(--accent); background: var(--glass-2); color: var(--text);
+  box-shadow: 0 0 0 3px var(--accent-soft); }
 #search svg { flex: none; }
 #search-input { flex: 1; min-width: 0; border: 0; background: none; outline: none; color: var(--text);
   font: inherit; font-size: 13px; }
@@ -246,10 +340,10 @@ html[data-theme="light"] .search-panel { background: #ffffffe8; }
 /* Icon-only app buttons with a Windows-11 running/focus underline indicator + hover tooltip. */
 .task-btn {
   position: relative; display: flex; align-items: center; justify-content: center;
-  width: 40px; height: 36px; padding: 0; border: 0; border-radius: 8px; background: transparent;
-  color: var(--text); cursor: pointer; transition: background .12s ease, transform .08s ease;
+  width: 40px; height: 36px; padding: 0; border: 0; border-radius: var(--r-sm); background: transparent;
+  color: var(--text); cursor: pointer; transition: background var(--dur-1) var(--ease), transform .08s var(--ease);
 }
-.task-btn:hover { background: #ffffff16; }
+.task-btn:hover { background: var(--glass-2); transform: translateY(-1px); }
 .task-btn:active { transform: scale(.9); }
 .task-btn .glyph { font-size: 20px; line-height: 1; }
 .task-btn .label {           /* name shown as a floating tooltip on hover, not inline */
@@ -274,18 +368,40 @@ html[data-theme="light"] .task-btn .label { background: #ffffff; }
 #tray { display: flex; align-items: center; gap: 2px; color: var(--muted); font-size: 12px; justify-self: end; }
 #tray > span { display: inline-flex; align-items: center; gap: 5px; padding: 5px 8px; border-radius: 7px;
   transition: background .12s ease; }
-#tray > span:hover { background: #ffffff12; }
+#tray > span:hover { background: var(--glass-2); }
 #tray svg { flex: none; opacity: .9; }
 #tray #tray-net { cursor: default; }
+/* update-available pill: always in view until the device is updated (see update-check.js) */
+#tray-update { cursor: pointer; color: var(--accent); }
+#tray-update .tu-tag { font-weight: 600; font-size: 11px; }
+#tray-update.sec { color: #f5a623; }
+#start-btn { position: relative; }
+#start-btn.has-update::after { content: ''; position: absolute; top: 5px; right: 6px; width: 7px; height: 7px;
+  border-radius: 50%; background: var(--accent); border: 1.5px solid var(--bg); }
+#start-btn.has-update.sec::after { background: #f5a623; }
+/* What's-new sheet (built into the generic os-modal) */
+.us-ver { font-weight: 600; margin: 0 0 9px; }
+.us-sec { display: inline-block; font-size: 11px; font-weight: 700; color: #1a1205; background: #f5a623;
+  border-radius: 5px; padding: 1px 6px; margin-right: 7px; }
+.us-notes { max-height: 42vh; overflow: auto; font-size: 13px; line-height: 1.5; color: var(--text); margin-bottom: 12px; }
+.us-notes .h { font-weight: 700; margin: 8px 0 3px; }
+.us-notes .li { padding-left: 14px; text-indent: -10px; }
+.us-skip { display: inline-block; background: none; border: 0; color: var(--muted); text-decoration: underline;
+  cursor: pointer; font-size: 12px; padding: 2px 0; margin-bottom: 4px; }
+.us-skip:hover { color: var(--text); }
+#tray #tray-batt[hidden] { display: none; }
+#tray > span[hidden] { display: none; }   /* `#tray > span` sets display: a hidden tray item (the update pill) stayed visible */
+#tray #tray-batt.low { color: #ff9a4d; }
+#tray #tray-batt.low svg .bfill { fill: #ff6b4d; }
 #tray .v { white-space: nowrap; }
 #clock { color: var(--text); font-variant-numeric: tabular-nums; flex-direction: column; align-items: flex-end;
   gap: 0; line-height: 1.18; cursor: default; }
 #clock .ck-time { font-size: 12px; }
 #clock .ck-date { font-size: 10px; color: var(--muted); }
 /* Far-right "show desktop" sliver (click to minimize/restore everything) */
-#show-desktop { width: 9px; height: var(--taskbar-h); margin-left: 2px; padding: 0; border: 0;
+#show-desktop { width: 9px; height: calc(var(--taskbar-h) - 1px); margin-left: 2px; padding: 0; border: 0;   /* the bar's 1px top border */
   border-left: 1px solid var(--line); background: transparent; cursor: pointer; flex: none; }
-#show-desktop:hover { background: #ffffff14; }
+#show-desktop:hover { background: var(--glass-2); }
 
 /* ===== Start menu ===== */
 #start-menu {
@@ -404,11 +520,8 @@ html[data-theme="light"] .sm-rowtag { background: rgba(0,0,0,0.06); border-color
 
 /* Keyboard-navigation selection ring (accent-tinted) — shared by tiles, rows and reco cards */
 .sm-item.kbsel, .sm-row.kbsel, .sm-reco-item.kbsel {
-  background: rgba(78,161,255,0.16);
-  box-shadow: inset 0 0 0 1.5px var(--accent), 0 0 0 1px rgba(78,161,255,0.22);
-}
-html[data-theme="light"] .sm-item.kbsel, html[data-theme="light"] .sm-row.kbsel, html[data-theme="light"] .sm-reco-item.kbsel {
-  background: rgba(78,161,255,0.12);
+  background: var(--accent-soft);
+  box-shadow: inset 0 0 0 1.5px var(--accent), 0 0 0 1px var(--accent-line);
 }
 
 .sm-empty { padding: 20px 10px; color: var(--muted); font-size: 12.5px; text-align: center; grid-column: 1 / -1; }
@@ -424,7 +537,7 @@ html[data-theme="light"] .sm-foot { background: rgba(0,0,0,0.04); border-top-col
 .sm-account:hover { background: rgba(255,255,255,0.09); }
 html[data-theme="light"] .sm-account:hover { background: rgba(0,0,0,0.06); }
 .sm-avatar { width: 32px; height: 32px; border-radius: 50%; flex: none; display: grid; place-items: center;
-  background: linear-gradient(135deg, var(--accent), #7d5cff); color: #fff;
+  background: var(--accent-grad); color: #fff;
   box-shadow: 0 2px 8px rgba(78,161,255,0.3); }
 .sm-acctxt { display: flex; flex-direction: column; align-items: flex-start; line-height: 1.25; }
 .sm-accname { font-size: 13px; font-weight: 600; }
@@ -493,11 +606,13 @@ html[data-theme="light"] .ctx-item.focus { background: #0000000d; }
   .win, #start-menu, .search-panel, .ctx, .icon, .task-btn { animation: none !important; transition: none !important; }
 }
 
-/* Mobile Placeholder */
+/* Mobile Placeholder — a suggestion, not a wall. "Continua comunque" adds
+   body.mobile-ok, which lifts the hide rules so the desktop shows on the phone. */
 .hidden-desktop { display: none; }
 @media (max-width: 768px) {
-  #desktop, #windows, #taskbar, #start-menu, #ctxmenu, #search-panel { display: none !important; }
-  .hidden-desktop { display: flex !important; }
+  body:not(.mobile-ok) #desktop, body:not(.mobile-ok) #windows, body:not(.mobile-ok) #taskbar,
+  body:not(.mobile-ok) #start-menu, body:not(.mobile-ok) #ctxmenu, body:not(.mobile-ok) #search-panel { display: none !important; }
+  body:not(.mobile-ok) .hidden-desktop { display: flex !important; }
   #mobile-placeholder {
     position: fixed; inset: 0; z-index: 9999; flex-direction: column; align-items: center; justify-content: center; text-align: center;
     background: radial-gradient(circle at center, #16233f 0%, #0b1220 100%); color: #fff; padding: 40px;
@@ -505,6 +620,19 @@ html[data-theme="light"] .ctx-item.focus { background: #0000000d; }
   #mobile-placeholder svg { color: #4ea1ff; margin-bottom: 20px; }
   #mobile-placeholder h2 { margin: 0 0 10px 0; font-size: 24px; }
   #mobile-placeholder p { color: #8aa0c8; font-size: 16px; line-height: 1.5; }
+  #mobile-placeholder button { margin-top: 22px; padding: 11px 22px; border: 0; border-radius: 10px;
+    background: #4ea1ff; color: #fff; font: 600 15px system-ui, sans-serif; cursor: pointer; }
+  #mobile-placeholder button:active { background: #3a8ae0; }
+
+  /* Chi sceglie "continua comunque" (body.mobile-ok) deve poter ARRIVARE al
+     vassoio. La taskbar e' una griglia 1fr auto 1fr: su uno schermo stretto la
+     colonna centrale delle finestre aperte spingeva orologio e notifiche fuori
+     bordo, e il body ha overflow:hidden, quindi non erano nemmeno raggiungibili
+     scorrendo. Il centro si comprime e scorre da solo; le estremita' restano. */
+  body.mobile-ok #taskbar { grid-template-columns: auto minmax(0, 1fr) auto; gap: 2px; padding: 0 4px; }
+  body.mobile-ok .tb-center { overflow-x: auto; justify-content: flex-start; scrollbar-width: none; }
+  body.mobile-ok .tb-center::-webkit-scrollbar { display: none; }
+  body.mobile-ok #tray > span { padding: 5px 5px; }
 }
 
 /* Action Center */
@@ -549,8 +677,18 @@ html[data-theme='light'] .toast { background: #ffffffee; }
 .toast-msg { font-size: 12px; color: var(--muted); }
 .toast.success .toast-title { color: #5cdb95; }
 .toast.error .toast-title { color: #ff8093; }
+.toast.warn .toast-title { color: #ffc46b; }
 .toast.info .toast-title { color: var(--accent); }
 @keyframes toastIn { from { opacity: 0; transform: translateX(30px) scale(.96); } to { opacity: 1; transform: none; } }
+/* Avviso con azioni (es. internet dal PC): resta finche' non si sceglie */
+.toast-action { cursor: default; }
+.toast-text { font-size: 12px; color: var(--muted); line-height: 1.45; margin-top: 2px; }
+.toast-actions { display: flex; gap: 8px; margin-top: 10px; }
+.toast-btn { font: 600 12px system-ui; padding: 6px 12px; border-radius: 8px; cursor: pointer; text-decoration: none;
+  color: var(--text); background: #ffffff12; border: 1px solid #ffffff22; transition: background .15s, border-color .15s; }
+.toast-btn:hover { background: #ffffff20; }
+.toast-btn.pri { background: var(--accent); border-color: var(--accent); color: #06121f; }
+.toast-btn.pri:hover { filter: brightness(1.08); }
 
 /* ====== Drag & Drop Overlay ====== */
 #drop-overlay {
@@ -585,7 +723,60 @@ html[data-theme='light'] .toast { background: #ffffffee; }
 .ws-dot.connected { background: #5cdb95; }
 .ws-dot.reconnecting { background: #f5c842; animation: wsPulse 1s ease-in-out infinite; }
 .ws-dot.offline { background: #ff8093; }
+/* Someone else holds the single client seat (see onWsClosed): amber-but-steady — the device is
+   healthy, we simply are not the one being served. Never the red "offline" dot, which was a lie. */
+.ws-dot.evicted { background: #b08bff; }
+
+/* The title bar is a drag surface: without this the browser claims the gesture for panning and the
+   window never moves on a touch screen (the resizers need the same). */
+.win .bar, .win-resizer { touch-action: none; }
+
+/* Eviction banner: honest, non-blocking, and the only way back to the seat is this button. */
+#ws-evicted {
+  position: fixed; left: 50%; transform: translateX(-50%) translateY(20px);
+  bottom: calc(var(--taskbar-h) + 14px); z-index: 10000;
+  display: none; align-items: center; gap: 12px;
+  padding: 10px 12px 10px 14px; border-radius: 12px;
+  background: #17203acc; border: 1px solid #ffffff26; box-shadow: 0 20px 50px #000a;
+  backdrop-filter: blur(24px) saturate(1.6); color: var(--text, #e6edf7);
+  font-size: 13px; max-width: min(560px, 92vw);
+  opacity: 0; transition: opacity .18s ease, transform .18s ease;
+}
+#ws-evicted.show { display: flex; opacity: 1; transform: translateX(-50%) translateY(0); }
+#ws-evicted .wse-ic { font-size: 16px; }
+#ws-evicted .wse-tx { flex: 1; line-height: 1.35; }
+#ws-evicted .wse-btn {
+  flex: 0 0 auto; cursor: pointer; border: 1px solid #ffffff2e; border-radius: 8px;
+  padding: 6px 12px; font: inherit; font-weight: 600; color: #fff;
+  background: linear-gradient(180deg, #4ea1ff, #2f7fe0);
+}
+#ws-evicted .wse-btn:hover { filter: brightness(1.08); }
+#ws-evicted .wse-btn:focus-visible { outline: 2px solid var(--accent, #4ea1ff); outline-offset: 2px; }
+html[data-theme='light'] #ws-evicted { background: #ffffffee; color: #17203a; border-color: #00000022; }
+@media (prefers-reduced-motion: reduce) { #ws-evicted { transition: none; } }
 @keyframes wsPulse { 0%, 100% { opacity: 1; } 50% { opacity: .3; } }
+/* ====== Device unreachable banner (link monitor) — top-center, non-blocking ====== */
+#link-down {
+  position: fixed; left: 50%; top: 12px; transform: translateX(-50%) translateY(-12px); z-index: 10001;
+  display: none; align-items: center; gap: 12px;
+  padding: 10px 12px 10px 14px; border-radius: 12px;
+  background: #3a1d24e6; border: 1px solid #ff8a9a44; box-shadow: 0 20px 50px #000a;
+  backdrop-filter: blur(24px) saturate(1.6); color: var(--text, #e6edf7);
+  font-size: 13px; max-width: min(620px, calc(100vw - 32px));
+  opacity: 0; transition: opacity .18s ease, transform .18s ease;
+}
+#link-down.show { display: flex; opacity: 1; transform: translateX(-50%) translateY(0); }
+#link-down .ld-ic { font-size: 16px; animation: wsPulse 1.6s ease-in-out infinite; }
+#link-down .ld-tx { flex: 1; line-height: 1.35; }
+#link-down .ld-btn {
+  flex: 0 0 auto; cursor: pointer; border: 1px solid #ffffff2e; border-radius: 8px;
+  padding: 6px 12px; font: inherit; font-weight: 600; color: #fff; white-space: nowrap;
+  background: linear-gradient(180deg, #4ea1ff, #2f7fe0);
+}
+#link-down .ld-btn:disabled { opacity: .6; cursor: progress; }
+#link-down .ld-btn:focus-visible { outline: 2px solid var(--accent, #4ea1ff); outline-offset: 2px; }
+html[data-theme='light'] #link-down { background: #fff1f3f2; color: #3a1d24; border-color: #d0303044; }
+@media (prefers-reduced-motion: reduce) { #link-down, #link-down .ld-ic { transition: none; animation: none; } }
 /* ====== Device Busy indicator (heavy-work arbiter: system.busy) ====== */
 #tray-busy {
   display: inline-flex; align-items: center; gap: 5px;
@@ -614,7 +805,7 @@ html[data-theme='light'] .toast { background: #ffffffee; }
 .os-dialog-list { flex: 1; overflow-y: auto; padding: 6px; list-style: none; margin: 0; background: var(--bg2); }
 .os-dialog-item { display: flex; align-items: center; gap: 11px; padding: 9px 12px; border-radius: 7px; cursor: pointer; font-size: 12px; transition: 0.1s; border: 1px solid transparent; }
 .os-dialog-item:hover { background: var(--panel); border-color: var(--line); }
-.os-dialog-item.active { background: #4ea1ff22; color: var(--text); border-color: var(--accent); }
+.os-dialog-item.active { background: var(--accent-soft); color: var(--text); border-color: var(--accent); }
 .os-dialog-icon { display: grid; place-items: center; width: 24px; height: 24px; border-radius: 5px; background: var(--panel2); }
 .os-dialog-icon svg { width: 15px; height: 15px; }
 .os-dialog-icon.dir { color: #f59e0b; }
@@ -627,8 +818,9 @@ html[data-theme='light'] .toast { background: #ffffffee; }
 .os-dialog-filename-input:focus { border-color: var(--accent); outline: none; }
 .os-dialog-btn { padding: 8px 16px; border-radius: 6px; font-size: 12px; font-weight: 600; cursor: pointer; border: 1px solid var(--line); background: var(--bg); color: var(--text); transition: 0.1s; }
 .os-dialog-btn:hover { background: var(--panel); }
-.os-dialog-btn.primary { background: var(--accent); border-color: transparent; color: #fff; }
-.os-dialog-btn.primary:hover { filter: brightness(1.1); }
+.os-dialog-btn.primary { background: var(--accent-grad); border-color: transparent; color: #fff;
+  box-shadow: 0 3px 10px rgba(78,161,255,0.28); }
+.os-dialog-btn.primary:hover { filter: brightness(1.08); }
 
 
 
@@ -644,6 +836,9 @@ html.eco *, html.eco *::before, html.eco *::after {
 
 /* "Ask ANIMA" row in unified search — the search → AI copilot bridge */
 .sp-item.sp-anima .g { color: #d9a066; }
+/* The row in its ANSWERING form (the browser already knows): the answer may wrap to two lines. */
+.sp-item.sp-anima.answer .n { white-space: normal; line-height: 1.35; }
+.sp-item.sp-anima.answer .p { font-family: inherit; }
 .sp-item.sp-anima .t .n { color: var(--accent); font-weight: 600; }
 .sp-item.sp-anima .t .p { font-family: inherit; opacity: .85; }
 
@@ -677,3 +872,164 @@ html[data-theme="light"] .ctx-item.danger:hover { background: #e0556b1a; }
 html[data-theme="light"] .drop-inner { background: #ffffffe6; border-color: #2b6fd644; }
 html[data-theme="light"] .toast.error .toast-title,
 html[data-theme="light"] .pair-msg { color: #cf3a50; }
+html[data-theme="light"] .toast.warn .toast-title { color: #a86400; }
+
+/* ── System-UI extras (system-ui.js): night light, lock screen, shortcuts, widgets ── */
+
+/* Night light: a warm veil over the whole console. pointer-events:none = purely optical. */
+#night-veil { position: fixed; inset: 0; z-index: 100180; pointer-events: none;
+  background: #ffb46b; mix-blend-mode: multiply; opacity: 0; transition: opacity .6s var(--ease); }
+#night-veil.on { opacity: .5; }
+html[data-theme="light"] #night-veil.on { opacity: .35; }
+
+/* Lock screen: a privacy veil (clock + date over the blurred desktop). Above everything. */
+#lock-screen { position: fixed; inset: 0; z-index: 100300; display: flex; align-items: center;
+  justify-content: center; background: rgba(5, 9, 20, 0.55);
+  backdrop-filter: blur(34px) saturate(1.2) brightness(.75);
+  animation: lockIn .3s var(--ease); }
+html[data-theme="light"] #lock-screen { background: rgba(235, 240, 252, 0.5); }
+#lock-screen.lk-out { transition: transform .38s var(--ease), opacity .38s var(--ease);
+  transform: translateY(-100%); opacity: 0; }
+@keyframes lockIn { from { opacity: 0; } to { opacity: 1; } }
+.lk-center { text-align: center; user-select: none; }
+.lk-time { font-size: clamp(56px, 12vw, 110px); font-weight: 700; letter-spacing: 2px;
+  font-variant-numeric: tabular-nums; text-shadow: 0 6px 40px rgba(0,0,0,.4); }
+.lk-date { font-size: 18px; color: var(--text); opacity: .85; margin-top: 2px; text-transform: capitalize; }
+.lk-dev { margin-top: 26px; font-size: 13px; color: var(--muted); }
+.lk-hint { margin-top: 6px; font-size: 12.5px; color: var(--muted); opacity: .8;
+  animation: lkPulse 2.6s ease-in-out infinite; }
+@keyframes lkPulse { 0%, 100% { opacity: .8; } 50% { opacity: .35; } }
+
+/* Shortcuts cheat-sheet overlay */
+#kbd-overlay { position: fixed; inset: 0; z-index: 100210; background: rgba(6, 10, 22, 0.55);
+  backdrop-filter: blur(5px); display: flex; align-items: center; justify-content: center; padding: 20px; }
+.kb-card { background: var(--panel); border: 1px solid var(--glass-brd); border-radius: var(--r-xl);
+  box-shadow: var(--sh-3); width: min(720px, 94vw); max-height: 86vh; display: flex; flex-direction: column;
+  outline: none; animation: winIn var(--dur-3) var(--ease); }
+.kb-head { display: flex; align-items: center; justify-content: space-between; padding: 14px 18px;
+  font-weight: 600; border-bottom: 1px solid var(--glass-brd); }
+.kb-x { background: none; border: none; color: var(--muted); font-size: 20px; cursor: pointer;
+  padding: 0 4px; line-height: 1; }
+.kb-x:hover { color: var(--text); }
+.kb-body { padding: 14px 18px; overflow: auto; display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(210px, 1fr)); gap: 16px; }
+.kb-gt { font-size: 11px; text-transform: uppercase; letter-spacing: 1px; color: var(--accent);
+  font-weight: 600; margin-bottom: 8px; }
+.kb-row { display: flex; align-items: center; gap: 10px; padding: 4px 0; }
+.kb-keys { display: flex; align-items: center; gap: 3px; flex: none; }
+.kb-keys i { color: var(--muted); font-style: normal; font-size: 11px; }
+.kb-keys kbd { background: var(--glass-1); border: 1px solid var(--glass-brd); border-bottom-width: 2px;
+  border-radius: 6px; padding: 2px 7px; font: 11.5px ui-monospace, monospace; color: var(--text); }
+.kb-what { font-size: 12.5px; color: var(--muted); }
+
+/* Widgets: taskbar pill (left corner, Win11-style) + flyout panel */
+#tb-widgets { display: flex; align-items: center; gap: 6px; margin-left: 10px; padding: 5px 10px;
+  background: transparent; border: none; border-radius: var(--r-sm); color: var(--text);
+  cursor: pointer; font: inherit; transition: background var(--dur-1); }
+#tb-widgets:hover { background: var(--glass-2); }
+#tb-widgets .wg-emo { font-size: 17px; }
+#tb-widgets .wg-t { font-size: 13px; font-weight: 600; font-variant-numeric: tabular-nums; }
+#widgets-panel { position: absolute; left: 12px; bottom: calc(var(--taskbar-h) + 12px); width: 330px;
+  z-index: 9999; display: flex; flex-direction: column; gap: 10px; padding: 12px;
+  background: #0e1830cc; border: 1px solid var(--glass-brd); border-radius: var(--r-lg);
+  box-shadow: var(--sh-3); backdrop-filter: blur(30px) saturate(2); animation: winIn var(--dur-3) var(--ease); }
+html[data-theme="light"] #widgets-panel { background: #ffffffdd; }
+.wg-card { background: var(--glass-1); border: 1px solid var(--glass-brd); border-radius: var(--r-md);
+  padding: 11px 13px; }
+.wg-card[data-open] { cursor: pointer; transition: background var(--dur-1); }
+.wg-card[data-open]:hover { background: var(--glass-2); }
+.wg-ct { font-size: 10.5px; text-transform: uppercase; letter-spacing: .8px; color: var(--muted);
+  font-weight: 600; margin-bottom: 7px; }
+.wg-wx-main { display: flex; align-items: center; gap: 10px; }
+.wg-wx-emo { font-size: 30px; }
+.wg-wx-t { font-size: 27px; font-weight: 700; font-variant-numeric: tabular-nums; }
+.wg-wx-place { font-size: 13px; color: var(--muted); overflow: hidden; text-overflow: ellipsis;
+  white-space: nowrap; min-width: 0; }
+.wg-days { display: flex; gap: 6px; margin-top: 9px; }
+.wg-day { flex: 1; display: flex; flex-direction: column; align-items: center; gap: 2px;
+  background: var(--glass-1); border-radius: var(--r-sm); padding: 6px 4px; font-size: 11px;
+  color: var(--muted); }
+.wg-day .e { font-size: 16px; }
+.wg-day .mm { font-variant-numeric: tabular-nums; }
+.wg-day .mm b { color: var(--text); }
+.wg-stats { display: flex; gap: 8px; }
+.wg-stats span { flex: 1; display: flex; flex-direction: column; gap: 1px; }
+.wg-stats i { font-style: normal; font-size: 10px; color: var(--muted); text-transform: uppercase;
+  letter-spacing: .5px; }
+.wg-stats b { font-size: 13.5px; font-variant-numeric: tabular-nums; }
+.wg-file { display: flex; align-items: center; gap: 7px; width: 100%; background: none; border: none;
+  color: var(--text); font: 12.5px system-ui; padding: 5px 2px; cursor: pointer; border-radius: var(--r-xs);
+  text-align: left; }
+.wg-file:hover { background: var(--glass-2); }
+.wg-file span { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.wg-empty { font-size: 12px; color: var(--muted); padding: 3px 0; }
+
+/* ====== Giochi: "Continua" nella barra, pannello giochi, recenti in Start ====== */
+#tb-game { display: flex; align-items: center; gap: 9px; height: 34px; margin-left: 8px; padding: 0 12px 0 4px;
+  border-radius: 9px; border: 1px solid transparent; background: transparent; color: var(--text); cursor: pointer;
+  max-width: 250px; transition: background .15s ease, border-color .15s ease; }
+#tb-game:hover { background: #ffffff12; border-color: #ffffff18; }
+#tb-game .tbg-cover { width: 26px; height: 26px; border-radius: 6px; flex: none; background: #ffffff14 center/cover no-repeat; }
+#tb-game .tbg-txt { display: flex; flex-direction: column; align-items: flex-start; min-width: 0; line-height: 1.1; }
+#tb-game .tbg-k { font: 700 10px system-ui; letter-spacing: .6px; text-transform: uppercase; color: var(--accent); }
+#tb-game .tbg-n { font: 600 12px system-ui; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; max-width: 190px; }
+#tb-game.ingame .tbg-k { color: #7cd96a; }
+#tb-game.ingame .tbg-k::before { content: ''; display: inline-block; width: 6px; height: 6px; border-radius: 50%;
+  background: #7cd96a; margin-right: 5px; vertical-align: 1px; animation: gfPulse 1.6s ease-in-out infinite; }
+@keyframes gfPulse { 50% { opacity: .35; } }
+
+#game-flyout { position: fixed; left: 12px; bottom: calc(var(--taskbar-h) + 10px); width: 460px; z-index: 9000;
+  background: var(--panel); border: 1px solid var(--line); border-radius: 16px; padding: 16px;
+  box-shadow: 0 24px 60px #000b; animation: gfIn .16s cubic-bezier(.2,.8,.2,1); }
+#game-flyout.hidden { display: none; }
+@keyframes gfIn { from { opacity: 0; transform: translateY(8px); } to { opacity: 1; transform: none; } }
+.gf-hero { display: grid; grid-template-columns: 150px 1fr; gap: 14px; align-items: center; }
+.gf-cover { width: 150px; height: 112px; border-radius: 12px; overflow: hidden; background: var(--panel2); }
+.gf-cover img { width: 100%; height: 100%; object-fit: cover; display: block; }
+.gf-k { font: 700 11px system-ui; letter-spacing: .8px; text-transform: uppercase; color: var(--accent); }
+.gf-t { font: 700 18px/1.2 system-ui; margin: 3px 0; display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical; overflow: hidden; }
+.gf-m { font-size: 12px; color: var(--muted); }
+.gf-acts { display: flex; gap: 8px; margin-top: 10px; flex-wrap: wrap; }
+.gf-btn { font: 600 12px system-ui; padding: 7px 12px; border-radius: 9px; cursor: pointer; color: var(--text);
+  background: #ffffff10; border: 1px solid #ffffff22; transition: background .15s ease; }
+.gf-btn:hover { background: #ffffff1c; }
+.gf-btn.pri { background: var(--accent); border-color: var(--accent); color: #06231f; }
+.gf-btn.pri:hover { filter: brightness(1.07); }
+.gf-none { grid-column: 1 / -1; color: var(--muted); font-size: 13px; padding: 8px 2px; }
+.gf-head { display: flex; align-items: center; justify-content: space-between; margin: 16px 0 8px; }
+.gf-row { display: grid; grid-template-columns: repeat(6, 1fr); gap: 8px; }
+.gf-tile, .sm-game { display: flex; flex-direction: column; gap: 5px; min-width: 0; padding: 0; border: 0; background: none;
+  color: var(--text); cursor: pointer; text-align: left; }
+.gf-tc, .sm-gc { display: block; aspect-ratio: 3 / 4; border-radius: 8px; overflow: hidden; background: var(--panel2);
+  border: 2px solid transparent; transition: border-color .15s ease, transform .15s ease; }
+.gf-tc img, .sm-gc img { width: 100%; height: 100%; object-fit: cover; display: block; }
+/* nessuna copertina: la console, intera (la tela dell'archivio ha gia' il margine) */
+.gf-cover img.con, .gf-tc img.con, .sm-gc img.con { object-fit: contain; filter: drop-shadow(0 4px 8px #0008); }
+#tb-game .tbg-cover.con { background-size: contain; background-color: transparent; }
+.gf-tile:hover .gf-tc, .sm-game:hover .sm-gc { border-color: var(--accent); transform: translateY(-2px); }
+.gf-tn, .sm-gn { font-size: 11px; color: var(--muted); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.sm-games { display: grid; grid-template-columns: repeat(6, 1fr); gap: 10px; margin: 0 0 14px; }
+html[data-theme='light'] #game-flyout { box-shadow: 0 24px 60px #0003; }
+/* Plancia della partita in corso: schermo della console dal vivo + comandi */
+#game-flyout.live { width: 540px; }
+#game-flyout.live .gf-hero { grid-template-columns: 230px 1fr; row-gap: 12px; }
+.gf-live { position: relative; width: 230px; aspect-ratio: 4 / 3; border-radius: 12px; overflow: hidden; background: #000; }
+.gf-live img { position: absolute; inset: 0; width: 100%; height: 100%; object-fit: contain; }
+.gf-live-cover { object-fit: cover !important; filter: blur(3px) brightness(.55); }
+.gf-live-feed { opacity: 0; transition: opacity .3s ease; }
+.gf-live.on .gf-live-feed { opacity: 1; }
+.gf-live-badge { position: absolute; left: 8px; top: 8px; font: 800 10px system-ui; letter-spacing: .6px; color: #fff;
+  background: #ef4444; border-radius: 6px; padding: 3px 7px; text-transform: uppercase; }
+.gf-ctl { grid-column: 1 / -1; display: grid; grid-template-columns: repeat(6, 1fr); gap: 6px; }
+.gf-ctl button { display: flex; flex-direction: column; align-items: center; gap: 4px; padding: 9px 4px; border-radius: 10px;
+  background: #ffffff0d; border: 1px solid #ffffff1a; color: var(--text); font: 600 11px system-ui; cursor: pointer;
+  transition: border-color .15s ease, background .15s ease, transform .1s ease; }
+.gf-ctl button b { font-size: 18px; line-height: 1; }
+.gf-ctl button:hover { border-color: var(--accent); background: #ffffff16; }
+.gf-ctl button:active { transform: scale(.95); }
+.gf-ctl button.danger:hover { border-color: #ef4444; color: #ff9d9d; }
+
+/* Pairing: the device reads the PIN aloud (shown only when the device can, see pairCanSpeak). */
+.pair-card .pair-speak { background: transparent; color: var(--accent); border: 1px solid var(--line); margin-bottom: 10px; }
+.pair-card .pair-speak:active { background: var(--bg2); }
+.pair-card .pair-speak[hidden] { display: none; }

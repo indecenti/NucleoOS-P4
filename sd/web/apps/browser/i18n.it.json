@@ -47,7 +47,7 @@
   "handoffBody": "I siti esterni si aprono nel tuo browser reale — nessun proxy, nessun consumo sul dispositivo.",
   "handoffBlocked": "Il browser ha bloccato il pop-up: usa il pulsante qui sotto.",
   "openAgain": "Apri di nuovo",
-  "saveTodevice": "⬇ Salva su device",
+  "saveToCardputer": "⬇ Salva sul dispositivo",
   "homeBtn": "Home",
   "openExternal": "↗ Apri in scheda esterna",
 
@@ -74,6 +74,7 @@
   "errAccessDenied": "Accesso negato — assicurati di essere associato al dispositivo",
   "errSdWrite": "Scrittura SD fallita ({status}): {detail}",
   "errMkdir": "Mkdir fallita ({status}): {detail}",
+  "errDlBusy": "Un altro download è già in corso — riprova tra poco",
 
   "toastBookmarkRemoved": "Preferito rimosso",
   "toastBookmarkAdded": "Preferito aggiunto",
@@ -89,5 +90,6 @@
   "toastNoPageToDownload": "Nessuna pagina attiva da scaricare",
   "toastOpeningDownloads": "Apertura cartella download…",
   "toastOpenFcFailed": "Impossibile aprire File Commander",
-  "toastEnterValidUrl": "Inserisci un URL valido!"
+  "toastEnterValidUrl": "Inserisci un URL valido!",
+  "dlUnavailable": "Il salvataggio su SD non è disponibile su questo dispositivo."
 }

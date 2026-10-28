@@ -1,6 +1,6 @@
 {
   "_lang": "it",
-  "app_title": "System Monitor",
+  "app_title": "Monitor di sistema",
   "hint_pre": "premi",
   "hint_post": "per cambiare scheda",
   "tab_overview": "Panoramica",
@@ -28,9 +28,18 @@
   "per_core": "Per core",
   "awaiting_data": "in attesa dati…",
   "active_tasks": "Task attivi",
-  "clock": "Clock",
+  "clock": "Frequenza",
   "core_n": "Core {n}",
   "cpu_meta": "{n} core · uptime {uptime}",
   "na_short": "n/d",
-  "cpu_unavailable": "endpoint /api/cpu non disponibile (firmware)"
+  "cpu_unavailable": "endpoint /api/cpu non disponibile (firmware)",
+  "no_battery": "assente",
+  "ram_title": "Memoria (RAM)",
+  "mem_available": "Disponibile",
+  "swap": "Swap (zram)",
+  "ram_avail": "RAM disp.",
+  "governor": "Governor",
+  "soc_temp": "Temp. SoC",
+  "load_unit": "carico",
+  "uptime_is": "uptime {uptime}"
 }

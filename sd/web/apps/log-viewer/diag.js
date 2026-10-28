@@ -1,10 +1,11 @@
+/* SPDX-License-Identifier: AGPL-3.0-or-later */
 // NucleoOS — Log Viewer diagnosis engine (pure, DOM-free, unit-tested by tools/log-viewer-diag.test.mjs).
 //
 // The device stays dumb and on-demand; THIS is where the intelligence lives. It takes the cheap
 // read-only telemetry the firmware already exposes (/api/diag, or the legacy /api/status+/api/heap+
 // /api/cpu trio on un-flashed devices) plus the console ring (/api/logs) and the live event tail, and
 // condenses them into a tiny, self-describing "opcode" digest a human pastes to an AI for a health
-// readout of the device + ANIMA. Two design rules:
+// readout of the Cardputer + ANIMA. Two design rules:
 //   1. Never assume a field exists — older firmware has no /api/diag. normalize() folds either source
 //      into one shape and marks what's missing as null, so the digest degrades honestly ("n/a").
 //   2. Pre-compute the verdict. healthFlags() turns raw numbers into named risks (LOW-RAM, FRAG, OOM,

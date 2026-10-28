@@ -1,0 +1,1999 @@
+<!DOCTYPE html>
+<!-- SPDX-License-Identifier: AGPL-3.0-or-later -->
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<script>/* NucleoOS resource guard: a lost same-origin script/stylesheet makes the shell reload this window once (wm.js retryFrame) */addEventListener('error',function(e){var t=e.target,u;if(!t||t===window||parent===window||(t.tagName!=='SCRIPT'&&t.tagName!=='LINK'))return;try{u=new URL(t.src||t.href,location.href);if(u.origin===location.origin)parent.postMessage({type:'app-resource-failed',src:u.pathname},location.origin)}catch(_){}},true)</script>
+<!-- Without this the app starts at 980 virtual px on a phone: everything tiny and the brush
+     coordinates scaled. Every other app has it. -->
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title data-i18n="title">Paint</title>
+<style>
+    /* Native controls (audio/video bars, date/time pickers, file inputs, selects) follow the app theme. */
+    :root { color-scheme: dark; } html[data-theme="light"] { color-scheme: light; }
+  :root{ --bg:#070a12; --panel:#0f1521; --panel2:#1a2433; --text:#f3f4f6; --muted:#93a1b8;
+         --accent:#4ea1ff; --line:rgba(255,255,255,.08); }
+  *{box-sizing:border-box}
+  html,body{height:100%;margin:0;background:var(--bg);color:var(--text);
+    font-family:'Segoe UI',system-ui,sans-serif;overflow:hidden;display:flex;flex-direction:column;font-size:13px}
+  /* menu bar */
+  .menubar{display:flex;background:var(--panel);border-bottom:1px solid var(--line);user-select:none;position:relative;z-index:30}
+  .menu{position:relative}
+  .menu>.label{padding:6px 12px;cursor:pointer}
+  .menu>.label:hover,.menu.open>.label{background:var(--panel2)}
+  .dropdown{position:absolute;top:100%;left:0;min-width:200px;background:var(--panel);border:1px solid var(--line);
+    border-radius:0 0 8px 8px;box-shadow:0 12px 28px rgba(0,0,0,.5);padding:4px;display:none}
+  .menu.open .dropdown{display:block}
+  .mi{display:flex;justify-content:space-between;gap:24px;padding:7px 12px;border-radius:6px;cursor:pointer;white-space:nowrap}
+  .mi:hover{background:var(--accent);color:#001}
+  .mi .k{color:var(--muted);font-size:11px}
+  .mi:hover .k{color:#013}
+  .sep{height:1px;background:var(--line);margin:4px 6px}
+  /* toolbar */
+  .toolbar{display:flex;align-items:center;gap:10px;padding:6px 10px;background:var(--panel);border-bottom:1px solid var(--line);user-select:none;flex-wrap:wrap}
+  .grp{display:flex;align-items:center;gap:3px;padding-right:10px;border-right:1px solid var(--line)}
+  .grp:last-child{border-right:none}
+  .btn{background:transparent;border:1px solid transparent;color:var(--text);width:32px;height:32px;border-radius:7px;cursor:pointer;
+    display:flex;align-items:center;justify-content:center}
+  .btn:hover{background:rgba(255,255,255,.1)}
+  .btn.active{background:var(--accent);color:#001}
+  .btn svg{width:18px;height:18px}
+  input[type=color]{width:30px;height:30px;border:1px solid var(--line);border-radius:7px;padding:0;background:none;cursor:pointer}
+  input[type=color]::-webkit-color-swatch-wrapper{padding:0}
+  input[type=color]::-webkit-color-swatch{border:none;border-radius:5px}
+  input[type=range]{width:90px}
+  .swatches{display:flex;gap:3px;flex-wrap:wrap;max-width:160px}
+  .sw{width:16px;height:16px;border-radius:4px;cursor:pointer;border:1px solid rgba(255,255,255,.15)}
+  .size-lbl{color:var(--muted);min-width:34px;text-align:right}
+  /* canvas */
+  .stage{flex:1;overflow:auto;background:#0a0d15;display:flex;align-items:center;justify-content:center;padding:24px}
+  .wrap{position:relative;background:#fff;box-shadow:0 6px 30px rgba(0,0,0,.6);flex:none}
+  canvas{display:block}
+  #overlay{position:absolute;left:0;top:0;pointer-events:none}
+  #stage.dragover .wrap{outline:3px dashed var(--accent);outline-offset:6px}
+  /* status */
+  .status{display:flex;gap:16px;padding:4px 12px;background:var(--panel);border-top:1px solid var(--line);color:var(--muted);font-size:11px}
+  .status b{color:var(--text);font-weight:600}
+  .drop-hint{position:absolute;inset:0;display:none;align-items:center;justify-content:center;
+    background:rgba(78,161,255,.12);color:var(--accent);font-size:15px;font-weight:600;pointer-events:none}
+  #stage.dragover .drop-hint{display:flex}
+  /* ---- transparency checkerboard + work area + right panel + zoom (Paint 2.0) ---- */
+  .workarea{flex:1;display:flex;min-height:0}
+  .wrap{background:repeating-conic-gradient(#c4ccd8 0% 25%, #eef2f7 0% 50%) 0 0 / 18px 18px}
+  .panel{width:232px;flex:none;background:var(--panel);border-left:1px solid var(--line);overflow-y:auto;overflow-x:hidden;display:flex;flex-direction:column;font-size:12px}
+  .panel.hidden{display:none}
+  .panel-head{display:flex;align-items:center;gap:8px;padding:9px 12px;border-bottom:1px solid var(--line);position:sticky;top:0;background:var(--panel);z-index:2}
+  .panel-head b{font-size:12px;font-weight:700;flex:1;letter-spacing:.02em}
+  .panel-head .ph-close{background:none;border:none;color:var(--muted);cursor:pointer;font-size:15px;line-height:1;padding:2px 4px;border-radius:5px}
+  .panel-head .ph-close:hover{color:var(--text);background:rgba(255,255,255,.08)}
+  .psec{border-bottom:1px solid var(--line)}
+  .psec>h4{margin:0;padding:9px 12px;font-size:10.5px;text-transform:uppercase;letter-spacing:.06em;color:var(--muted);cursor:pointer;display:flex;justify-content:space-between;align-items:center;user-select:none;transition:color .12s}
+  .psec>h4:hover{color:var(--text)}
+  .psec:not(.collapsed)>h4{color:var(--text)}
+  .psec>h4 .chev{transition:transform .18s;font-size:10px;opacity:.6}
+  .psec.collapsed>h4 .chev{transform:rotate(-90deg)}
+  .psec-body{padding:0 12px 13px;display:flex;flex-direction:column;gap:10px}
+  .psec.collapsed .psec-body{display:none}
+  .prow{display:flex;align-items:center;gap:9px}
+  .prow>label{flex:none;width:72px;color:var(--muted)}
+  .prow input[type=range]{flex:1;width:auto;accent-color:var(--accent)}
+  .prow .val{width:28px;text-align:right;color:var(--text);font-variant-numeric:tabular-nums}
+  .pbtns{display:flex;flex-wrap:wrap;gap:6px}
+  .pbtn{flex:1 1 auto;background:var(--panel2);border:1px solid var(--line);color:var(--text);border-radius:7px;padding:7px 8px;cursor:pointer;font-size:12px;white-space:nowrap;transition:background .12s,border-color .12s}
+  .pbtn:hover{background:rgba(255,255,255,.09);border-color:rgba(255,255,255,.18)}
+  .pbtn:active{transform:translateY(1px)}
+  .pbtn.primary{background:linear-gradient(135deg,#6d5efc,#4ea1ff);color:#fff;border:none;font-weight:700}
+  .pbtn.primary:hover{filter:brightness(1.08)}
+  .pbtn.full{flex:1 1 100%;text-align:center}
+  .phint{color:var(--muted);font-size:11px;line-height:1.45}
+  .panel::-webkit-scrollbar{width:9px} .panel::-webkit-scrollbar-thumb{background:var(--panel2);border-radius:5px;border:2px solid var(--panel)} .panel::-webkit-scrollbar-thumb:hover{background:#2a3850}
+  .tg-btn{width:34px} .tg-btn.on{background:var(--accent);color:#012}
+  .zoomctl{display:flex;align-items:center;gap:4px}
+  .zoomctl b{min-width:38px;text-align:center;font-variant-numeric:tabular-nums}
+  .zoomctl button{background:var(--panel2);border:1px solid var(--line);color:var(--text);width:22px;height:20px;border-radius:5px;cursor:pointer;line-height:1;font-size:13px}
+  .zoomctl button:hover{background:rgba(255,255,255,.1)}
+  @media (max-width:720px){ .panel{position:absolute;right:0;top:0;bottom:0;box-shadow:-8px 0 24px rgba(0,0,0,.4);z-index:40} }
+  /* rulers */
+  .canvasarea{flex:1;display:grid;grid-template-columns:22px 1fr;grid-template-rows:22px 1fr;min-height:0;min-width:0}
+  .canvasarea.norulers{grid-template-columns:0 1fr;grid-template-rows:0 1fr}
+  .ruler-corner{background:var(--panel);border-right:1px solid var(--line);border-bottom:1px solid var(--line)}
+  .ruler-top{border-bottom:1px solid var(--line);width:100%;height:22px;display:block}
+  .ruler-left{border-right:1px solid var(--line);width:22px;height:100%;display:block}
+  .canvasarea.norulers .ruler-corner,.canvasarea.norulers .ruler-top,.canvasarea.norulers .ruler-left{display:none}
+  /* options bar (contextual, per tool) */
+  .toolbar-opts{padding:4px 12px;gap:16px;min-height:30px;font-size:12px;color:var(--muted)}
+  .opt-tool{font-weight:700;color:var(--text);min-width:72px}
+  .opt-grp{display:none;align-items:center;gap:12px}
+  .opt-grp.show{display:inline-flex}
+  .opt{display:inline-flex;align-items:center;gap:6px;white-space:nowrap;cursor:default}
+  .opt input[type=range]{width:92px;accent-color:var(--accent)}
+  .opt input[type=number]{width:54px;background:var(--bg);border:1px solid var(--line);color:var(--text);border-radius:6px;padding:4px 6px}
+  .opt b{color:var(--text);font-variant-numeric:tabular-nums}
+  .opt-hint{margin-left:auto;color:var(--muted);font-size:11px}
+  /* natural-language command bar */
+  .cmdbar{display:flex;align-items:center;gap:9px;padding:7px 12px;background:linear-gradient(90deg,rgba(109,94,252,.12),rgba(78,161,255,.05));border-bottom:1px solid var(--line)}
+  .cmd-ico{color:#9b8cff;font-size:15px;flex:none}
+  #cmdInput{flex:1;min-width:120px;background:var(--bg);border:1px solid var(--line);color:var(--text);border-radius:9px;padding:8px 11px;font-family:inherit;font-size:13px}
+  #cmdInput:focus{outline:none;border-color:var(--accent);box-shadow:0 0 0 2px rgba(78,161,255,.18)}
+  .cmd-go{flex:none;background:linear-gradient(135deg,#6d5efc,#4ea1ff);border:none;color:#fff;border-radius:8px;width:36px;height:33px;cursor:pointer;font-size:15px}
+  .cmd-go:hover{filter:brightness(1.08)}
+  .cmd-resp{flex:none;font-size:12px;color:var(--muted);max-width:240px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+  .cmd-resp.ok{color:#7fe3a6}.cmd-resp.warn{color:#ffd86b}
+  /* primary + secondary colour with swap */
+  .color-pair{position:relative;display:inline-flex;align-items:center}
+  .color-pair input[type=color]{width:26px;height:26px}
+  .color-pair input[type=color]:nth-child(2){margin-left:-9px}
+  .color-pair .swap{margin-left:7px;background:var(--panel2);border:1px solid var(--line);color:var(--text);width:24px;height:24px;border-radius:6px;cursor:pointer;line-height:1}
+  .color-pair .swap:hover{background:rgba(255,255,255,.1)}
+  /* grid overlay (scales with the wrap transform → grid is in canvas pixels) */
+  .grid-overlay{position:absolute;inset:0;pointer-events:none;display:none;background-image:linear-gradient(rgba(78,161,255,.22) 1px,transparent 1px),linear-gradient(90deg,rgba(78,161,255,.22) 1px,transparent 1px);background-size:40px 40px}
+  .grid-overlay.on{display:block}
+  /* layers: each layer is an absolutely-stacked canvas; the browser composites them (opacity + mix-blend-mode) */
+  .wrap>canvas,.wrap>.grid-overlay{position:absolute;left:0;top:0}
+  .lay-list{display:flex;flex-direction:column;gap:4px;max-height:190px;overflow:auto;margin-bottom:2px}
+  .lay-row{display:flex;align-items:center;gap:8px;padding:5px 6px;border-radius:7px;cursor:pointer;border:1px solid transparent}
+  .lay-row:hover{background:rgba(255,255,255,.05)}
+  .lay-row.active{background:rgba(78,161,255,.14);border-color:rgba(78,161,255,.32)}
+  .lay-row .eye{flex:none;width:16px;text-align:center;cursor:pointer}
+  .lay-row .eye.off{opacity:.28}
+  .lay-row .thumb{flex:none;width:34px;height:26px;border:1px solid var(--line);border-radius:4px;background:repeating-conic-gradient(#c4ccd8 0 25%,#eef2f7 0 50%) 0 0/8px 8px;image-rendering:pixelated}
+  .lay-row .nm{flex:1;font-size:12px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+  select#layBlend{background:var(--bg);border:1px solid var(--line);color:var(--text);border-radius:6px;padding:5px 6px;flex:1;font-size:12px}
+  /* ---- Atelier (AI image generation) ---- */
+  .btn.atelier{width:auto;padding:0 12px;gap:6px;font-weight:600;background:linear-gradient(135deg,#6d5efc,#4ea1ff);color:#fff;border:none}
+  .btn.atelier:hover{filter:brightness(1.08)}
+  .atl-backdrop{position:fixed;inset:0;background:rgba(3,6,14,.62);backdrop-filter:blur(2px);display:none;align-items:center;justify-content:center;z-index:100}
+  .atl-backdrop.open{display:flex}
+  .atl{position:relative;width:min(560px,94vw);max-height:92vh;overflow:auto;background:var(--panel);border:1px solid var(--line);border-radius:14px;box-shadow:0 24px 60px rgba(0,0,0,.6)}
+  .atl-head{display:flex;align-items:center;gap:10px;padding:14px 16px;border-bottom:1px solid var(--line)}
+  .atl-head h3{margin:0;font-size:15px;font-weight:700;flex:1}
+  .atl-x{background:transparent;border:none;color:var(--muted);font-size:20px;cursor:pointer;line-height:1}
+  .atl-x:hover{color:var(--text)}
+  .atl-body{padding:14px 16px;display:flex;flex-direction:column;gap:12px}
+  .atl-tabs{display:flex;gap:4px;background:var(--bg);border-radius:9px;padding:3px}
+  .atl-tab{flex:1;text-align:center;padding:7px 6px;border-radius:7px;cursor:pointer;color:var(--muted);font-size:12px;user-select:none}
+  .atl-tab.on{background:var(--panel2);color:var(--text)}
+  /* ---- provider selector + LLM enhance ---- */
+  .atl-prov{display:flex;flex-direction:column;gap:5px}
+  .atl-prov .pl{display:flex;align-items:center;gap:8px}
+  .atl-prov select{flex:1;background:var(--bg);border:1px solid var(--line);border-radius:8px;color:var(--text);padding:9px 10px;font-family:inherit;font-size:13px;cursor:pointer}
+  .atl-prov select:focus{outline:none;border-color:var(--accent)}
+  .atl-prov .badge{font-size:10px;font-weight:700;letter-spacing:.4px;text-transform:uppercase;padding:3px 7px;border-radius:6px;flex:none}
+  .atl-prov .badge.online{background:rgba(95,227,154,.16);color:#5fe39a}
+  .atl-prov .badge.local{background:rgba(78,161,255,.16);color:#9cd0ff}
+  .atl-prov .badge.preview{background:rgba(255,193,7,.14);color:#ffd86b}
+  .atl-prov .pn{font-size:11px;color:var(--muted);min-height:14px}
+  .atl-enh{display:flex;align-items:center;gap:7px;font-size:12px;color:var(--text);background:var(--bg);border:1px solid var(--line);border-radius:8px;padding:8px 10px}
+  .atl-enh input{accent-color:var(--accent)}
+  .atl-enh small{color:var(--muted)}
+  .atl-enhanced{font-size:12px;line-height:1.45;color:var(--text);background:rgba(109,94,252,.1);border:1px solid rgba(109,94,252,.3);border-radius:8px;padding:8px 10px;display:none}
+  .atl-enhanced b{color:#b3a7ff;font-weight:600}
+  .atl-enhanced.warn{background:rgba(255,193,7,.1);border-color:rgba(255,193,7,.3);color:#ffd86b}
+  .atl label{font-size:11px;color:var(--muted);display:block;margin-bottom:4px}
+  .atl textarea,.atl input[type=text],.atl input[type=number]{width:100%;background:var(--bg);border:1px solid var(--line);border-radius:8px;color:var(--text);padding:9px 10px;font-family:inherit;font-size:13px;resize:vertical}
+  .atl textarea{min-height:62px}
+  .atl-row{display:flex;gap:10px;align-items:flex-end}
+  .atl-row>div{flex:1}
+  .atl-seed{display:flex;gap:6px;align-items:center}
+  .atl-seed input{width:110px}
+  .atl-mini{background:var(--panel2);border:1px solid var(--line);color:var(--text);border-radius:7px;padding:8px 10px;cursor:pointer;font-size:12px}
+  .atl-mini:hover{background:rgba(255,255,255,.08)}
+  .atl-status{font-size:12px;color:var(--muted);min-height:16px}
+  .atl-banner{font-size:12px;border-radius:8px;padding:8px 10px;display:none}
+  .atl-banner.show{display:block}
+  .atl-banner.info{background:rgba(78,161,255,.12);color:#9cd0ff;border:1px solid rgba(78,161,255,.25)}
+  .atl-banner.warn{background:rgba(255,193,7,.12);color:#ffd86b;border:1px solid rgba(255,193,7,.25)}
+  .atl-foot{display:flex;gap:10px;align-items:center;padding:12px 16px;border-top:1px solid var(--line)}
+  .atl-go{flex:1;background:linear-gradient(135deg,#6d5efc,#4ea1ff);border:none;color:#fff;font-weight:700;padding:11px;border-radius:9px;cursor:pointer;font-size:14px}
+  .atl-go:disabled{opacity:.5;cursor:default}
+  .atl-chk{display:flex;align-items:center;gap:6px;font-size:12px;color:var(--muted);white-space:nowrap}
+  .atl-prog{height:4px;background:var(--bg);border-radius:3px;overflow:hidden;display:none}
+  .atl-prog.show{display:block}
+  .atl-prog>i{display:block;height:100%;width:0;background:var(--accent);transition:width .2s}
+  .atl-variants{display:flex;gap:6px;flex-wrap:wrap}
+  .atl-variants canvas{width:64px;height:64px;border-radius:7px;border:1px solid var(--line);cursor:pointer;background:#0008}
+  .atl-variants canvas:hover{border-color:var(--accent)}
+  .atl-variants canvas.pick{outline:2px solid var(--accent)}
+  /* ---- Model manager (source selection) ---- */
+  .atl-status .ok{color:#5fe39a}.atl-status .warn{color:#ffd86b}
+  .atl-mm{display:flex;flex-direction:column;gap:11px}
+  .atl-mm-state{display:flex;align-items:flex-start;gap:10px;padding:11px 12px;border-radius:10px;background:var(--bg);border:1px solid var(--line);font-size:13px;line-height:1.45}
+  .atl-mm-state .ic{font-size:18px;flex:none;line-height:1.2}
+  .atl-mm-state.ok{border-color:rgba(95,227,154,.4);background:rgba(95,227,154,.08)}
+  .atl-mm-state.warn{border-color:rgba(255,193,7,.3);background:rgba(255,193,7,.08)}
+  .atl-src{display:flex;align-items:center;gap:11px;padding:11px 12px;border:1px solid var(--line);border-radius:10px;background:var(--panel2)}
+  .atl-src .si{font-size:20px;flex:none}
+  .atl-src .sl{flex:1;min-width:0}
+  .atl-src .sl b{display:block;font-size:13px}
+  .atl-src .sl small{color:var(--muted);font-size:11px}
+  .atl-src button{background:linear-gradient(135deg,#6d5efc,#4ea1ff);border:none;color:#fff;font-weight:600;padding:8px 15px;border-radius:8px;cursor:pointer;font-size:12px;white-space:nowrap}
+  .atl-src button:disabled{opacity:.45;cursor:default;background:var(--panel);color:var(--muted)}
+  .atl-src.dim{opacity:.6}
+  .atl-mm-alt{display:flex;gap:8px;justify-content:space-between;align-items:center;flex-wrap:wrap}
+  .atl-link{background:none;border:none;color:var(--muted);text-decoration:underline;cursor:pointer;font-size:12px;padding:4px 0}
+  .atl-link:hover{color:var(--text)}
+  .atl-link.danger:hover{color:#ff8b8b}
+  /* ---- Blocking download overlay ---- */
+  .atl-dl{position:absolute;inset:0;background:var(--panel);border-radius:14px;display:none;flex-direction:column;padding:20px;gap:12px;z-index:5}
+  .atl-dl.show{display:flex}
+  .atl-dl h4{margin:0;font-size:15px;display:flex;align-items:center;gap:8px}
+  .atl-dl-pct{font-size:26px;font-weight:700;font-variant-numeric:tabular-nums;line-height:1}
+  .atl-dl-bar{height:8px;background:var(--bg);border-radius:5px;overflow:hidden}
+  .atl-dl-bar>i{display:block;height:100%;width:0;background:linear-gradient(90deg,#6d5efc,#4ea1ff);transition:width .25s}
+  .atl-dl-sub{font-size:12px;color:var(--muted);min-height:14px}
+  .atl-steps{display:flex;flex-direction:column;gap:8px;margin-top:2px}
+  .atl-step{display:flex;gap:9px;font-size:12.5px;align-items:flex-start;color:var(--muted)}
+  .atl-step .si{flex:none;width:16px;text-align:center}
+  .atl-step.active{color:var(--text)}.atl-step.active .si{animation:atlspin 1s linear infinite;display:inline-block}
+  .atl-step.done{color:#5fe39a}.atl-step.error{color:#ff8b8b}
+  .atl-step .ss{display:block;font-size:11px;opacity:.85;margin-top:1px}
+  @keyframes atlspin{to{transform:rotate(360deg)}}
+  .atl-dl-warn{margin-top:auto;font-size:11.5px;color:#ffd86b;background:rgba(255,193,7,.1);border:1px solid rgba(255,193,7,.25);border-radius:8px;padding:9px 11px;line-height:1.4}
+  .atl-dl-err{margin-top:auto;display:flex;flex-direction:column;gap:9px}
+  .atl-dl-err .em{font-size:12.5px;color:#ff8b8b;line-height:1.45}
+  .atl-dl-actions{display:flex;gap:8px;flex-wrap:wrap}
+  .atl-dl-actions button{flex:1;min-width:118px;padding:9px;border-radius:8px;cursor:pointer;font-size:12px;border:1px solid var(--line);background:var(--panel2);color:var(--text)}
+  .atl-dl-actions button.primary{background:linear-gradient(135deg,#6d5efc,#4ea1ff);border:none;color:#fff;font-weight:700}
+  .atl-head .atl-mini{margin-left:auto}
+</style>
+</head>
+<body>
+  <div class="menubar" id="menubar">
+    <div class="menu" data-menu="file"><div class="label" data-i18n="menuFile">File</div>
+      <div class="dropdown">
+        <div class="mi" data-cmd="new"><span data-i18n="miNew">New</span><span class="k">Ctrl+N</span></div>
+        <div class="mi" data-cmd="open"><span data-i18n="miOpen">Open…</span><span class="k">Ctrl+O</span></div>
+        <div class="sep"></div>
+        <div class="mi" data-cmd="save"><span data-i18n="miSave">Save</span><span class="k">Ctrl+S</span></div>
+        <div class="mi" data-cmd="saveas"><span data-i18n="miSaveAs">Save as…</span><span class="k">Ctrl+Shift+S</span></div>
+        <div class="sep"></div>
+        <div class="mi" data-cmd="exit"><span data-i18n="miExit">Exit</span><span class="k">Ctrl+Q</span></div>
+      </div>
+    </div>
+    <div class="menu" data-menu="edit"><div class="label" data-i18n="menuEdit">Edit</div>
+      <div class="dropdown">
+        <div class="mi" data-cmd="undo"><span data-i18n="miUndo">Undo</span><span class="k">Ctrl+Z</span></div>
+        <div class="mi" data-cmd="redo"><span data-i18n="miRedo">Redo</span><span class="k">Ctrl+Y</span></div>
+        <div class="sep"></div>
+        <div class="mi" data-cmd="copy"><span data-i18n="miCopy">Copy</span><span class="k">Ctrl+C</span></div>
+        <div class="mi" data-cmd="paste"><span data-i18n="miPaste">Paste</span><span class="k">Ctrl+V</span></div>
+        <div class="sep"></div>
+        <div class="mi" data-cmd="clear"><span data-i18n="miClearAll">Clear all</span><span class="k">Canc</span></div>
+        <div class="mi" data-cmd="resize"><span data-i18n="miResize">Resize canvas…</span></div>
+      </div>
+    </div>
+    <div class="menu" data-menu="image"><div class="label" data-i18n="menuImage">Image</div>
+      <div class="dropdown">
+        <div class="mi" data-cmd="newTransparent"><span data-i18n="miNewTransparent">New transparent</span></div>
+        <div class="sep"></div>
+        <div class="mi" data-cmd="cropSel"><span data-i18n="miCropSel">Crop to selection</span></div>
+        <div class="mi" data-cmd="trim"><span data-i18n="miTrim">Trim transparent borders</span></div>
+        <div class="sep"></div>
+        <div class="mi" data-cmd="rotcw"><span data-i18n="miRotCW">Rotate 90° clockwise</span></div>
+        <div class="mi" data-cmd="rotccw"><span data-i18n="miRotCCW">Rotate 90° counter-clockwise</span></div>
+        <div class="mi" data-cmd="fliph"><span data-i18n="miFlipH">Flip horizontal</span></div>
+        <div class="mi" data-cmd="flipv"><span data-i18n="miFlipV">Flip vertical</span></div>
+        <div class="sep"></div>
+        <div class="mi" data-cmd="removeBg"><span data-i18n="miRemoveBg">Remove background (auto)</span></div>
+      </div>
+    </div>
+    <div class="menu" data-menu="adjust"><div class="label" data-i18n="menuAdjust">Adjust</div>
+      <div class="dropdown">
+        <div class="mi" data-cmd="openAdjust"><span data-i18n="miAdjustDialog">Brightness / Contrast / Saturation…</span></div>
+        <div class="sep"></div>
+        <div class="mi" data-cmd="fxGray"><span data-i18n="miFxGray">Grayscale</span></div>
+        <div class="mi" data-cmd="fxInvert"><span data-i18n="miFxInvert">Invert colors</span></div>
+        <div class="mi" data-cmd="fxSepia"><span data-i18n="miFxSepia">Sepia</span></div>
+        <div class="sep"></div>
+        <div class="mi" data-cmd="fxBlur"><span data-i18n="miFxBlur">Blur</span></div>
+        <div class="mi" data-cmd="fxSharp"><span data-i18n="miFxSharp">Sharpen</span></div>
+        <div class="mi" data-cmd="fxEdges"><span data-i18n="miFxEdges">Edges</span></div>
+      </div>
+    </div>
+    <div class="menu" data-menu="view"><div class="label" data-i18n="menuView">View</div>
+      <div class="dropdown">
+        <div class="mi" data-cmd="toggleRulers"><span data-i18n="miRulers">Rulers</span></div>
+        <div class="mi" data-cmd="toggleGrid"><span data-i18n="miGrid">Grid</span></div>
+        <div class="mi" data-cmd="togglePanel"><span data-i18n="miToolsPanel">Tools panel</span><span class="k">Tab</span></div>
+        <div class="sep"></div>
+        <div class="mi" data-cmd="zoomReset"><span data-i18n="miZoom100">Zoom 100%</span></div>
+        <div class="mi" data-cmd="fitZoom"><span data-i18n="miFitWindow">Fit to window</span></div>
+      </div>
+    </div>
+    <div class="menu" data-menu="help"><div class="label" data-i18n="menuHelp">Help</div>
+      <div class="dropdown">
+        <div class="mi" data-cmd="tour"><span data-i18n="miTour">Guided tutorial ✨</span></div>
+        <div class="mi" data-cmd="shortcuts"><span data-i18n="miShortcuts">Keyboard shortcuts</span></div>
+      </div>
+    </div>
+  </div>
+
+  <div class="toolbar">
+    <div class="grp" id="tools">
+      <button class="btn active" data-tool="brush" data-i18n-attr="title:tipBrush" title="Brush (B)"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 19l7-7 3 3-7 7-3-3z"/><path d="M18 13l-1.5-7.5L2 2l3.5 14.5L13 18l5-5z"/><path d="M2 2l7.586 7.586"/></svg></button>
+      <button class="btn" data-tool="line" data-i18n-attr="title:tipLine" title="Line (L)"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><line x1="4" y1="20" x2="20" y2="4"/></svg></button>
+      <button class="btn" data-tool="rect" data-i18n-attr="title:tipRect" title="Rectangle (R)"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="3" y="5" width="18" height="14" rx="1"/></svg></button>
+      <button class="btn" data-tool="ellipse" data-i18n-attr="title:tipEllipse" title="Ellipse (E)"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><ellipse cx="12" cy="12" rx="9" ry="7"/></svg></button>
+      <button class="btn" data-tool="eraser" data-i18n-attr="title:tipEraser" title="Eraser"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M20 20H7L2 15l13-13 8 8-3 3z"/><path d="M18 12l-8 8"/></svg></button>
+      <button class="btn" data-tool="fill" data-i18n-attr="title:tipFill" title="Fill bucket"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M19 11L9 1 2 8l8 8 9-5z"/><path d="M5 12h14"/><circle cx="20" cy="16" r="2"/></svg></button>
+      <button class="btn" data-tool="pick" data-i18n-attr="title:tipPick" title="Eyedropper"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M2 22l4-1 10-10-3-3L3 18l-1 4z"/><path d="M13 5l3 3 3-3-3-3-3 3z"/></svg></button>
+      <button class="btn" data-tool="select" data-i18n-attr="title:tipSelect" title="Rectangular selection (M)"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-dasharray="3 2"><rect x="3" y="3" width="18" height="18" rx="1"/></svg></button>
+      <button class="btn" data-tool="wand" data-i18n-attr="title:tipWand" title="Magic wand — erase the background by clicking (W)"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M15 4V2M15 16v-2M8 9h2M20 9h2M17.8 11.8L19 13M17.8 6.2L19 5M3 21l9-9M12.2 6.2L11 5"/></svg></button>
+      <button class="btn" data-tool="text" data-i18n-attr="title:tipText" title="Text (T)"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M4 7V4h16v3M9 20h6M12 4v16"/></svg></button>
+    </div>
+    <div class="grp">
+      <span class="color-pair">
+        <input type="color" id="color" value="#000000" data-i18n-attr="title:tipColor" title="Primary color (stroke)">
+        <input type="color" id="color2" value="#ffffff" data-i18n-attr="title:tipColor2" title="Secondary color (fill)">
+        <button class="swap" id="colorSwap" data-i18n-attr="title:tipSwap" title="Swap colors (X)">⇄</button>
+      </span>
+      <div class="swatches" id="swatches"></div>
+    </div>
+    <div class="grp">
+      <input type="range" id="size" min="1" max="64" value="5" data-i18n-attr="title:tipSize" title="Brush size">
+      <span class="size-lbl" id="sizeLbl">5px</span>
+    </div>
+    <div class="grp">
+      <button class="btn" data-cmd="undo" data-i18n-attr="title:tipUndo" title="Undo (Ctrl+Z)"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M9 14L4 9l5-5"/><path d="M4 9h11a5 5 0 0 1 0 10h-1"/></svg></button>
+      <button class="btn" data-cmd="redo" data-i18n-attr="title:tipRedo" title="Redo (Ctrl+Y)"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M15 14l5-5-5-5"/><path d="M20 9H9a5 5 0 0 0 0 10h1"/></svg></button>
+    </div>
+    <div class="grp">
+      <button class="btn tg-btn on" id="panelToggle" data-i18n-attr="title:tipPanelToggle" title="Show/hide panel (Tab)"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="3" y="4" width="18" height="16" rx="1.5"/><line x1="15" y1="4" x2="15" y2="20"/></svg></button>
+    </div>
+    <div class="grp" style="border-right:none">
+      <button class="btn atelier" id="atelierBtn" data-i18n-attr="title:tipAtelier" title="Atelier — generate an image with AI (WebGPU, on device)">✨&nbsp;Atelier</button>
+    </div>
+  </div>
+
+  <div class="toolbar toolbar-opts" id="optsbar">
+    <span class="opt-tool" id="optTool">Brush</span>
+    <span class="opt-grp" data-for="line rect ellipse"><label class="opt"><input type="checkbox" id="shapeFill"> <span data-i18n="optFilled">Filled (color 2)</span></label></span>
+    <span class="opt-grp" data-for="fill wand"><label class="opt"><span data-i18n="tolerance">Tolerance</span><input type="range" id="fillTol" min="0" max="120" value="32"><b id="fillTolVal">32</b></label></span>
+    <span class="opt-grp" data-for="text"><label class="opt"><span data-i18n="size">Size</span><input type="number" id="fontSize" min="8" max="240" value="24"></label><label class="opt"><input type="checkbox" id="fontBold"> <span data-i18n="optBold">Bold</span></label></span>
+    <span class="opt-hint" id="optHint"></span>
+  </div>
+
+  <div class="cmdbar">
+    <span class="cmd-ico">✦</span>
+    <input id="cmdInput" type="text" autocomplete="off" spellcheck="false" data-i18n-attr="placeholder:cmdPlaceholder" placeholder="Ask Paint… e.g. «remove the background», «create a cat icon», «brightness +20», «rotate right»">
+    <button class="cmd-go" id="cmdGo" data-i18n-attr="title:tipRun" title="Run (Enter)">↵</button>
+    <span class="cmd-resp" id="cmdResp"></span>
+  </div>
+
+  <div class="workarea">
+    <div class="canvasarea" id="canvasarea">
+      <div class="ruler-corner" id="rulerCorner"></div>
+      <canvas class="ruler-top" id="rulerTop"></canvas>
+      <canvas class="ruler-left" id="rulerLeft"></canvas>
+      <div class="stage" id="stage">
+        <div class="wrap" id="wrap">
+          <canvas id="c" width="800" height="600"></canvas>
+          <canvas id="overlay" width="800" height="600"></canvas>
+          <div class="grid-overlay" id="gridOverlay"></div>
+        </div>
+        <div class="drop-hint" data-i18n="dropHint">Drop to open the image</div>
+      </div>
+    </div>
+    <aside class="panel" id="panel">
+      <div class="panel-head"><b data-i18n="panelTitle">Tools</b><button class="ph-close" id="panelClose" data-i18n-attr="title:tipHidePanel" title="Hide panel (Tab)">×</button></div>
+      <div class="psec" data-sec="layers"><h4><span data-i18n="secLayers">Layers</span> <span class="chev">▾</span></h4><div class="psec-body">
+        <div class="lay-list" id="layList"></div>
+        <div class="prow"><label data-i18n="opacity">Opacity</label><input type="range" id="layOpacity" min="0" max="100" value="100"><span class="val" id="layOpacityVal">100</span></div>
+        <div class="prow"><label data-i18n="blend">Blend</label><select id="layBlend">
+          <option value="normal" data-i18n="blendNormal">Normal</option><option value="multiply" data-i18n="blendMultiply">Multiply</option><option value="screen" data-i18n="blendScreen">Screen</option>
+          <option value="overlay" data-i18n="blendOverlay">Overlay</option><option value="darken" data-i18n="blendDarken">Darken</option><option value="lighten" data-i18n="blendLighten">Lighten</option>
+          <option value="color-dodge" data-i18n="blendDodge">Color dodge</option><option value="difference" data-i18n="blendDifference">Difference</option></select></div>
+        <div class="pbtns">
+          <button class="pbtn" data-cmd="layerAdd" data-i18n-attr="title:tipLayerAdd" title="New layer">＋</button>
+          <button class="pbtn" data-cmd="layerDup" data-i18n-attr="title:tipLayerDup" title="Duplicate">⧉</button>
+          <button class="pbtn" data-cmd="layerUp" data-i18n-attr="title:tipLayerUp" title="Move up">▲</button>
+          <button class="pbtn" data-cmd="layerDown" data-i18n-attr="title:tipLayerDown" title="Move down">▼</button>
+          <button class="pbtn" data-cmd="layerMerge" data-i18n-attr="title:tipLayerMerge" title="Merge down">⤓</button>
+          <button class="pbtn" data-cmd="layerDel" data-i18n-attr="title:tipLayerDel" title="Delete">🗑</button>
+        </div>
+      </div></div>
+      <div class="psec collapsed" data-sec="brush"><h4><span data-i18n="secBrush">Brush</span> <span class="chev">▾</span></h4><div class="psec-body">
+        <div class="prow"><label data-i18n="opacity">Opacity</label><input type="range" id="opacity" min="5" max="100" value="100"><span class="val" id="opacityVal">100</span></div>
+        <div class="phint" data-i18n="brushHint">The eraser cuts to transparent (real PNG alpha).</div>
+      </div></div>
+      <div class="psec collapsed" data-sec="sel"><h4><span data-i18n="secSelection">Selection</span> <span class="chev">▾</span></h4><div class="psec-body">
+        <div class="phint" id="selInfo">No selection. Use the ▭ tool to select an area.</div>
+        <div class="pbtns">
+          <button class="pbtn" data-cmd="cropSel" data-i18n="selCrop">Crop</button>
+          <button class="pbtn" data-cmd="clearSel" data-i18n="selClear">Clear</button>
+          <button class="pbtn" data-cmd="fillSel" data-i18n="selFill">Fill</button>
+          <button class="pbtn primary" data-cmd="genSel" data-i18n="selGen">✨ Generate here</button>
+          <button class="pbtn" data-cmd="deselect" data-i18n="selDeselect">Deselect</button>
+        </div>
+      </div></div>
+      <div class="psec collapsed" data-sec="bg"><h4><span data-i18n="secBackground">Background</span> <span class="chev">▾</span></h4><div class="psec-body">
+        <div class="prow"><label data-i18n="tolerance">Tolerance</label><input type="range" id="bgTol" min="5" max="120" value="48"><span class="val" id="bgTolVal">48</span></div>
+        <div class="prow"><label data-i18n="feather">Feather</label><input type="range" id="bgFeather" min="0" max="4" value="1"><span class="val" id="bgFeatherVal">1</span></div>
+        <div class="pbtns"><button class="pbtn primary full" data-cmd="removeBg" data-i18n="bgRemove">Remove background (auto)</button>
+          <button class="pbtn full" data-cmd="trim" data-i18n="bgTrim">Trim transparent borders</button></div>
+        <div class="phint" data-i18n="bgHint">Or pick the 🪄 wand and click the background to erase.</div>
+      </div></div>
+      <div class="psec collapsed" data-sec="adj"><h4><span data-i18n="secAdjustments">Adjustments</span> <span class="chev">▾</span></h4><div class="psec-body">
+        <div class="prow"><label data-i18n="brightness">Brightness</label><input type="range" id="adjB" min="-100" max="100" value="0"><span class="val" id="adjBVal">0</span></div>
+        <div class="prow"><label data-i18n="contrast">Contrast</label><input type="range" id="adjC" min="-100" max="100" value="0"><span class="val" id="adjCVal">0</span></div>
+        <div class="prow"><label data-i18n="saturation">Saturation</label><input type="range" id="adjS" min="-100" max="100" value="0"><span class="val" id="adjSVal">0</span></div>
+        <div class="pbtns"><button class="pbtn primary" data-cmd="adjApply" data-i18n="adjApply">Apply</button><button class="pbtn" data-cmd="adjReset" data-i18n="adjReset">Reset</button></div>
+        <div class="pbtns"><button class="pbtn" data-cmd="fxGray" data-i18n="pfxGray">Gray</button><button class="pbtn" data-cmd="fxInvert" data-i18n="pfxInvert">Invert</button><button class="pbtn" data-cmd="fxSepia" data-i18n="pfxSepia">Sepia</button>
+          <button class="pbtn" data-cmd="fxBlur" data-i18n="pfxBlur">Blur</button><button class="pbtn" data-cmd="fxSharp" data-i18n="pfxSharp">Sharp</button><button class="pbtn" data-cmd="fxEdges" data-i18n="pfxEdges">Edges</button></div>
+      </div></div>
+      <div class="psec collapsed" data-sec="xf"><h4><span data-i18n="secTransform">Transform</span> <span class="chev">▾</span></h4><div class="psec-body">
+        <div class="pbtns"><button class="pbtn" data-cmd="rotccw">⟲ 90°</button><button class="pbtn" data-cmd="rotcw">⟳ 90°</button>
+          <button class="pbtn" data-cmd="fliph" data-i18n="xfFlipH">⇄ Horiz.</button><button class="pbtn" data-cmd="flipv" data-i18n="xfFlipV">⇅ Vert.</button></div>
+      </div></div>
+    </aside>
+  </div>
+
+  <div class="status">
+    <span><span data-i18n="stFile">File: </span><b id="st-file">untitled</b><b id="st-dirty"></b></span>
+    <span><span data-i18n="stCanvas">Canvas: </span><b id="st-dim">800 × 600</b></span>
+    <span id="st-pos">—</span>
+    <span class="zoomctl"><button id="zoomOut" data-i18n-attr="title:tipZoomOut" title="Zoom out">−</button><b id="zoomLbl">100%</b><button id="zoomIn" data-i18n-attr="title:tipZoomIn" title="Zoom in">+</button><button id="zoomFit" data-i18n-attr="title:tipZoomFit" title="Fit">⤢</button></span>
+    <span style="margin-left:auto" id="st-msg">Ready</span>
+  </div>
+
+<script>
+let c = document.getElementById('c'), ctx = c.getContext('2d', { willReadFrequently:true });   // c/ctx = the ACTIVE layer (reassigned on layer switch); all drawing code targets them unchanged
+const ov = document.getElementById('overlay'), octx = ov.getContext('2d');
+const wrap = document.getElementById('wrap'), stage = document.getElementById('stage');
+const $ = id => document.getElementById(id);
+// Isolation guard: when the caret is in a text field (e.g. the Atelier prompt) NO drawing hotkey or
+// canvas-clearing shortcut fires — so typing "blue rect" can't switch tools or wipe the canvas.
+function isTyping(){ const a=document.activeElement; return !!(a && (a.tagName==='INPUT'||a.tagName==='TEXTAREA'||a.isContentEditable)); }
+
+// ---- language (IT/EN inline + es/fr/de overrides) — single source: the OS language (anima.lang).
+// Reads anima.lang first, then the document lang (kept in sync by /nucleo-i18n.js). Returns the FULL code.
+function paintLang(){ try{ const l=(localStorage.getItem('anima.lang')||document.documentElement.lang||'en').toLowerCase().slice(0,2); return ['it','en','es','fr','de'].includes(l)?l:'en'; }catch{ return 'en'; } }
+function EN(){ return paintLang()==='en'; }
+// LT(it,en): pick the right string for the active language at call time. Used by every runtime message.
+// (Named LT, not L — `L` is the pervasive per-layer variable name throughout this file.)
+// IT + EN live inline at each call site; es/fr/de are looked up in PAINT_L10N, KEYED BY THE ENGLISH string.
+// A missing key falls back to English (never Italian), so a stray untranslated string is at worst English.
+function LT(it,en){ const l=paintLang(); if(l==='it') return it; if(l==='en') return en; return (PAINT_L10N[l]&&PAINT_L10N[l][en])||en; }
+// es/fr/de professional translations, keyed by the ENGLISH string above. UL() (Atelier) shares this table.
+// Proper nouns (Paint, Atelier, WebGPU, SDXS, ORT, ControlNet, UNet, VAE, PNG, Grok, xAI, Cardputer), file
+// paths, keyboard shortcuts and ${…} vars are intentionally NOT translated. Prefix/suffix keys keep their spaces.
+const PAINT_L10N = {
+  es:{
+    // runtime messages
+    'untitled':'sin título','Undone':'Deshecho','Redone':'Rehecho','Layer 1':'Capa 1','Layer ':'Capa ',
+    'Layer added':'Capa añadida','At least one layer is required':'Se necesita al menos una capa',' copy':' copia',
+    'No layer below':'No hay capa debajo','Layers merged':'Capas combinadas','Background':'Fondo',
+    'Image flattened':'Imagen aplanada','Show/hide':'Mostrar/ocultar','Double-click: rename':'Doble clic: renombrar',
+    'Layer name:':'Nombre de la capa:','Color picked ':'Color tomado ','Ready':'Listo','Image':'Imagen',
+    'Opened ':'Abierto ','Could not open ':'No se pudo abrir ','Image loaded: ':'Imagen cargada: ',
+    ' (save to keep it)':' (guarda para conservarla)','Saved to ':'Guardado en ','Save failed (':'Error al guardar (',
+    'Network error: ':'Error de red: ','drawing.png':'dibujo.png','Image copied to clipboard':'Imagen copiada al portapapeles',
+    'Image copy not available here (needs HTTPS or localhost)':'Copia de imagen no disponible aquí (necesita HTTPS o localhost)',
+    'Copy failed: ':'Error al copiar: ','Paste not available here (needs HTTPS or localhost)':'Pegado no disponible aquí (necesita HTTPS o localhost)',
+    'Image pasted':'Imagen pegada','No image in the clipboard':'No hay imagen en el portapapeles','Paste failed: ':'Error al pegar: ',
+    'Save image':'Guardar imagen','Open image':'Abrir imagen','New':'Nuevo','Canvas width:':'Ancho del lienzo:',
+    'Canvas height:':'Alto del lienzo:','Invalid size':'Tamaño no válido',
+    'Exit without saving? Your changes will be lost.':'¿Salir sin guardar? Se perderán los cambios.',
+    'Imaging module not loaded yet':'El módulo de imagen aún no está cargado','Operation failed: ':'Operación fallida: ',
+    'Background erased (wand)':'Fondo borrado (varita)','Selection ':'Selección ',' at (':' en (',
+    'No selection. Use the ▭ tool to select an area.':'Sin selección. Usa la herramienta ▭ para seleccionar un área.',
+    'No selection':'Sin selección','Cropped to selection':'Recortado a la selección','Area cleared':'Área vaciada',
+    'Text:':'Texto:','Text added':'Texto insertado','Adjustments applied':'Ajustes aplicados','Reset':'Restablecer',
+    'Rulers ':'Reglas ','Grid ':'Cuadrícula ','New transparent canvas':'Nuevo lienzo transparente','Empty canvas':'Lienzo vacío',
+    'Transparent borders trimmed':'Bordes transparentes recortados','Rotated 90°':'Rotado 90°','Flipped':'Volteado',
+    'Background removed (active layer)':'Fondo eliminado (capa activa)','Grayscale':'Escala de grises',
+    'Colors inverted':'Colores invertidos','Sepia':'Sepia','Blurred':'Desenfocado','Sharpened':'Enfocado','Edges':'Bordes',
+    'Commands module not loaded':'Módulo de comandos no cargado','Error: ':'Error: ','Tutorial unavailable':'Tutorial no disponible',
+    // menu bar
+    'File':'Archivo','Edit':'Editar','Adjust':'Ajustar','View':'Ver','Help':'Ayuda',
+    'Open…':'Abrir…','Save':'Guardar','Save as…':'Guardar como…','Exit':'Salir','Undo':'Deshacer','Redo':'Rehacer',
+    'Copy':'Copiar','Paste':'Pegar','Clear all':'Borrar todo','Resize canvas…':'Redimensionar lienzo…',
+    'New transparent':'Nuevo transparente','Crop to selection':'Recortar a la selección','Trim transparent borders':'Recortar bordes transparentes',
+    'Rotate 90° clockwise':'Rotar 90° a la derecha','Rotate 90° counter-clockwise':'Rotar 90° a la izquierda',
+    'Flip horizontal':'Voltear horizontal','Flip vertical':'Voltear vertical','Remove background (auto)':'Quitar fondo (auto)',
+    'Brightness / Contrast / Saturation…':'Brillo / Contraste / Saturación…','Invert colors':'Invertir colores',
+    'Blur':'Desenfocar','Sharpen':'Enfocar','Rulers':'Reglas','Grid':'Cuadrícula','Tools panel':'Panel de herramientas',
+    'Fit to window':'Ajustar a la ventana','Guided tutorial ✨':'Tutorial guiado ✨','Keyboard shortcuts':'Atajos de teclado',
+    // toolbar tooltips
+    'Brush (B)':'Pincel (B)','Line (L)':'Línea (L)','Rectangle (R)':'Rectángulo (R)','Ellipse (E)':'Elipse (E)',
+    'Eraser':'Goma','Fill bucket':'Cubo de relleno','Eyedropper':'Cuentagotas','Rectangular selection (M)':'Selección rectangular (M)',
+    'Magic wand — erase the background by clicking (W)':'Varita mágica — borra el fondo haciendo clic (W)','Text (T)':'Texto (T)',
+    'Primary color (stroke)':'Color primario (trazo)','Secondary color (fill)':'Color secundario (relleno)',
+    'Swap colors (X)':'Intercambiar colores (X)','Brush size':'Grosor del pincel','Undo (Ctrl+Z)':'Deshacer (Ctrl+Z)',
+    'Redo (Ctrl+Y)':'Rehacer (Ctrl+Y)','Show/hide panel (Tab)':'Mostrar/ocultar panel (Tab)',
+    'Atelier — generate an image with AI (WebGPU, on device)':'Atelier — genera una imagen con IA (WebGPU, en el dispositivo)',
+    // options bar
+    ' Filled (color 2)':' Relleno (color 2)','Tolerance':'Tolerancia','Size':'Tamaño',' Bold':' Negrita',
+    'Ask Paint… e.g. «remove the background», «create a cat icon», «brightness +20», «rotate right»':'Pide a Paint… p. ej. «quita el fondo», «crea un icono de gato», «brillo +20», «girar a la derecha»',
+    'Run (Enter)':'Ejecutar (Intro)','Drop to open the image':'Suelta para abrir la imagen',
+    // right panel
+    'Tools':'Herramientas','Hide panel (Tab)':'Ocultar panel (Tab)','Layers':'Capas','Brush':'Pincel','Selection':'Selección',
+    'Adjustments':'Ajustes','Transform':'Transformar','Opacity':'Opacidad','Blend':'Fusión','Brightness':'Brillo',
+    'Contrast':'Contraste','Saturation':'Saturación','Feather':'Difuminar',
+    'Normal':'Normal','Multiply':'Multiplicar','Screen':'Trama','Overlay':'Superponer','Darken':'Oscurecer',
+    'Lighten':'Aclarar','Color dodge':'Sobreexponer color','Difference':'Diferencia',
+    'New layer':'Nueva capa','Duplicate':'Duplicar','Move up':'Subir','Move down':'Bajar','Merge down':'Combinar hacia abajo','Delete':'Eliminar',
+    'The eraser cuts to transparent (real PNG alpha).':'La goma borra a transparente (alfa PNG real).',
+    'Crop':'Recortar','Clear':'Borrar','Fill':'Rellenar','✨ Generate here':'✨ Generar aquí','Deselect':'Deseleccionar',
+    'Or pick the 🪄 wand and click the background to erase.':'O elige la 🪄 varita y haz clic en el fondo para borrarlo.',
+    'Apply':'Aplicar','Gray':'Grises','Invert':'Invertir','Sharp':'Enfocar',
+    'File: ':'Archivo: ','Canvas: ':'Lienzo: ','Zoom out':'Alejar','Zoom in':'Acercar','Fit':'Ajustar',
+    // options-bar tool name + hint
+    'Line':'Línea','Rectangle':'Rectángulo','Ellipse':'Elipse','Magic wand':'Varita mágica','Text':'Texto',
+    'Drag to draw · opacity in the panel':'Arrastra para dibujar · opacidad en el panel',
+    'Erases to transparent (PNG alpha)':'Borra a transparente (alfa PNG)',
+    'Click to fill an area · tolerance here':'Haz clic para rellenar un área · tolerancia aquí',
+    'Click to pick a colour':'Haz clic para tomar un color',
+    'Drag a rectangle, then use the Selection panel':'Arrastra un rectángulo, luego usa el panel Selección',
+    'Click the background to erase':'Haz clic en el fondo para borrarlo','Click where you want to write':'Haz clic donde quieras escribir',
+    'Drag · Shift to constrain the angle':'Arrastra · Shift para restringir el ángulo','Drag · Shift for a square':'Arrastra · Shift para un cuadrado',
+    'Drag · Shift for a circle':'Arrastra · Shift para un círculo',
+    // Atelier
+    'Atelier — generate an image':'Atelier — genera una imagen','SDXS model manager':'Gestor del modelo SDXS','Model':'Modelo',
+    'Close (Esc)':'Cerrar (Esc)','Text → Image':'Texto → Imagen','Sketch → Image':'Boceto → Imagen','From image':'Desde imagen',
+    'Model — you choose who generates':'Modelo — tú eliges quién genera','Description (prompt)':'Descripción (prompt)',
+    'e.g. a red cat sitting on a sofa, warm light, watercolor style':'p. ej. un gato rojo sentado en un sofá, luz cálida, estilo acuarela',
+    'What to avoid (negative, optional)':'Qué evitar (negativo, opcional)',
+    'e.g. blurry, deformed, text, watermark, low quality':'p. ej. borroso, deforme, texto, marca de agua, baja calidad',
+    '✨ Improve the prompt with AI':'✨ Mejora el prompt con IA','(an LLM rewrites the idea into a professional prompt)':'(un LLM reescribe la idea en un prompt profesional)',
+    'Seed (reproducible)':'Semilla (reproducible)','Random seed':'Semilla aleatoria','Variants:':'Variantes:',
+    'Sketch adherence:':'Fidelidad al boceto:','Strength (img→img):':'Fuerza (img→img):','new layer':'nueva capa',
+    'save to the device':'guardar en el dispositivo','Generate':'Generar',
+    'Use your drawing as a guide sketch (ControlNet).':'Usa tu dibujo como boceto guía (ControlNet).',
+    'Reworks the current canvas content according to the prompt.':'Reelabora el contenido actual del lienzo según el prompt.',
+    'Generates from text only (canvas ignored).':'Genera solo a partir del texto (se ignora el lienzo).','Loading ':'Cargando ',
+    'Local · SDXS (in browser)':'Local · SDXS (en el navegador)','Preview (not AI)':'Vista previa (no IA)',' — unavailable':' — no disponible',
+    '  ·  Online: the sketch is ignored (text→image only).':'  ·  Online: se ignora el boceto (solo texto→imagen).',
+    'no online image provider — configure xAI/Grok in Settings · AI':'sin proveedor de imágenes online — configura xAI/Grok en Ajustes · IA',
+    'Procedural preview (not AI) active.':'Vista previa procedural (no IA) activa.',
+    'Procedural preview (not AI). For real images choose Online (Grok) or download the local model.':'Vista previa procedural (no IA). Para imágenes reales elige Online (Grok) o descarga el modelo local.',
+    'Checking model…':'Comprobando el modelo…','Ready · SDXS q68 on WebGPU':'Listo · SDXS q68 en WebGPU',
+    'Ready · SDXS on WebGPU':'Listo · SDXS en WebGPU','Ready · procedural preview':'Listo · vista previa procedural',
+    '✓ WebGPU active — fast generation':'✓ WebGPU activo — generación rápida',
+    '⚠ WebGPU missing — will use the CPU (slow but works)':'⚠ WebGPU ausente — usará la CPU (lento pero funciona)',
+    'Model in <b>local cache</b> — ready, instant load. No download needed.':'Modelo en <b>caché local</b> — listo, carga instantánea. No hace falta descargar.',
+    'Model <b>not cached</b>. Download it once (≈553&nbsp;MB): then it stays in the browser and starts instantly.':'Modelo <b>no en caché</b>. Descárgalo una sola vez (≈553&nbsp;MB): luego queda en el navegador y arranca al instante.',
+    'ONNX&nbsp;Runtime unavailable (needs desktop Chrome/Edge). You can still use the procedural preview.':'ONNX&nbsp;Runtime no disponible (necesita Chrome/Edge de escritorio). Aún puedes usar la vista previa procedural.',
+    'Re-download':'Volver a descargar','Download':'Descargar','Download from the Internet':'Descargar de Internet',
+    'offline — no connection':'sin conexión — no hay red','GitHub · ~553 MB · requires a connection':'GitHub · ~553 MB · requiere conexión',
+    'Download from the device':'Descargar del dispositivo','SD over local WiFi · ~553 MB':'SD por WiFi local · ~553 MB',
+    'model not present on the SD':'modelo no presente en la SD','Use procedural preview (no download)':'Usar vista previa procedural (sin descarga)',
+    'Remove from cache':'Quitar de la caché','ORT runtime (inference engine)':'Runtime ORT (motor de inferencia)',
+    'Starting engine ':'Iniciando motor ','Fused model (ControlNet + UNet + VAE)':'Modelo fusionado (ControlNet + UNet + VAE)',
+    ' · part ':' · parte ','MB done':'MB completados','compiling the model on the GPU…':'compilando el modelo en la GPU…',
+    '⚠ Operation failed':'⚠ Operación fallida','⚙ Preparing the engine':'⚙ Preparando el motor','⬇ Downloading from ':'⬇ Descargando de ',
+    'Retry':'Reintentar','Try from the device':'Probar desde el dispositivo','Try from the Internet':'Probar desde Internet','Use preview':'Usar vista previa',
+    'Almost ready — one moment. Do not close Atelier.':'Casi listo — un momento. No cierres Atelier.',
+    'Download in progress — keep Atelier open and do not drag files until it finishes. You can keep using the rest of the PC.':'Descarga en curso — mantén Atelier abierto y no arrastres archivos hasta que termine. Puedes seguir usando el resto del PC.',
+    'First time only: then startup is instant.':'Solo la primera vez: luego el arranque es inmediato.',
+    'One time only: then the model stays cached and starts instantly.':'Una sola vez: luego el modelo queda en caché y arranca al instante.',
+    'Model ready and cached — next openings are instant.':'Modelo listo y en caché — las próximas aperturas son instantáneas.',
+    'Write a description.':'Escribe una descripción.','Generating…':'Generando…','✨ Improving the prompt (':'✨ Mejorando el prompt (',
+    'Preparing the engine…':'Preparando el motor…','Variant ':'Variante ','Choose a variant below.':'Elige una variante abajo.',
+    'Prompt enhancement failed — using your original text.':'No se pudo mejorar el prompt — usando tu texto original.',
+    ' variant(s) failed: ':' variante(s) fallida(s): ','Generation failed: ':'Generación fallida: ','Image · ':'Imagen · ',
+    'Image (SDXS · in browser)':'Imagen (SDXS · en el navegador)',' · in the selection':' · en la selección',
+    ' · prompt reworked by the model':' · prompt reelaborado por el modelo',' · saved to /data/Pictures/':' · guardada en /data/Pictures/',
+    ' · save failed':' · error al guardar','✨ Improve the prompt with ':'✨ Mejora el prompt con ',
+  },
+  fr:{
+    // runtime messages
+    'untitled':'sans titre','Undone':'Annulé','Redone':'Rétabli','Layer 1':'Calque 1','Layer ':'Calque ',
+    'Layer added':'Calque ajouté','At least one layer is required':'Au moins un calque est requis',' copy':' copie',
+    'No layer below':'Aucun calque en dessous','Layers merged':'Calques fusionnés','Background':'Arrière-plan',
+    'Image flattened':'Image aplatie','Show/hide':'Afficher/masquer','Double-click: rename':'Double-clic : renommer',
+    'Layer name:':'Nom du calque :','Color picked ':'Couleur prélevée ','Ready':'Prêt','Image':'Image',
+    'Opened ':'Ouvert ','Could not open ':'Impossible d’ouvrir ','Image loaded: ':'Image chargée : ',
+    ' (save to keep it)':' (enregistrez pour la conserver)','Saved to ':'Enregistré dans ','Save failed (':'Échec de l’enregistrement (',
+    'Network error: ':'Erreur réseau : ','drawing.png':'dessin.png','Image copied to clipboard':'Image copiée dans le presse-papiers',
+    'Image copy not available here (needs HTTPS or localhost)':'Copie d’image indisponible ici (nécessite HTTPS ou localhost)',
+    'Copy failed: ':'Échec de la copie : ','Paste not available here (needs HTTPS or localhost)':'Collage indisponible ici (nécessite HTTPS ou localhost)',
+    'Image pasted':'Image collée','No image in the clipboard':'Aucune image dans le presse-papiers','Paste failed: ':'Échec du collage : ',
+    'Save image':'Enregistrer l’image','Open image':'Ouvrir l’image','New':'Nouveau','Canvas width:':'Largeur de la toile :',
+    'Canvas height:':'Hauteur de la toile :','Invalid size':'Taille non valide',
+    'Exit without saving? Your changes will be lost.':'Quitter sans enregistrer ? Vos modifications seront perdues.',
+    'Imaging module not loaded yet':'Module d’imagerie pas encore chargé','Operation failed: ':'Échec de l’opération : ',
+    'Background erased (wand)':'Fond effacé (baguette)','Selection ':'Sélection ',' at (':' à (',
+    'No selection. Use the ▭ tool to select an area.':'Aucune sélection. Utilisez l’outil ▭ pour sélectionner une zone.',
+    'No selection':'Aucune sélection','Cropped to selection':'Rogné à la sélection','Area cleared':'Zone effacée',
+    'Text:':'Texte :','Text added':'Texte ajouté','Adjustments applied':'Réglages appliqués','Reset':'Réinitialiser',
+    'Rulers ':'Règles ','Grid ':'Grille ','New transparent canvas':'Nouvelle toile transparente','Empty canvas':'Toile vide',
+    'Transparent borders trimmed':'Bords transparents rognés','Rotated 90°':'Pivoté de 90°','Flipped':'Retourné',
+    'Background removed (active layer)':'Fond supprimé (calque actif)','Grayscale':'Niveaux de gris',
+    'Colors inverted':'Couleurs inversées','Sepia':'Sépia','Blurred':'Flouté','Sharpened':'Netteté appliquée','Edges':'Contours',
+    'Commands module not loaded':'Module de commandes non chargé','Error: ':'Erreur : ','Tutorial unavailable':'Tutoriel indisponible',
+    // menu bar
+    'File':'Fichier','Edit':'Édition','Adjust':'Ajuster','View':'Affichage','Help':'Aide',
+    'Open…':'Ouvrir…','Save':'Enregistrer','Save as…':'Enregistrer sous…','Exit':'Quitter','Undo':'Annuler','Redo':'Rétablir',
+    'Copy':'Copier','Paste':'Coller','Clear all':'Tout effacer','Resize canvas…':'Redimensionner la toile…',
+    'New transparent':'Nouveau transparent','Crop to selection':'Rogner à la sélection','Trim transparent borders':'Rogner les bords transparents',
+    'Rotate 90° clockwise':'Pivoter 90° sens horaire','Rotate 90° counter-clockwise':'Pivoter 90° sens antihoraire',
+    'Flip horizontal':'Retourner horizontalement','Flip vertical':'Retourner verticalement','Remove background (auto)':'Supprimer le fond (auto)',
+    'Brightness / Contrast / Saturation…':'Luminosité / Contraste / Saturation…','Invert colors':'Inverser les couleurs',
+    'Blur':'Flou','Sharpen':'Netteté','Rulers':'Règles','Grid':'Grille','Tools panel':'Panneau d’outils',
+    'Fit to window':'Ajuster à la fenêtre','Guided tutorial ✨':'Tutoriel guidé ✨','Keyboard shortcuts':'Raccourcis clavier',
+    // toolbar tooltips
+    'Brush (B)':'Pinceau (B)','Line (L)':'Ligne (L)','Rectangle (R)':'Rectangle (R)','Ellipse (E)':'Ellipse (E)',
+    'Eraser':'Gomme','Fill bucket':'Pot de peinture','Eyedropper':'Pipette','Rectangular selection (M)':'Sélection rectangulaire (M)',
+    'Magic wand — erase the background by clicking (W)':'Baguette magique — effacez le fond en cliquant (W)','Text (T)':'Texte (T)',
+    'Primary color (stroke)':'Couleur primaire (trait)','Secondary color (fill)':'Couleur secondaire (remplissage)',
+    'Swap colors (X)':'Permuter les couleurs (X)','Brush size':'Taille du pinceau','Undo (Ctrl+Z)':'Annuler (Ctrl+Z)',
+    'Redo (Ctrl+Y)':'Rétablir (Ctrl+Y)','Show/hide panel (Tab)':'Afficher/masquer le panneau (Tab)',
+    'Atelier — generate an image with AI (WebGPU, on device)':'Atelier — générez une image avec l’IA (WebGPU, sur l’appareil)',
+    // options bar
+    ' Filled (color 2)':' Rempli (couleur 2)','Tolerance':'Tolérance','Size':'Taille',' Bold':' Gras',
+    'Ask Paint… e.g. «remove the background», «create a cat icon», «brightness +20», «rotate right»':'Demandez à Paint… ex. «supprime le fond», «crée une icône de chat», «luminosité +20», «pivoter à droite»',
+    'Run (Enter)':'Exécuter (Entrée)','Drop to open the image':'Déposez pour ouvrir l’image',
+    // right panel
+    'Tools':'Outils','Hide panel (Tab)':'Masquer le panneau (Tab)','Layers':'Calques','Brush':'Pinceau','Selection':'Sélection',
+    'Adjustments':'Réglages','Transform':'Transformer','Opacity':'Opacité','Blend':'Fusion','Brightness':'Luminosité',
+    'Contrast':'Contraste','Saturation':'Saturation','Feather':'Adoucir',
+    'Normal':'Normal','Multiply':'Produit','Screen':'Superposition','Overlay':'Incrustation','Darken':'Obscurcir',
+    'Lighten':'Éclaircir','Color dodge':'Densité couleur -','Difference':'Différence',
+    'New layer':'Nouveau calque','Duplicate':'Dupliquer','Move up':'Monter','Move down':'Descendre','Merge down':'Fusionner vers le bas','Delete':'Supprimer',
+    'The eraser cuts to transparent (real PNG alpha).':'La gomme efface en transparence (alpha PNG réel).',
+    'Crop':'Rogner','Clear':'Effacer','Fill':'Remplir','✨ Generate here':'✨ Générer ici','Deselect':'Désélectionner',
+    'Or pick the 🪄 wand and click the background to erase.':'Ou choisissez la 🪄 baguette et cliquez sur le fond à effacer.',
+    'Apply':'Appliquer','Gray':'Gris','Invert':'Inverser','Sharp':'Netteté',
+    'File: ':'Fichier : ','Canvas: ':'Toile : ','Zoom out':'Zoom arrière','Zoom in':'Zoom avant','Fit':'Ajuster',
+    // options-bar tool name + hint
+    'Line':'Ligne','Rectangle':'Rectangle','Ellipse':'Ellipse','Magic wand':'Baguette magique','Text':'Texte',
+    'Drag to draw · opacity in the panel':'Glissez pour dessiner · opacité dans le panneau',
+    'Erases to transparent (PNG alpha)':'Efface en transparence (alpha PNG)',
+    'Click to fill an area · tolerance here':'Cliquez pour remplir une zone · tolérance ici',
+    'Click to pick a colour':'Cliquez pour prélever une couleur',
+    'Drag a rectangle, then use the Selection panel':'Tracez un rectangle, puis utilisez le panneau Sélection',
+    'Click the background to erase':'Cliquez sur le fond à effacer','Click where you want to write':'Cliquez où vous voulez écrire',
+    'Drag · Shift to constrain the angle':'Glissez · Maj pour contraindre l’angle','Drag · Shift for a square':'Glissez · Maj pour un carré',
+    'Drag · Shift for a circle':'Glissez · Maj pour un cercle',
+    // Atelier
+    'Atelier — generate an image':'Atelier — générer une image','SDXS model manager':'Gestionnaire du modèle SDXS','Model':'Modèle',
+    'Close (Esc)':'Fermer (Échap)','Text → Image':'Texte → Image','Sketch → Image':'Croquis → Image','From image':'Depuis une image',
+    'Model — you choose who generates':'Modèle — vous choisissez qui génère','Description (prompt)':'Description (prompt)',
+    'e.g. a red cat sitting on a sofa, warm light, watercolor style':'ex. un chat roux assis sur un canapé, lumière chaude, style aquarelle',
+    'What to avoid (negative, optional)':'Ce qu’il faut éviter (négatif, optionnel)',
+    'e.g. blurry, deformed, text, watermark, low quality':'ex. flou, déformé, texte, filigrane, basse qualité',
+    '✨ Improve the prompt with AI':'✨ Améliorer le prompt avec l’IA','(an LLM rewrites the idea into a professional prompt)':'(un LLM réécrit l’idée en un prompt professionnel)',
+    'Seed (reproducible)':'Graine (reproductible)','Random seed':'Graine aléatoire','Variants:':'Variantes :',
+    'Sketch adherence:':'Fidélité au croquis :','Strength (img→img):':'Force (img→img) :','new layer':'nouveau calque',
+    'save to the device':'enregistrer sur l’appareil','Generate':'Générer',
+    'Use your drawing as a guide sketch (ControlNet).':'Utilisez votre dessin comme croquis guide (ControlNet).',
+    'Reworks the current canvas content according to the prompt.':'Retravaille le contenu actuel de la toile selon le prompt.',
+    'Generates from text only (canvas ignored).':'Génère à partir du texte seul (toile ignorée).','Loading ':'Chargement ',
+    'Local · SDXS (in browser)':'Local · SDXS (dans le navigateur)','Preview (not AI)':'Aperçu (pas d’IA)',' — unavailable':' — indisponible',
+    '  ·  Online: the sketch is ignored (text→image only).':'  ·  En ligne : le croquis est ignoré (texte→image seulement).',
+    'no online image provider — configure xAI/Grok in Settings · AI':'aucun fournisseur d’images en ligne — configurez xAI/Grok dans Paramètres · IA',
+    'Procedural preview (not AI) active.':'Aperçu procédural (pas d’IA) actif.',
+    'Procedural preview (not AI). For real images choose Online (Grok) or download the local model.':'Aperçu procédural (pas d’IA). Pour de vraies images, choisissez En ligne (Grok) ou téléchargez le modèle local.',
+    'Checking model…':'Vérification du modèle…','Ready · SDXS q68 on WebGPU':'Prêt · SDXS q68 sur WebGPU',
+    'Ready · SDXS on WebGPU':'Prêt · SDXS sur WebGPU','Ready · procedural preview':'Prêt · aperçu procédural',
+    '✓ WebGPU active — fast generation':'✓ WebGPU actif — génération rapide',
+    '⚠ WebGPU missing — will use the CPU (slow but works)':'⚠ WebGPU absent — utilisera le CPU (lent mais fonctionne)',
+    'Model in <b>local cache</b> — ready, instant load. No download needed.':'Modèle en <b>cache local</b> — prêt, chargement instantané. Aucun téléchargement nécessaire.',
+    'Model <b>not cached</b>. Download it once (≈553&nbsp;MB): then it stays in the browser and starts instantly.':'Modèle <b>non mis en cache</b>. Téléchargez-le une seule fois (≈553&nbsp;MB) : il reste ensuite dans le navigateur et démarre instantanément.',
+    'ONNX&nbsp;Runtime unavailable (needs desktop Chrome/Edge). You can still use the procedural preview.':'ONNX&nbsp;Runtime indisponible (nécessite Chrome/Edge sur ordinateur). Vous pouvez tout de même utiliser l’aperçu procédural.',
+    'Re-download':'Retélécharger','Download':'Télécharger','Download from the Internet':'Télécharger depuis Internet',
+    'offline — no connection':'hors ligne — aucune connexion','GitHub · ~553 MB · requires a connection':'GitHub · ~553 Mo · nécessite une connexion',
+    'Download from the device':'Télécharger depuis l’appareil','SD over local WiFi · ~553 MB':'SD via WiFi local · ~553 Mo',
+    'model not present on the SD':'modèle absent de la carte SD','Use procedural preview (no download)':'Utiliser l’aperçu procédural (sans téléchargement)',
+    'Remove from cache':'Retirer du cache','ORT runtime (inference engine)':'Runtime ORT (moteur d’inférence)',
+    'Starting engine ':'Démarrage du moteur ','Fused model (ControlNet + UNet + VAE)':'Modèle fusionné (ControlNet + UNet + VAE)',
+    ' · part ':' · partie ','MB done':'Mo terminés','compiling the model on the GPU…':'compilation du modèle sur le GPU…',
+    '⚠ Operation failed':'⚠ Échec de l’opération','⚙ Preparing the engine':'⚙ Préparation du moteur','⬇ Downloading from ':'⬇ Téléchargement depuis ',
+    'Retry':'Réessayer','Try from the device':'Essayer depuis l’appareil','Try from the Internet':'Essayer depuis Internet','Use preview':'Utiliser l’aperçu',
+    'Almost ready — one moment. Do not close Atelier.':'Presque prêt — un instant. Ne fermez pas Atelier.',
+    'Download in progress — keep Atelier open and do not drag files until it finishes. You can keep using the rest of the PC.':'Téléchargement en cours — gardez Atelier ouvert et ne glissez pas de fichiers jusqu’à la fin. Vous pouvez continuer à utiliser le reste du PC.',
+    'First time only: then startup is instant.':'Seulement la première fois : ensuite le démarrage est immédiat.',
+    'One time only: then the model stays cached and starts instantly.':'Une seule fois : ensuite le modèle reste en cache et démarre instantanément.',
+    'Model ready and cached — next openings are instant.':'Modèle prêt et mis en cache — les prochaines ouvertures sont instantanées.',
+    'Write a description.':'Écrivez une description.','Generating…':'Génération…','✨ Improving the prompt (':'✨ Amélioration du prompt (',
+    'Preparing the engine…':'Préparation du moteur…','Variant ':'Variante ','Choose a variant below.':'Choisissez une variante ci-dessous.',
+    'Prompt enhancement failed — using your original text.':'Échec de l’amélioration du prompt — utilisation de votre texte original.',
+    ' variant(s) failed: ':' variante(s) échouée(s) : ','Generation failed: ':'Échec de la génération : ','Image · ':'Image · ',
+    'Image (SDXS · in browser)':'Image (SDXS · dans le navigateur)',' · in the selection':' · dans la sélection',
+    ' · prompt reworked by the model':' · prompt retravaillé par le modèle',' · saved to /data/Pictures/':' · enregistrée dans /data/Pictures/',
+    ' · save failed':' · échec de l’enregistrement','✨ Improve the prompt with ':'✨ Améliorer le prompt avec ',
+  },
+  de:{
+    // runtime messages
+    'untitled':'ohne Titel','Undone':'Rückgängig gemacht','Redone':'Wiederhergestellt','Layer 1':'Ebene 1','Layer ':'Ebene ',
+    'Layer added':'Ebene hinzugefügt','At least one layer is required':'Mindestens eine Ebene ist erforderlich',' copy':' Kopie',
+    'No layer below':'Keine Ebene darunter','Layers merged':'Ebenen reduziert','Background':'Hintergrund',
+    'Image flattened':'Bild reduziert','Show/hide':'Ein-/ausblenden','Double-click: rename':'Doppelklick: umbenennen',
+    'Layer name:':'Ebenenname:','Color picked ':'Farbe übernommen ','Ready':'Bereit','Image':'Bild',
+    'Opened ':'Geöffnet ','Could not open ':'Konnte nicht geöffnet werden ','Image loaded: ':'Bild geladen: ',
+    ' (save to keep it)':' (speichern zum Behalten)','Saved to ':'Gespeichert in ','Save failed (':'Speichern fehlgeschlagen (',
+    'Network error: ':'Netzwerkfehler: ','drawing.png':'zeichnung.png','Image copied to clipboard':'Bild in die Zwischenablage kopiert',
+    'Image copy not available here (needs HTTPS or localhost)':'Bildkopie hier nicht verfügbar (benötigt HTTPS oder localhost)',
+    'Copy failed: ':'Kopieren fehlgeschlagen: ','Paste not available here (needs HTTPS or localhost)':'Einfügen hier nicht verfügbar (benötigt HTTPS oder localhost)',
+    'Image pasted':'Bild eingefügt','No image in the clipboard':'Kein Bild in der Zwischenablage','Paste failed: ':'Einfügen fehlgeschlagen: ',
+    'Save image':'Bild speichern','Open image':'Bild öffnen','New':'Neu','Canvas width:':'Leinwandbreite:',
+    'Canvas height:':'Leinwandhöhe:','Invalid size':'Ungültige Größe',
+    'Exit without saving? Your changes will be lost.':'Ohne Speichern beenden? Ihre Änderungen gehen verloren.',
+    'Imaging module not loaded yet':'Bildmodul noch nicht geladen','Operation failed: ':'Vorgang fehlgeschlagen: ',
+    'Background erased (wand)':'Hintergrund gelöscht (Zauberstab)','Selection ':'Auswahl ',' at (':' bei (',
+    'No selection. Use the ▭ tool to select an area.':'Keine Auswahl. Mit dem Werkzeug ▭ einen Bereich auswählen.',
+    'No selection':'Keine Auswahl','Cropped to selection':'Auf Auswahl zugeschnitten','Area cleared':'Bereich geleert',
+    'Text:':'Text:','Text added':'Text eingefügt','Adjustments applied':'Anpassungen angewendet','Reset':'Zurücksetzen',
+    'Rulers ':'Lineale ','Grid ':'Raster ','New transparent canvas':'Neue transparente Leinwand','Empty canvas':'Leere Leinwand',
+    'Transparent borders trimmed':'Transparente Ränder beschnitten','Rotated 90°':'Um 90° gedreht','Flipped':'Gespiegelt',
+    'Background removed (active layer)':'Hintergrund entfernt (aktive Ebene)','Grayscale':'Graustufen',
+    'Colors inverted':'Farben umgekehrt','Sepia':'Sepia','Blurred':'Weichgezeichnet','Sharpened':'Geschärft','Edges':'Kanten',
+    'Commands module not loaded':'Befehlsmodul nicht geladen','Error: ':'Fehler: ','Tutorial unavailable':'Tutorial nicht verfügbar',
+    // menu bar
+    'File':'Datei','Edit':'Bearbeiten','Adjust':'Anpassen','View':'Ansicht','Help':'Hilfe',
+    'Open…':'Öffnen…','Save':'Speichern','Save as…':'Speichern unter…','Exit':'Beenden','Undo':'Rückgängig','Redo':'Wiederholen',
+    'Copy':'Kopieren','Paste':'Einfügen','Clear all':'Alles löschen','Resize canvas…':'Leinwand skalieren…',
+    'New transparent':'Neu transparent','Crop to selection':'Auf Auswahl zuschneiden','Trim transparent borders':'Transparente Ränder beschneiden',
+    'Rotate 90° clockwise':'90° im Uhrzeigersinn drehen','Rotate 90° counter-clockwise':'90° gegen den Uhrzeigersinn drehen',
+    'Flip horizontal':'Horizontal spiegeln','Flip vertical':'Vertikal spiegeln','Remove background (auto)':'Hintergrund entfernen (auto)',
+    'Brightness / Contrast / Saturation…':'Helligkeit / Kontrast / Sättigung…','Invert colors':'Farben umkehren',
+    'Blur':'Weichzeichnen','Sharpen':'Schärfen','Rulers':'Lineale','Grid':'Raster','Tools panel':'Werkzeugleiste',
+    'Fit to window':'An Fenster anpassen','Guided tutorial ✨':'Geführtes Tutorial ✨','Keyboard shortcuts':'Tastenkürzel',
+    // toolbar tooltips
+    'Brush (B)':'Pinsel (B)','Line (L)':'Linie (L)','Rectangle (R)':'Rechteck (R)','Ellipse (E)':'Ellipse (E)',
+    'Eraser':'Radierer','Fill bucket':'Farbeimer','Eyedropper':'Pipette','Rectangular selection (M)':'Rechteckige Auswahl (M)',
+    'Magic wand — erase the background by clicking (W)':'Zauberstab — Hintergrund per Klick löschen (W)','Text (T)':'Text (T)',
+    'Primary color (stroke)':'Primärfarbe (Kontur)','Secondary color (fill)':'Sekundärfarbe (Füllung)',
+    'Swap colors (X)':'Farben tauschen (X)','Brush size':'Pinselgröße','Undo (Ctrl+Z)':'Rückgängig (Ctrl+Z)',
+    'Redo (Ctrl+Y)':'Wiederholen (Ctrl+Y)','Show/hide panel (Tab)':'Panel ein-/ausblenden (Tab)',
+    'Atelier — generate an image with AI (WebGPU, on device)':'Atelier — ein Bild mit KI erzeugen (WebGPU, auf dem Gerät)',
+    // options bar
+    ' Filled (color 2)':' Gefüllt (Farbe 2)','Tolerance':'Toleranz','Size':'Größe',' Bold':' Fett',
+    'Ask Paint… e.g. «remove the background», «create a cat icon», «brightness +20», «rotate right»':'Frag Paint… z. B. «entferne den Hintergrund», «erstelle ein Katzen-Icon», «Helligkeit +20», «nach rechts drehen»',
+    'Run (Enter)':'Ausführen (Enter)','Drop to open the image':'Zum Öffnen des Bildes ablegen',
+    // right panel
+    'Tools':'Werkzeuge','Hide panel (Tab)':'Panel ausblenden (Tab)','Layers':'Ebenen','Brush':'Pinsel','Selection':'Auswahl',
+    'Adjustments':'Anpassungen','Transform':'Transformieren','Opacity':'Deckkraft','Blend':'Modus','Brightness':'Helligkeit',
+    'Contrast':'Kontrast','Saturation':'Sättigung','Feather':'Weiche Kante',
+    'Normal':'Normal','Multiply':'Multiplizieren','Screen':'Negativ multiplizieren','Overlay':'Ineinanderkopieren','Darken':'Abdunkeln',
+    'Lighten':'Aufhellen','Color dodge':'Farbig abwedeln','Difference':'Differenz',
+    'New layer':'Neue Ebene','Duplicate':'Duplizieren','Move up':'Nach oben','Move down':'Nach unten','Merge down':'Nach unten reduzieren','Delete':'Löschen',
+    'The eraser cuts to transparent (real PNG alpha).':'Der Radierer löscht zu Transparenz (echtes PNG-Alpha).',
+    'Crop':'Zuschneiden','Clear':'Löschen','Fill':'Füllen','✨ Generate here':'✨ Hier erzeugen','Deselect':'Auswahl aufheben',
+    'Or pick the 🪄 wand and click the background to erase.':'Oder wähle den 🪄 Zauberstab und klicke auf den zu löschenden Hintergrund.',
+    'Apply':'Anwenden','Gray':'Grau','Invert':'Umkehren','Sharp':'Schärfen',
+    'File: ':'Datei: ','Canvas: ':'Leinwand: ','Zoom out':'Verkleinern','Zoom in':'Vergrößern','Fit':'Anpassen',
+    // options-bar tool name + hint
+    'Line':'Linie','Rectangle':'Rechteck','Ellipse':'Ellipse','Magic wand':'Zauberstab','Text':'Text',
+    'Drag to draw · opacity in the panel':'Ziehen zum Zeichnen · Deckkraft im Panel',
+    'Erases to transparent (PNG alpha)':'Löscht zu Transparenz (PNG-Alpha)',
+    'Click to fill an area · tolerance here':'Klicken zum Füllen eines Bereichs · Toleranz hier',
+    'Click to pick a colour':'Klicken, um eine Farbe aufzunehmen',
+    'Drag a rectangle, then use the Selection panel':'Ziehe ein Rechteck, dann nutze das Auswahl-Panel',
+    'Click the background to erase':'Auf den Hintergrund klicken zum Löschen','Click where you want to write':'Klicke, wo du schreiben möchtest',
+    'Drag · Shift to constrain the angle':'Ziehen · Umschalt begrenzt den Winkel','Drag · Shift for a square':'Ziehen · Umschalt für ein Quadrat',
+    'Drag · Shift for a circle':'Ziehen · Umschalt für einen Kreis',
+    // Atelier
+    'Atelier — generate an image':'Atelier — ein Bild erzeugen','SDXS model manager':'SDXS-Modellverwaltung','Model':'Modell',
+    'Close (Esc)':'Schließen (Esc)','Text → Image':'Text → Bild','Sketch → Image':'Skizze → Bild','From image':'Aus Bild',
+    'Model — you choose who generates':'Modell — du wählst, wer generiert','Description (prompt)':'Beschreibung (Prompt)',
+    'e.g. a red cat sitting on a sofa, warm light, watercolor style':'z. B. eine rote Katze auf einem Sofa, warmes Licht, Aquarellstil',
+    'What to avoid (negative, optional)':'Was vermeiden (negativ, optional)',
+    'e.g. blurry, deformed, text, watermark, low quality':'z. B. unscharf, deformiert, Text, Wasserzeichen, niedrige Qualität',
+    '✨ Improve the prompt with AI':'✨ Prompt mit KI verbessern','(an LLM rewrites the idea into a professional prompt)':'(ein LLM formuliert die Idee zu einem professionellen Prompt um)',
+    'Seed (reproducible)':'Seed (reproduzierbar)','Random seed':'Zufälliger Seed','Variants:':'Varianten:',
+    'Sketch adherence:':'Skizzentreue:','Strength (img→img):':'Stärke (Bild→Bild):','new layer':'neue Ebene',
+    'save to the device':'auf dem Gerät speichern','Generate':'Erzeugen',
+    'Use your drawing as a guide sketch (ControlNet).':'Nutze deine Zeichnung als Führungsskizze (ControlNet).',
+    'Reworks the current canvas content according to the prompt.':'Überarbeitet den aktuellen Leinwandinhalt gemäß dem Prompt.',
+    'Generates from text only (canvas ignored).':'Erzeugt nur aus Text (Leinwand ignoriert).','Loading ':'Lade ',
+    'Local · SDXS (in browser)':'Lokal · SDXS (im Browser)','Preview (not AI)':'Vorschau (keine KI)',' — unavailable':' — nicht verfügbar',
+    '  ·  Online: the sketch is ignored (text→image only).':'  ·  Online: Die Skizze wird ignoriert (nur Text→Bild).',
+    'no online image provider — configure xAI/Grok in Settings · AI':'kein Online-Bildanbieter — konfiguriere xAI/Grok in Einstellungen · KI',
+    'Procedural preview (not AI) active.':'Prozedurale Vorschau (keine KI) aktiv.',
+    'Procedural preview (not AI). For real images choose Online (Grok) or download the local model.':'Prozedurale Vorschau (keine KI). Für echte Bilder wähle Online (Grok) oder lade das lokale Modell herunter.',
+    'Checking model…':'Modell wird geprüft…','Ready · SDXS q68 on WebGPU':'Bereit · SDXS q68 auf WebGPU',
+    'Ready · SDXS on WebGPU':'Bereit · SDXS auf WebGPU','Ready · procedural preview':'Bereit · prozedurale Vorschau',
+    '✓ WebGPU active — fast generation':'✓ WebGPU aktiv — schnelle Generierung',
+    '⚠ WebGPU missing — will use the CPU (slow but works)':'⚠ WebGPU fehlt — nutzt die CPU (langsam, aber funktioniert)',
+    'Model in <b>local cache</b> — ready, instant load. No download needed.':'Modell im <b>lokalen Cache</b> — bereit, sofort geladen. Kein Download nötig.',
+    'Model <b>not cached</b>. Download it once (≈553&nbsp;MB): then it stays in the browser and starts instantly.':'Modell <b>nicht im Cache</b>. Einmalig herunterladen (≈553&nbsp;MB): danach bleibt es im Browser und startet sofort.',
+    'ONNX&nbsp;Runtime unavailable (needs desktop Chrome/Edge). You can still use the procedural preview.':'ONNX&nbsp;Runtime nicht verfügbar (benötigt Desktop-Chrome/Edge). Du kannst weiterhin die prozedurale Vorschau nutzen.',
+    'Re-download':'Erneut herunterladen','Download':'Herunterladen','Download from the Internet':'Aus dem Internet herunterladen',
+    'offline — no connection':'offline — keine Verbindung','GitHub · ~553 MB · requires a connection':'GitHub · ~553 MB · benötigt eine Verbindung',
+    'Download from the device':'Vom Gerät herunterladen','SD over local WiFi · ~553 MB':'SD über lokales WLAN · ~553 MB',
+    'model not present on the SD':'Modell nicht auf der SD vorhanden','Use procedural preview (no download)':'Prozedurale Vorschau nutzen (ohne Download)',
+    'Remove from cache':'Aus dem Cache entfernen','ORT runtime (inference engine)':'ORT-Runtime (Inferenz-Engine)',
+    'Starting engine ':'Engine wird gestartet ','Fused model (ControlNet + UNet + VAE)':'Fusioniertes Modell (ControlNet + UNet + VAE)',
+    ' · part ':' · Teil ','MB done':'MB fertig','compiling the model on the GPU…':'Modell wird auf der GPU kompiliert…',
+    '⚠ Operation failed':'⚠ Vorgang fehlgeschlagen','⚙ Preparing the engine':'⚙ Engine wird vorbereitet','⬇ Downloading from ':'⬇ Download von ',
+    'Retry':'Erneut versuchen','Try from the device':'Vom Gerät versuchen','Try from the Internet':'Aus dem Internet versuchen','Use preview':'Vorschau verwenden',
+    'Almost ready — one moment. Do not close Atelier.':'Fast fertig — einen Moment. Atelier nicht schließen.',
+    'Download in progress — keep Atelier open and do not drag files until it finishes. You can keep using the rest of the PC.':'Download läuft — lass Atelier offen und ziehe keine Dateien, bis er fertig ist. Du kannst den Rest des PCs weiter nutzen.',
+    'First time only: then startup is instant.':'Nur beim ersten Mal: danach ist der Start sofort.',
+    'One time only: then the model stays cached and starts instantly.':'Nur einmal: danach bleibt das Modell im Cache und startet sofort.',
+    'Model ready and cached — next openings are instant.':'Modell bereit und im Cache — die nächsten Öffnungen sind sofort.',
+    'Write a description.':'Schreibe eine Beschreibung.','Generating…':'Erzeuge…','✨ Improving the prompt (':'✨ Prompt wird verbessert (',
+    'Preparing the engine…':'Engine wird vorbereitet…','Variant ':'Variante ','Choose a variant below.':'Wähle unten eine Variante.',
+    'Prompt enhancement failed — using your original text.':'Prompt-Verbesserung fehlgeschlagen — verwende deinen Originaltext.',
+    ' variant(s) failed: ':' Variante(n) fehlgeschlagen: ','Generation failed: ':'Generierung fehlgeschlagen: ','Image · ':'Bild · ',
+    'Image (SDXS · in browser)':'Bild (SDXS · im Browser)',' · in the selection':' · in der Auswahl',
+    ' · prompt reworked by the model':' · Prompt vom Modell überarbeitet',' · saved to /data/Pictures/':' · gespeichert in /data/Pictures/',
+    ' · save failed':' · Speichern fehlgeschlagen','✨ Improve the prompt with ':'✨ Prompt verbessern mit ',
+  },
+};
+
+let tool='brush', color='#000000', color2='#ffffff', size=5, brushOpacity=1, bgTransparent=false;
+let selecting=false, selStart={x:0,y:0}, sel=null;   // rectangular selection state (declared early: read by pointer handlers)
+let path='', dirty=false;
+let drawing=false, sx=0, sy=0, snapshot=null;
+let layers=[], activeIdx=0, layerSeq=0;                 // layer stack (index 0 = bottom); c/ctx = layers[activeIdx]
+const undoStack=[], redoStack=[], MAX_UNDO=16;
+
+// ---- init: fill helper for the ACTIVE layer; the layer stack is set up by initLayers() (hoisted, below) ----
+function fill(w,h){ if(bgTransparent){ ctx.clearRect(0,0,w,h); } else { ctx.fillStyle='#fff'; ctx.fillRect(0,0,w,h); } }
+initLayers();
+
+// ---- status / title ----
+function setMsg(m){ $('st-msg').textContent=m; }
+function syncTitle(){
+  const untitled = LT('senza titolo','untitled');
+  $('st-file').textContent = path ? path.split('/').pop() : untitled;
+  $('st-dirty').textContent = dirty ? ' •' : '';
+  $('st-dim').textContent = c.width+' × '+c.height;
+  try{ window.parent.postMessage({type:'set-window-title', title:'Paint — '+(path?path.split('/').pop():untitled)+(dirty?' •':'')}, '*'); }catch{}
+}
+function markDirty(){ if(!dirty){ dirty=true; syncTitle(); } }
+
+// ---- undo / redo (LAYER-AWARE: a snapshot captures the whole stack — pixels + props + active index) ----
+function snapState(){ return { w:c.width, h:c.height, active:activeIdx,
+  layers: layers.map(L=>({ name:L.name, visible:L.visible, opacity:L.opacity, blend:L.blend, data:L.ctx.getImageData(0,0,L.canvas.width,L.canvas.height).data })) }; }
+function applyState(s){ layers.forEach(L=>L.canvas.remove());
+  layers = s.layers.map(ls=>{ const k=mkLayerCanvas(s.w,s.h); k.ctx.putImageData(new ImageData(new Uint8ClampedArray(ls.data), s.w, s.h),0,0);
+    return { id:++layerSeq, name:ls.name, canvas:k.canvas, ctx:k.ctx, visible:ls.visible, opacity:ls.opacity, blend:ls.blend }; });
+  activeIdx=Math.min(s.active, layers.length-1); setImageSize(s.w,s.h); reorderDOM(); setActive(activeIdx); applyZoom(); syncTitle(); renderLayersUI(); }
+function pushUndo(){ try{ undoStack.push(snapState()); if(undoStack.length>MAX_UNDO) undoStack.shift(); redoStack.length=0; }catch(e){} }
+function undo(){ if(!undoStack.length) return; redoStack.push(snapState()); applyState(undoStack.pop()); setMsg(LT('Annullato','Undone')); }
+function redo(){ if(!redoStack.length) return; undoStack.push(snapState()); applyState(redoStack.pop()); setMsg(LT('Ripetuto','Redone')); }
+
+// ===== LAYERS — each layer is an absolutely-stacked <canvas>; the browser composites them (opacity +
+// mix-blend-mode). c/ctx ALWAYS point to the ACTIVE layer, so every drawing/imaging op is unchanged. =====
+function setWrapSize(W,H){ wrap.style.width=W+'px'; wrap.style.height=H+'px'; }
+function setImageSize(W,H){ setWrapSize(W,H); ov.width=W; ov.height=H; }
+function mkLayerCanvas(W,H){ const cv=document.createElement('canvas'); cv.className='layer'; cv.width=W; cv.height=H;
+  const cx=cv.getContext('2d',{willReadFrequently:true}); wrap.insertBefore(cv, ov); return {canvas:cv, ctx:cx}; }
+function activeLayer(){ return layers[activeIdx]; }
+function applyLayerStyles(){ layers.forEach((L,i)=>{ const st=L.canvas.style; st.zIndex=String(i); st.display=L.visible?'block':'none';
+    st.opacity=String(L.opacity); st.mixBlendMode=(L.blend==='normal'?'normal':L.blend); });
+  ov.style.zIndex=String(layers.length+2); const g=$('gridOverlay'); if(g) g.style.zIndex=String(layers.length+1); }
+function reorderDOM(){ layers.forEach(L=>wrap.insertBefore(L.canvas, ov)); applyLayerStyles(); }
+function setActive(i){ activeIdx=Math.max(0,Math.min(layers.length-1,i)); c=activeLayer().canvas; ctx=activeLayer().ctx; renderLayersUI(); }
+function initLayers(){ c.classList.add('layer');
+  layers=[{ id:++layerSeq, name:LT('Livello 1','Layer 1'), canvas:c, ctx, visible:true, opacity:1, blend:'normal' }];
+  activeIdx=0; setImageSize(c.width, c.height); fill(c.width, c.height); reorderDOM(); renderLayersUI(); }
+
+function addLayer(){ pushUndo(); const k=mkLayerCanvas(c.width,c.height);
+  layers.splice(activeIdx+1,0,{ id:++layerSeq, name:LT('Livello ','Layer ')+layerSeq, canvas:k.canvas, ctx:k.ctx, visible:true, opacity:1, blend:'normal' });
+  reorderDOM(); setActive(activeIdx+1); markDirty(); setMsg(LT('Livello aggiunto','Layer added')); }
+function addImageLayer(name){ const k=mkLayerCanvas(c.width,c.height);   // for Atelier "on a new layer" (caller pushUndo)
+  layers.splice(activeIdx+1,0,{ id:++layerSeq, name:name||(LT('Livello ','Layer ')+layerSeq), canvas:k.canvas, ctx:k.ctx, visible:true, opacity:1, blend:'normal' });
+  reorderDOM(); setActive(activeIdx+1); return activeLayer(); }
+function deleteLayer(){ if(layers.length<=1){ setMsg(LT('Serve almeno un livello','At least one layer is required')); return; } pushUndo();
+  layers.splice(activeIdx,1)[0].canvas.remove(); activeIdx=Math.min(activeIdx, layers.length-1); reorderDOM(); setActive(activeIdx); markDirty(); }
+function duplicateLayer(){ pushUndo(); const src=activeLayer(); const k=mkLayerCanvas(c.width,c.height); k.ctx.drawImage(src.canvas,0,0);
+  layers.splice(activeIdx+1,0,{ id:++layerSeq, name:src.name+LT(' copia',' copy'), canvas:k.canvas, ctx:k.ctx, visible:true, opacity:src.opacity, blend:src.blend });
+  reorderDOM(); setActive(activeIdx+1); markDirty(); }
+function moveLayer(d){ const j=activeIdx+d; if(j<0||j>=layers.length) return; pushUndo();
+  const t=layers[activeIdx]; layers[activeIdx]=layers[j]; layers[j]=t; activeIdx=j; reorderDOM(); setActive(activeIdx); markDirty(); }
+function mergeDown(){ if(activeIdx<=0){ setMsg(LT('Nessun livello sotto','No layer below')); return; } pushUndo();
+  const top=layers[activeIdx], bot=layers[activeIdx-1]; bot.ctx.save(); bot.ctx.globalAlpha=top.visible?top.opacity:0;
+  bot.ctx.globalCompositeOperation=(top.blend==='normal'?'source-over':top.blend); bot.ctx.drawImage(top.canvas,0,0); bot.ctx.restore();
+  top.canvas.remove(); layers.splice(activeIdx,1); activeIdx-=1; reorderDOM(); setActive(activeIdx); markDirty(); setMsg(LT('Livelli uniti','Layers merged')); }
+function flattenLayers(){ if(layers.length<=1) return; pushUndo(); const k=mkLayerCanvas(c.width,c.height); compositeTo(k.ctx, c.width, c.height);
+  layers.forEach(L=>L.canvas.remove()); layers=[{ id:++layerSeq, name:LT('Sfondo','Background'), canvas:k.canvas, ctx:k.ctx, visible:true, opacity:1, blend:'normal' }]; activeIdx=0; reorderDOM(); setActive(0); markDirty(); setMsg(LT('Immagine appiattita','Image flattened')); }
+
+function compositeTo(cx, W, H){ layers.forEach(L=>{ if(!L.visible || L.opacity<=0) return; cx.save(); cx.globalAlpha=L.opacity;
+  cx.globalCompositeOperation=(L.blend==='normal'?'source-over':L.blend); cx.drawImage(L.canvas,0,0,W,H); cx.restore(); }); }
+function compositeCanvas(){ const t=document.createElement('canvas'); t.width=c.width; t.height=c.height; compositeTo(t.getContext('2d'), c.width, c.height); return t; }
+
+// IMAGE-WIDE transforms (rotate/flip/crop/trim) apply to ALL layers; filters/adjust stay on the active one.
+function applyImagingAll(fn, msg){ if(!imOk()) return; pushUndo(); let nw=c.width, nh=c.height;
+  layers.forEach(L=>{ const src={ data:L.ctx.getImageData(0,0,L.canvas.width,L.canvas.height).data, width:L.canvas.width, height:L.canvas.height };
+    let out; try{ out=fn(src); }catch{ out=src; } L.canvas.width=out.width; L.canvas.height=out.height;
+    L.ctx.putImageData(new ImageData(new Uint8ClampedArray(out.data), out.width, out.height),0,0); nw=out.width; nh=out.height; });
+  setImageSize(nw,nh); setSelection(null); markDirty(); syncTitle(); applyZoom(); reorderDOM(); renderLayersUI(); if(msg) setMsg(msg); }
+
+function renderLayersUI(){ const list=$('layList'); if(!list) return; list.innerHTML='';
+  for(let i=layers.length-1;i>=0;i--){ const L=layers[i], row=document.createElement('div'); row.className='lay-row'+(i===activeIdx?' active':'');
+    const eye=document.createElement('span'); eye.className='eye'+(L.visible?'':' off'); eye.textContent=L.visible?'👁':'—';
+    eye.title=LT('Mostra/nascondi','Show/hide'); eye.onclick=(e)=>{ e.stopPropagation(); setLayerVisible(i,!L.visible); };
+    const th=document.createElement('canvas'); th.className='thumb'; th.width=34; th.height=26; try{ th.getContext('2d').drawImage(L.canvas,0,0,34,26); }catch{}
+    const nm=document.createElement('span'); nm.className='nm'; nm.textContent=L.name; nm.title=LT('Doppio clic: rinomina','Double-click: rename'); nm.ondblclick=(e)=>{ e.stopPropagation(); renameLayer(i); };
+    row.append(eye,th,nm); row.onclick=()=>setActive(i); list.appendChild(row); }
+  const A=activeLayer(); if(A){ const op=$('layOpacity'), v=$('layOpacityVal'), bl=$('layBlend');
+    if(op) op.value=Math.round(A.opacity*100); if(v) v.textContent=String(Math.round(A.opacity*100)); if(bl) bl.value=A.blend; } }
+function setLayerVisible(i,v){ layers[i].visible=v; applyLayerStyles(); markDirty(); renderLayersUI(); }
+function setLayerOpacity(o){ activeLayer().opacity=o; applyLayerStyles(); markDirty(); }
+function setLayerBlend(b){ activeLayer().blend=b; applyLayerStyles(); markDirty(); }
+function renameLayer(i){ const n=prompt(LT('Nome livello:','Layer name:'), layers[i].name); if(n!=null && n.trim()){ layers[i].name=n.trim(); renderLayersUI(); } }
+function resetLayers(W,H,drawFn,name){ layers.forEach(L=>L.canvas.remove()); const k=mkLayerCanvas(W,H); if(drawFn) drawFn(k.ctx);
+  layers=[{ id:++layerSeq, name:name||LT('Livello 1','Layer 1'), canvas:k.canvas, ctx:k.ctx, visible:true, opacity:1, blend:'normal' }]; activeIdx=0;
+  setImageSize(W,H); reorderDOM(); setActive(0); renderLayersUI(); }
+
+// ---- tools ----
+$('tools').addEventListener('click', e=>{ const b=e.target.closest('[data-tool]'); if(!b)return;
+  tool=b.dataset.tool; document.querySelectorAll('#tools .btn').forEach(x=>x.classList.toggle('active',x===b));
+  c.style.cursor = tool==='pick'?'crosshair':'crosshair'; });
+$('color').addEventListener('input', e=>color=e.target.value);
+$('size').addEventListener('input', e=>{ size=+e.target.value; $('sizeLbl').textContent=size+'px'; });
+// palette
+const PALETTE=['#000000','#7f7f7f','#c3c3c3','#ffffff','#ed1c24','#ff7f27','#fff200','#22b14c','#00a2e8','#3f48cc','#a349a4','#b97a57','#ffaec9','#99d9ea','#7092be','#ffc90e'];
+PALETTE.forEach(col=>{ const s=document.createElement('div'); s.className='sw'; s.style.background=col;
+  s.title=col; s.onclick=()=>{ color=col; $('color').value=col; }; $('swatches').appendChild(s); });
+
+// ---- pointer geometry (canvas internal == displayed, 1:1) ----
+function pos(e){ const r=c.getBoundingClientRect(); return { x:Math.round((e.clientX-r.left)*c.width/r.width), y:Math.round((e.clientY-r.top)*c.height/r.height) }; }
+
+// Pointer events, non mouse: su touch il browser non sintetizza mousemove durante
+// il tratto (solo la raffica di compatibilita' a fine tap), quindi col dito si
+// ottenevano puntini isolati invece di una linea. setPointerCapture tiene il tratto
+// legato al canvas anche quando il dito ne esce.
+c.style.touchAction='none';
+c.addEventListener('pointerdown', e=>{
+  if(e.button>0) return;
+  try{ c.setPointerCapture(e.pointerId); }catch{}
+  e.preventDefault();
+  const p=pos(e);
+  if(tool==='pick'){ const d=ctx.getImageData(p.x,p.y,1,1).data; color='#'+[d[0],d[1],d[2]].map(v=>v.toString(16).padStart(2,'0')).join(''); $('color').value=color; setMsg(LT('Colore prelevato ','Color picked ')+color); return; }
+  if(tool==='fill'){ pushUndo(); floodFill(p.x,p.y,hexRgb(color)); markDirty(); return; }
+  if(tool==='wand'){ doWand(p.x,p.y); return; }
+  if(tool==='text'){ placeText(p.x,p.y); return; }
+  if(tool==='select'){ selecting=true; selStart={x:p.x,y:p.y}; setSelection(null); drawMarquee(p.x,p.y,p.x,p.y); return; }
+  pushUndo(); drawing=true; sx=p.x; sy=p.y;
+  if(tool==='brush'||tool==='eraser'){ dot(p.x,p.y); }
+  else { snapshot=ctx.getImageData(0,0,c.width,c.height); }   // shapes preview from this base
+});
+window.addEventListener('pointermove', e=>{
+  const p=pos(e); $('st-pos').textContent=p.x+', '+p.y;
+  if(selecting){ drawMarquee(selStart.x,selStart.y,p.x,p.y); return; }
+  if(!drawing) return;
+  if(tool==='brush'||tool==='eraser'){ stroke(sx,sy,p.x,p.y); sx=p.x; sy=p.y; }
+  else { ctx.putImageData(snapshot,0,0); shape(tool,sx,sy,p.x,p.y,e.shiftKey); }
+});
+const endStroke=e=>{ if(selecting){ selecting=false; const p=pos(e); finalizeSelection(selStart.x,selStart.y,p.x,p.y); return; } if(!drawing)return; drawing=false; markDirty(); setMsg(LT('Pronto','Ready')); };
+window.addEventListener('pointerup', endStroke);
+window.addEventListener('pointercancel', endStroke);
+
+// Eraser cuts to TRANSPARENT (destination-out), not white — so the alpha channel is real. Brush honours opacity.
+function dot(x,y){ const er=tool==='eraser'; ctx.save(); if(er) ctx.globalCompositeOperation='destination-out'; else ctx.globalAlpha=brushOpacity;
+  ctx.beginPath(); ctx.arc(x,y,size/2,0,7); ctx.fillStyle=er?'#000':color; ctx.fill(); ctx.restore(); }
+function stroke(x0,y0,x1,y1){ const er=tool==='eraser'; ctx.save(); if(er) ctx.globalCompositeOperation='destination-out'; else ctx.globalAlpha=brushOpacity;
+  ctx.beginPath(); ctx.moveTo(x0,y0); ctx.lineTo(x1,y1);
+  ctx.strokeStyle=er?'#000':color; ctx.lineWidth=size; ctx.lineCap='round'; ctx.lineJoin='round'; ctx.stroke(); ctx.restore(); }
+function shape(t,x0,y0,x1,y1,sq){ const fillShapes=$('shapeFill')&&$('shapeFill').checked;
+  ctx.strokeStyle=color; ctx.lineWidth=size; ctx.lineCap='round'; ctx.lineJoin='round';
+  let w=x1-x0, h=y1-y0; if(sq){ const m=Math.max(Math.abs(w),Math.abs(h)); w=Math.sign(w||1)*m; h=Math.sign(h||1)*m; }
+  ctx.beginPath();
+  if(t==='line'){ ctx.moveTo(x0,y0); ctx.lineTo(x0+w,y0+h); }
+  else if(t==='rect'){ ctx.rect(x0,y0,w,h); }
+  else if(t==='ellipse'){ ctx.ellipse(x0+w/2,y0+h/2,Math.abs(w/2),Math.abs(h/2),0,0,7); }
+  if(fillShapes && t!=='line'){ ctx.save(); ctx.globalAlpha=brushOpacity; ctx.fillStyle=color2; ctx.fill(); ctx.restore(); }
+  ctx.stroke();
+}
+
+// ---- flood fill ----
+function hexRgb(h){ const n=parseInt(h.slice(1),16); return [n>>16&255,n>>8&255,n&255,255]; }
+function floodFill(x,y,col){ const im=ctx.getImageData(0,0,c.width,c.height), d=im.data, W=c.width,H=c.height;
+  const i0=(y*W+x)*4, tr=d[i0],tg=d[i0+1],tb=d[i0+2],ta=d[i0+3];
+  const tol=(+($('fillTol')?$('fillTol').value:0))||0, tol2=tol*tol*3;
+  const seen=new Uint8Array(W*H), st=[x,y];
+  const near=(i)=>{ const dr=d[i]-tr,dg=d[i+1]-tg,db=d[i+2]-tb,da=d[i+3]-ta; return dr*dr+dg*dg+db*db<=tol2 && Math.abs(da)<=tol+40; };
+  while(st.length){ const py=st.pop(), px=st.pop(); if(px<0||py<0||px>=W||py>=H) continue; const p=py*W+px; if(seen[p]) continue;
+    const i=p*4; if(!near(i)) continue; seen[p]=1;
+    d[i]=col[0];d[i+1]=col[1];d[i+2]=col[2];d[i+3]=255; st.push(px+1,py,px-1,py,px,py+1,px,py-1); }
+  ctx.putImageData(im,0,0);
+}
+
+// ---- load an image (from path, dropped File, or open-file) ----
+function loadImageEl(img){ pushUndo(); const W=img.naturalWidth||img.width, H=img.naturalHeight||img.height;
+  resetLayers(W,H, cx=>cx.drawImage(img,0,0), LT('Immagine','Image')); syncTitle(); }   // single layer, preserves PNG alpha (no white-fill)
+function loadFromPath(p){ const img=new Image(); img.onload=()=>{ loadImageEl(img); path=p; dirty=false; syncTitle(); setMsg(LT('Aperto ','Opened ')+p); };
+  img.onerror=()=>setMsg(LT('Impossibile aprire ','Could not open ')+p); img.src='/api/fs/read?path='+encodeURIComponent(p)+'&t='+Date.now(); }
+function loadFromFile(file){ const r=new FileReader(); r.onload=()=>{ const img=new Image();
+  img.onload=()=>{ loadImageEl(img); dirty=true; setMsg(LT('Immagine caricata: ','Image loaded: ')+file.name+LT(' (salva per memorizzarla)',' (save to keep it)')); }; img.src=r.result; }; r.readAsDataURL(file); }
+
+// ---- save (RAW bytes, not FormData — the previous bug corrupted PNGs) ----
+function mimeFor(p){ return /\.jpe?g$/i.test(p)?'image/jpeg':/\.webp$/i.test(p)?'image/webp':'image/png'; }
+function writeTo(p){ return new Promise(res=>{ compositeCanvas().toBlob(async blob=>{   // save the FLATTENED composite of all layers
+  try{ const r=await fetch('/api/fs/write?path='+encodeURIComponent(p),{method:'POST',body:blob});
+    if(r.ok){ path=p; dirty=false; syncTitle(); setMsg(LT('Salvato in ','Saved to ')+p); res(true); }
+    else { setMsg(LT('Salvataggio fallito (','Save failed (')+r.status+')'); res(false); } }
+  catch(err){ setMsg(LT('Errore di rete: ','Network error: ')+err.message); res(false); } }, mimeFor(p), 0.92); }); }
+function save(){ if(path) writeTo(path); else saveAs(); }
+function saveAs(){ dialog('save', path||'/data/Pictures', path? path.split('/').pop():LT('disegno.png','drawing.png')).then(p=>{ if(p) writeTo(p); }); }
+
+// ---- copy / paste the canvas image (system clipboard; needs HTTPS/localhost) ----
+const inShell = window.parent && window.parent !== window;
+async function copyImage(){
+  try{
+    const blob = await new Promise(res=>compositeCanvas().toBlob(res,'image/png'));
+    if(navigator.clipboard && window.ClipboardItem && blob){ await navigator.clipboard.write([new ClipboardItem({'image/png':blob})]); setMsg(LT('Immagine copiata negli appunti','Image copied to clipboard')); }
+    else setMsg(LT('Copia immagine non disponibile qui (serve HTTPS o localhost)','Image copy not available here (needs HTTPS or localhost)'));
+  }catch(err){ setMsg(LT('Copia non riuscita: ','Copy failed: ')+(err && err.message || err)); }
+}
+async function pasteImage(){
+  try{
+    if(!navigator.clipboard || !navigator.clipboard.read){ setMsg(LT('Incolla non disponibile qui (serve HTTPS o localhost)','Paste not available here (needs HTTPS or localhost)')); return; }
+    const items = await navigator.clipboard.read();
+    for(const it of items){ const type=(it.types||[]).find(t=>/^image\//.test(t)); if(type){ const blob=await it.getType(type);
+      const img=new Image(); img.onload=()=>{ pushUndo(); ctx.drawImage(img,0,0); markDirty(); setMsg(LT('Immagine incollata','Image pasted')); }; img.src=URL.createObjectURL(blob); return; } }
+    setMsg(LT('Nessuna immagine negli appunti','No image in the clipboard'));
+  }catch(err){ setMsg(LT('Incolla non riuscita: ','Paste failed: ')+(err && err.message || err)); }
+}
+
+// ---- OS file dialog (open/save) ----
+let reqId=null, reqResolve=null;
+function dialog(mode, defPath, defName){ return new Promise(res=>{ reqId='pf-'+Date.now()+'-'+Math.random().toString(36).slice(2); reqResolve=res;
+  window.parent.postMessage({ type:'os-file-dialog', id:reqId, mode, title: mode==='save'?LT('Salva immagine','Save image'):LT('Apri immagine','Open image'),
+    filter:['.png','.jpg','.jpeg','.bmp','.gif','.webp'], defaultPath:defPath||'/data/Pictures', defaultName:defName||LT('disegno.png','drawing.png') }, '*'); }); }
+
+window.addEventListener('message', e=>{ const d=e.data||{};
+  if(d.type==='os-file-dialog-result' && d.id===reqId){ const r=reqResolve; reqId=null; reqResolve=null; if(r) r(d.action==='cancel'?null:d.path); return; }
+  if(d.type==='open-file' && d.path){ loadFromPath(d.path); return; }
+  // OS keyboard bridge: in the shell these arrive as {type:'os-shortcut'} (the single source, so the
+  // local keydown below only runs standalone — no double-handling).
+  if(d.type==='os-shortcut'){
+    const a=d.action;
+    if(a==='save') save(); else if(a==='saveAs') saveAs(); else if(a==='new') newCanvas(); else if(a==='open') CMD.open();
+    else if(a==='undo') undo(); else if(a==='redo') redo();
+    else if(a==='delete'){ if(isTyping()) return; pushUndo(); fill(c.width,c.height); markDirty(); }
+    else if(a==='copy'||a==='selectAll') copyImage();
+    else if(a==='paste') pasteImage();
+  }
+});
+
+// ---- drag & drop a file from the desktop / file manager ----
+// While Atelier is downloading the model (__atelierBusy) drops are ignored — the environment is locked.
+['dragenter','dragover'].forEach(ev=>stage.addEventListener(ev, e=>{ e.preventDefault(); if(window.__atelierBusy) return; stage.classList.add('dragover'); }));
+['dragleave','drop'].forEach(ev=>stage.addEventListener(ev, e=>{ if(ev==='dragleave' && e.relatedTarget && stage.contains(e.relatedTarget)) return; stage.classList.remove('dragover'); }));
+stage.addEventListener('drop', e=>{ e.preventDefault(); if(window.__atelierBusy) return;
+  const f=[...(e.dataTransfer.files||[])].find(x=>/^image\//.test(x.type));
+  if(f){ loadFromFile(f); return; }
+  const p=e.dataTransfer.getData('text/plain'); if(p && /\.(png|jpe?g|bmp|gif|webp)$/i.test(p)) loadFromPath(p); });
+
+// ---- commands ----
+function newCanvas(){ pushUndo(); const W=c.width,H=c.height; bgTransparent=false; resetLayers(W,H, cx=>{ cx.fillStyle='#fff'; cx.fillRect(0,0,W,H); }, LT('Livello 1','Layer 1')); path=''; dirty=false; syncTitle(); setMsg(LT('Nuovo','New')); }
+function resizeCanvas(){ const w=parseInt(prompt(LT('Larghezza tela:','Canvas width:'), c.width)||c.width,10), h=parseInt(prompt(LT('Altezza tela:','Canvas height:'), c.height)||c.height,10);
+  if(!w||!h||w<1||h<1||w>4000||h>4000){ setMsg(LT('Dimensione non valida','Invalid size')); return; }
+  pushUndo();
+  layers.forEach(L=>{ const tmp=document.createElement('canvas'); tmp.width=L.canvas.width; tmp.height=L.canvas.height; tmp.getContext('2d').drawImage(L.canvas,0,0);
+    L.canvas.width=w; L.canvas.height=h; L.ctx.clearRect(0,0,w,h); L.ctx.drawImage(tmp,0,0); });
+  setImageSize(w,h); markDirty(); syncTitle(); applyZoom(); renderLayersUI(); }
+function exit(){ if(dirty && !confirm(LT('Uscire senza salvare? Le modifiche andranno perse.','Exit without saving? Your changes will be lost.'))) return; try{ window.parent.postMessage({type:'close-window'}, '*'); }catch{} }
+const CMD={ new:newCanvas, open:()=>dialog('open').then(p=>{ if(p) loadFromPath(p); }), save, saveas:saveAs,
+  exit, undo, redo, clear:()=>{ pushUndo(); fill(c.width,c.height); markDirty(); }, resize:resizeCanvas };
+
+// ---- menus ----
+document.querySelectorAll('.menu>.label').forEach(l=>l.addEventListener('click', e=>{ e.stopPropagation();
+  const m=l.parentElement, open=m.classList.contains('open'); document.querySelectorAll('.menu').forEach(x=>x.classList.remove('open')); if(!open) m.classList.add('open'); }));
+document.addEventListener('click', ()=>document.querySelectorAll('.menu').forEach(x=>x.classList.remove('open')));
+document.querySelectorAll('[data-cmd]').forEach(el=>el.addEventListener('click', e=>{ e.stopPropagation();
+  document.querySelectorAll('.menu').forEach(x=>x.classList.remove('open')); const fn=CMD[el.dataset.cmd]; if(fn) fn(); }));
+
+// ---- keyboard ----
+window.addEventListener('keydown', e=>{
+  const k=e.key.toLowerCase(), ctrl=e.ctrlKey||e.metaKey;
+  // Atelier modal: Escape closes it (even while the prompt is focused).
+  if(k==='escape' && window.__atelierClose){ if(window.__atelierClose()) { e.preventDefault(); return; } }
+  // App-local hotkeys (never OS-routed) → always handled: tool letters + Ctrl+Q exit.
+  if(ctrl && k==='q'){ e.preventDefault(); exit(); return; }
+  // Tool letters are SUPPRESSED while typing (e.g. the Atelier prompt) — the isolation guard.
+  if(!ctrl && !isTyping()){ if(k==='x'){ swapColors(); return; } const map={b:'brush',l:'line',r:'rect',e:'ellipse'}; if(map[k]){ tool=map[k]; document.querySelectorAll('#tools .btn').forEach(x=>x.classList.toggle('active',x.dataset.tool===tool)); showOpts(tool); return; } }
+  // The rest (Ctrl+S/N/O/Z/Y, Ctrl+C/V, Delete) are OS shortcuts. In the shell they arrive as
+  // {type:'os-shortcut'} (single source); only act on them directly when running standalone.
+  if(inShell) return;
+  if(ctrl && k==='s'){ e.preventDefault(); e.shiftKey?saveAs():save(); }
+  else if(ctrl && k==='o'){ e.preventDefault(); CMD.open(); }
+  else if(ctrl && k==='n'){ e.preventDefault(); newCanvas(); }
+  else if(ctrl && k==='z' && !e.shiftKey){ e.preventDefault(); undo(); }
+  else if(ctrl && (k==='y'||(k==='z'&&e.shiftKey))){ e.preventDefault(); redo(); }
+  else if(ctrl && k==='c'){ e.preventDefault(); copyImage(); }
+  else if(ctrl && k==='v'){ e.preventDefault(); pasteImage(); }
+  else if(!ctrl && e.key==='Delete' && !isTyping()){ pushUndo(); fill(c.width,c.height); markDirty(); }
+});
+
+// ---- open via ?path= (launched from File Commander) ----
+const qp=new URLSearchParams(location.search).get('path'); if(qp) loadFromPath(qp);
+syncTitle();
+
+// =====================================================================================================
+// PAINT 2.0 — bridge the host-tested imaging.js (transparency, background removal, adjustments, filters,
+// transforms, selection, zoom, text) to the canvas. Every destructive op goes through pushUndo.
+// =====================================================================================================
+let IM=null; import('./imaging.js').then(m=>{ IM=m; }).catch(()=>{ IM=null; });
+function imOk(){ if(!IM){ setMsg(LT('Modulo immagini non ancora caricato','Imaging module not loaded yet')); return false; } return true; }
+
+$('opacity').addEventListener('input', e=>{ brushOpacity=(+e.target.value)/100; $('opacityVal').textContent=e.target.value; });
+
+// Apply a pure imaging.js op (im -> {data,width,height}) to the whole canvas, undoable, resizing if needed.
+function applyImaging(fn, msg){ if(!imOk()) return; pushUndo();
+  const src={ data:ctx.getImageData(0,0,c.width,c.height).data, width:c.width, height:c.height };
+  let out; try{ out=fn(src); }catch(err){ setMsg(LT('Operazione fallita: ','Operation failed: ')+(err&&err.message||err)); return; }
+  if(!out) return;
+  if(out.width!==c.width||out.height!==c.height){ c.width=out.width; c.height=out.height; ov.width=out.width; ov.height=out.height; setSelection(null); }
+  ctx.putImageData(new ImageData(new Uint8ClampedArray(out.data), out.width, out.height),0,0);
+  markDirty(); syncTitle(); applyZoom(); if(msg) setMsg(msg); }
+
+// ---- background tools ----
+function bgOpts(){ return { tolerance:+$('bgTol').value, feather:+$('bgFeather').value }; }
+function doWand(x,y){ if(!imOk()) return; pushUndo();
+  const src={ data:ctx.getImageData(0,0,c.width,c.height).data, width:c.width, height:c.height };
+  const tol=(+($('fillTol')?$('fillTol').value:40))||40;
+  const out=IM.magicWandErase(src,x,y,{tolerance:tol, feather:1});
+  ctx.putImageData(new ImageData(new Uint8ClampedArray(out.data), out.width, out.height),0,0); markDirty(); setMsg(LT('Sfondo cancellato (bacchetta)','Background erased (wand)')); }
+
+// ---- selection (rectangular marquee on the overlay) ----
+function setSelection(s){ sel=s; octx.clearRect(0,0,ov.width,ov.height);
+  if(s){ octx.save(); octx.strokeStyle='#4ea1ff'; octx.lineWidth=1; octx.setLineDash([4,3]); octx.strokeRect(s.x+0.5,s.y+0.5,Math.max(1,s.w-1),Math.max(1,s.h-1)); octx.restore(); }
+  const info=$('selInfo'); if(info) info.textContent = s ? (LT('Selezione ','Selection ')+s.w+'×'+s.h+LT(' a (',' at (')+s.x+','+s.y+')') : LT("Nessuna selezione. Strumento ▭ per selezionare un'area.",'No selection. Use the ▭ tool to select an area.'); }
+function drawMarquee(x0,y0,x1,y1){ octx.clearRect(0,0,ov.width,ov.height); octx.save(); octx.strokeStyle='#4ea1ff'; octx.lineWidth=1; octx.setLineDash([4,3]);
+  const x=Math.min(x0,x1),y=Math.min(y0,y1),w=Math.abs(x1-x0),h=Math.abs(y1-y0); octx.strokeRect(x+0.5,y+0.5,w,h); octx.restore(); }
+function finalizeSelection(x0,y0,x1,y1){ const x=Math.max(0,Math.min(x0,x1)),y=Math.max(0,Math.min(y0,y1));
+  const w=Math.min(c.width-x,Math.abs(x1-x0)),h=Math.min(c.height-y,Math.abs(y1-y0));
+  if(w<2||h<2){ setSelection(null); return; } setSelection({x,y,w,h}); }
+function cropToSelection(){ if(!sel){ setMsg(LT('Nessuna selezione','No selection')); return; } const s=sel; applyImagingAll(im=>IM.crop(im,s.x,s.y,s.w,s.h),LT('Ritagliato alla selezione','Cropped to selection')); }
+function clearSelection(){ if(!sel) return; pushUndo(); ctx.clearRect(sel.x,sel.y,sel.w,sel.h); markDirty(); setMsg(LT('Area svuotata','Area cleared')); }
+function fillSelection(){ if(!sel) return; pushUndo(); ctx.save(); ctx.globalAlpha=brushOpacity; ctx.fillStyle=color; ctx.fillRect(sel.x,sel.y,sel.w,sel.h); ctx.restore(); markDirty(); }
+window.__paintSel=()=>sel;   // the Atelier reads this to generate INTO the selection
+
+// ---- text tool ----
+function placeText(x,y){ const t=prompt(LT('Testo:','Text:')); if(t==null||t==='') return; pushUndo();
+  const fs=Math.max(8,parseInt($('fontSize')&&$('fontSize').value,10)||24), bold=($('fontBold')&&$('fontBold').checked)?'bold ':'';
+  ctx.save(); ctx.globalAlpha=brushOpacity; ctx.fillStyle=color; ctx.textBaseline='top';
+  ctx.font=bold+fs+"px 'Segoe UI',system-ui,sans-serif"; ctx.fillText(t,x,y); ctx.restore(); markDirty(); setMsg(LT('Testo inserito','Text added')); }
+
+// ---- zoom (CSS transform on the wrap; pos() already divides by the on-screen rect so it stays accurate) ----
+let zoom=1;
+function applyZoom(){ wrap.style.transform = zoom===1 ? '' : ('scale('+zoom+')'); const z=$('zoomLbl'); if(z) z.textContent=Math.round(zoom*100)+'%'; if(typeof scheduleRulers==='function') scheduleRulers(); }
+function setZoom(z){ zoom=Math.max(0.1,Math.min(8,z)); applyZoom(); }
+function fitZoom(){ const sw=stage.clientWidth-48, sh=stage.clientHeight-48; setZoom(Math.min(sw/c.width, sh/c.height, 4)); }
+$('zoomIn').onclick=()=>setZoom(zoom*1.25); $('zoomOut').onclick=()=>setZoom(zoom/1.25); $('zoomFit').onclick=fitZoom;
+stage.addEventListener('wheel', e=>{ if(!e.ctrlKey) return; e.preventDefault(); setZoom(zoom*(e.deltaY<0?1.1:0.9)); }, {passive:false});
+
+// ---- adjustments (non-destructive live preview over a base snapshot) ----
+let adjBase=null, adjBaseState=null;
+function adjCapture(){ adjBase=ctx.getImageData(0,0,c.width,c.height); adjBaseState=snapState(); }
+function adjPreview(){ if(!adjBase||!IM) return; const b={ brightness:+$('adjB').value, contrast:+$('adjC').value, saturation:+$('adjS').value };
+  $('adjBVal').textContent=$('adjB').value; $('adjCVal').textContent=$('adjC').value; $('adjSVal').textContent=$('adjS').value;
+  const out=IM.adjust({ data:adjBase.data, width:adjBase.width, height:adjBase.height }, b);
+  ctx.putImageData(new ImageData(new Uint8ClampedArray(out.data), out.width, out.height),0,0); }
+['adjB','adjC','adjS'].forEach(id=>$(id).addEventListener('input', ()=>{ if(!adjBase) adjCapture(); adjPreview(); }));
+function resetAdjSliders(){ ['adjB','adjC','adjS'].forEach(id=>{ $(id).value=0; }); $('adjBVal').textContent='0'; $('adjCVal').textContent='0'; $('adjSVal').textContent='0'; }
+function adjApply(){ if(!adjBase) return; undoStack.push(adjBaseState); if(undoStack.length>MAX_UNDO) undoStack.shift(); redoStack.length=0; adjBase=null; adjBaseState=null; markDirty(); setMsg(LT('Regolazioni applicate','Adjustments applied')); resetAdjSliders(); }
+function adjReset(){ if(adjBase){ ctx.putImageData(adjBase,0,0); adjBase=null; adjBaseState=null; } resetAdjSliders(); setMsg(LT('Ripristinato','Reset')); }
+$('bgTol').addEventListener('input', e=>$('bgTolVal').textContent=e.target.value);
+$('bgFeather').addEventListener('input', e=>$('bgFeatherVal').textContent=e.target.value);
+
+// ---- panel: section collapse + show/hide + tool-contextual expansion (progressive disclosure) ----
+document.querySelectorAll('.psec>h4').forEach(h=>h.addEventListener('click', ()=>h.parentElement.classList.toggle('collapsed')));
+const PANEL=$('panel'), PTOG=$('panelToggle');
+function togglePanel(force){ const hide = (force!=null) ? !force : !PANEL.classList.contains('hidden'); PANEL.classList.toggle('hidden', hide); PTOG.classList.toggle('on', !hide); }
+PTOG.onclick=()=>togglePanel(); $('panelClose').onclick=()=>togglePanel(false);
+const TOOLSEC={ select:'sel', wand:'bg' };   // picking these tools reveals their relevant panel section
+function focusToolSection(t){ const sec=TOOLSEC[t]; if(!sec) return; if(PANEL.classList.contains('hidden')) togglePanel(true);
+  const el=document.querySelector('.psec[data-sec="'+sec+'"]'); if(el){ el.classList.remove('collapsed'); el.querySelector('h4').scrollIntoView({block:'nearest'}); } }
+$('tools').addEventListener('click', e=>{ const b=e.target.closest('[data-tool]'); if(b){ focusToolSection(b.dataset.tool); showOpts(b.dataset.tool); } });
+
+// ---- secondary colour + swap ----
+$('color2').addEventListener('input', e=>color2=e.target.value);
+function swapColors(){ const t=color; color=color2; color2=t; $('color').value=color; $('color2').value=color2; }
+$('colorSwap').onclick=swapColors;
+
+// ---- contextual options bar (Photoshop-style: the bar reflects the active tool) ----
+// Tool names + hints are resolved at call time so they follow the OS language live (showOpts re-runs on change).
+const TOOLNAME=()=> ({brush:LT('Pennello','Brush'),line:LT('Linea','Line'),rect:LT('Rettangolo','Rectangle'),ellipse:LT('Ellisse','Ellipse'),eraser:LT('Gomma','Eraser'),fill:LT('Secchiello','Fill'),pick:LT('Contagocce','Eyedropper'),select:LT('Selezione','Selection'),wand:LT('Bacchetta magica','Magic wand'),text:LT('Testo','Text')});
+const TOOLHINT=()=> ({brush:LT('Trascina per disegnare · opacità nel pannello','Drag to draw · opacity in the panel'),eraser:LT('Cancella in trasparente (alpha PNG)','Erases to transparent (PNG alpha)'),fill:LT('Clicca per riempire un’area · tolleranza qui','Click to fill an area · tolerance here'),pick:LT('Clicca per prelevare un colore','Click to pick a colour'),select:LT('Trascina un rettangolo, poi usa il pannello Selezione','Drag a rectangle, then use the Selection panel'),wand:LT('Clicca lo sfondo da cancellare','Click the background to erase'),text:LT('Clicca dove vuoi scrivere','Click where you want to write'),line:LT('Trascina · Shift per vincolare l’angolo','Drag · Shift to constrain the angle'),rect:LT('Trascina · Shift per un quadrato','Drag · Shift for a square'),ellipse:LT('Trascina · Shift per un cerchio','Drag · Shift for a circle')});
+let _lastTool='brush';
+function showOpts(t){ _lastTool=t; const ot=$('optTool'); if(ot) ot.textContent=TOOLNAME()[t]||t; const oh=$('optHint'); if(oh) oh.textContent=TOOLHINT()[t]||'';
+  document.querySelectorAll('#optsbar .opt-grp').forEach(g=>g.classList.toggle('show',(g.dataset.for||'').split(' ').includes(t))); }
+$('fillTol').addEventListener('input', e=>$('fillTolVal').textContent=e.target.value);
+showOpts('brush');
+
+// =====================================================================================================
+// LANGUAGE — the STATIC chrome (menus, toolbar, options bar, command bar, panel, status bar) now lives on
+// the centralized i18n engine: its [data-i18n]/[data-i18n-attr] annotations are filled from
+// apps/paint/i18n.<lang>.json by /nucleo-i18n.js (English is the source-of-truth + fallback floor), and the
+// engine re-applies them automatically on every OS language change (it observes the DOM and re-runs apply()).
+// applyLang() only refreshes the DYNAMIC bits the engine can't reach declaratively — the live tool name/hint,
+// the selection-info line and the window title, all built imperatively via LT(). It runs at startup and, via
+// the I18N.onChange subscription at the bottom of the file, on every language switch.
+// =====================================================================================================
+function applyLang(){
+  showOpts(_lastTool);                                       // live tool name + hint (options bar)
+  if(typeof setSelection==='function') setSelection(sel);    // re-render the selection-info line
+  syncTitle();                                               // file name / canvas size / window title
+}
+applyLang();
+setMsg(LT('Pronto','Ready'));   // initial status label (dynamic; static HTML default is English)
+
+// ---- rulers (canvas coordinates, accurate under zoom + scroll) ----
+const rTop=$('rulerTop'), rLeft=$('rulerLeft'), rtx=rTop.getContext('2d'), rlx=rLeft.getContext('2d');
+let rulersOn=true, mc={x:-1,y:-1};
+function sizeRulers(){ rTop.width=rTop.clientWidth||1; rTop.height=22; rLeft.width=22; rLeft.height=rLeft.clientHeight||1; }
+function niceStep(){ const target=64/zoom; const p=Math.pow(10,Math.floor(Math.log10(target))); for(const m of [1,2,5,10]) if(p*m>=target) return p*m; return p*10; }
+function drawRulers(){ if(!rulersOn) return; const cr=c.getBoundingClientRect(), tr=rTop.getBoundingClientRect(), lr=rLeft.getBoundingClientRect();
+  const step=niceStep(), bg='#0f1521', tick='rgba(255,255,255,.28)', lab='#7e8aa0';
+  rtx.fillStyle=bg; rtx.fillRect(0,0,rTop.width,rTop.height); rtx.strokeStyle=tick; rtx.fillStyle=lab; rtx.font='9px system-ui,sans-serif'; rtx.beginPath();
+  const x0=cr.left-tr.left;
+  for(let v=0; v<=c.width+1; v+=step){ const px=Math.round(x0+v*zoom)+0.5; if(px<-1||px>rTop.width+1) continue; rtx.moveTo(px,22); rtx.lineTo(px,11); rtx.fillText(String(Math.round(v)),px+2,9); }
+  rtx.stroke();
+  if(mc.x>=0){ rtx.fillStyle='#4ea1ff'; rtx.fillRect(Math.round(x0+mc.x*zoom),0,1,22); }
+  rlx.fillStyle=bg; rlx.fillRect(0,0,rLeft.width,rLeft.height); rlx.strokeStyle=tick; rlx.fillStyle=lab; rlx.font='9px system-ui,sans-serif'; rlx.beginPath();
+  const y0=cr.top-lr.top;
+  for(let v=0; v<=c.height+1; v+=step){ const py=Math.round(y0+v*zoom)+0.5; if(py<-1||py>rLeft.height+1) continue; rlx.moveTo(22,py); rlx.lineTo(11,py); rlx.save(); rlx.translate(9,py-2); rlx.rotate(-Math.PI/2); rlx.fillText(String(Math.round(v)),0,0); rlx.restore(); }
+  rlx.stroke();
+  if(mc.y>=0){ rlx.fillStyle='#4ea1ff'; rlx.fillRect(0,Math.round(y0+mc.y*zoom),22,1); } }
+let rRAF=0; function scheduleRulers(){ if(rRAF) return; rRAF=requestAnimationFrame(()=>{ rRAF=0; drawRulers(); }); }
+stage.addEventListener('scroll', scheduleRulers);
+stage.addEventListener('mousemove', e=>{ mc=pos(e); scheduleRulers(); });
+stage.addEventListener('mouseleave', ()=>{ mc={x:-1,y:-1}; scheduleRulers(); });
+window.addEventListener('resize', ()=>{ sizeRulers(); scheduleRulers(); });
+try{ new ResizeObserver(()=>{ sizeRulers(); scheduleRulers(); }).observe($('canvasarea')); }catch{}
+sizeRulers(); scheduleRulers();
+
+// ---- view toggles + extra CMD entries ----
+Object.assign(CMD, {
+  togglePanel:()=>togglePanel(), zoomReset:()=>setZoom(1), fitZoom:()=>fitZoom(),
+  toggleRulers:()=>{ const ca=$('canvasarea'); rulersOn=ca.classList.toggle('norulers')?false:true; if(rulersOn){ sizeRulers(); scheduleRulers(); } setMsg(LT('Righelli ','Rulers ')+(rulersOn?'on':'off')); },
+  toggleGrid:()=>{ const on=$('gridOverlay').classList.toggle('on'); setMsg(LT('Griglia ','Grid ')+(on?'on':'off')); },
+  tour:()=>startTour(true), shortcuts:()=>showShortcuts(),
+});
+
+// ---- new commands wired into the existing CMD map (menus + panel buttons share [data-cmd]) ----
+Object.assign(CMD, {
+  newTransparent:()=>{ pushUndo(); bgTransparent=true; resetLayers(c.width,c.height,null,LT('Livello 1','Layer 1')); path=''; dirty=false; setSelection(null); syncTitle(); setMsg(LT('Nuova tela trasparente','New transparent canvas')); },
+  copy:copyImage, paste:pasteImage,
+  cropSel:cropToSelection, clearSel:clearSelection, fillSel:fillSelection, deselect:()=>setSelection(null),
+  genSel:()=>{ if(window.openAtelier) window.openAtelier(sel?'sketch':'text'); },
+  trim:()=>{ if(!imOk())return; const comp=compositeCanvas(); const bb=IM.trimTransparent({data:comp.getContext('2d').getImageData(0,0,comp.width,comp.height).data,width:comp.width,height:comp.height});
+    if(bb.empty){ setMsg(LT('Tela vuota','Empty canvas')); return; } applyImagingAll(im=>IM.crop(im,bb.x,bb.y,bb.width,bb.height),LT('Bordi trasparenti rifilati','Transparent borders trimmed')); },
+  rotcw:()=>applyImagingAll(im=>IM.rotate90(im,'cw'),LT('Ruotato 90°','Rotated 90°')), rotccw:()=>applyImagingAll(im=>IM.rotate90(im,'ccw'),LT('Ruotato 90°','Rotated 90°')),
+  fliph:()=>applyImagingAll(im=>IM.flipH(im),LT('Riflesso','Flipped')), flipv:()=>applyImagingAll(im=>IM.flipV(im),LT('Riflesso','Flipped')),
+  removeBg:()=>{ bgTransparent=true; applyImaging(im=>IM.removeBackgroundAuto(im,bgOpts()),LT('Sfondo rimosso (livello attivo)','Background removed (active layer)')); },
+  fxGray:()=>applyImaging(im=>IM.grayscale(im),LT('Scala di grigi','Grayscale')), fxInvert:()=>applyImaging(im=>IM.invert(im),LT('Colori invertiti','Colors inverted')),
+  fxSepia:()=>applyImaging(im=>IM.sepia(im),LT('Seppia','Sepia')), fxBlur:()=>applyImaging(im=>IM.blur(im),LT('Sfocato','Blurred')),
+  fxSharp:()=>applyImaging(im=>IM.sharpen(im),LT('Nitidezza aumentata','Sharpened')), fxEdges:()=>applyImaging(im=>IM.edges(im),LT('Contorni','Edges')),
+  openAdjust:()=>{ const s=document.querySelector('.psec[data-sec="adj"]'); if(s){ s.classList.remove('collapsed'); s.scrollIntoView({block:'nearest'}); } adjCapture(); },
+  adjApply, adjReset,
+  layerAdd:addLayer, layerDel:deleteLayer, layerDup:duplicateLayer, layerUp:()=>moveLayer(1), layerDown:()=>moveLayer(-1), layerMerge:mergeDown, layerFlatten:flattenLayers,
+});
+// layers panel: active-layer opacity + blend (no undo on drag — easily reversible)
+$('layOpacity').addEventListener('input', e=>{ setLayerOpacity((+e.target.value)/100); $('layOpacityVal').textContent=e.target.value; });
+$('layBlend').addEventListener('change', e=>setLayerBlend(e.target.value));
+
+// ===== NATURAL-LANGUAGE COMMAND BAR — type a phrase, Paint does it. DETERMINISTIC + OFFLINE (nlcommand.js,
+// zero hallucination). Fully ISOLATED in Paint: nothing routes through ANIMA; ANIMA still never touches images.
+let NLC=null; import('./nlcommand.js').then(m=>NLC=m).catch(()=>{});
+function cmdLang(){ try{ const l=(localStorage.getItem('anima.lang')||document.documentElement.lang||'en').toLowerCase().slice(0,2); return ['it','en','es','fr','de'].includes(l)?l:'en'; }catch{ return 'en'; } }
+function cmdResp(text,cls){ const r=$('cmdResp'); if(r){ r.textContent=text||''; r.className='cmd-resp'+(cls?' '+cls:''); } if(text) setMsg(text); }
+async function runCommand(text){ if(!text||!text.trim()) return; if(!NLC){ try{ NLC=await import('./nlcommand.js'); }catch{ cmdResp(LT('Modulo comandi non caricato','Commands module not loaded'),'warn'); return; } }
+  const d=NLC.parseCommand(text, cmdLang());
+  if(d.kind==='edit'){ try{ executeEdit(d); cmdResp(d.reply,'ok'); }catch(e){ cmdResp(LT('Errore: ','Error: ')+(e&&e.message||e),'warn'); } }
+  else if(d.kind==='generate'){ cmdResp(d.reply,'ok'); const b=NLC.buildGeneration(d, cmdLang()); if(window.__atelierRun) window.__atelierRun(b); else if(window.openAtelier) window.openAtelier('text'); }
+  else cmdResp(d.reply,'warn'); }
+function executeEdit(d){
+  const simple=['rotcw','rotccw','fliph','flipv','removeBg','fxGray','fxInvert','fxSepia','fxBlur','fxSharp','fxEdges','trim','cropSel','layerAdd','layerDup','layerMerge','layerFlatten','layerDel','undo','redo','save','deselect','toggleGrid','toggleRulers','fitZoom','zoomReset','newTransparent'];
+  if(simple.includes(d.op)){ if(CMD[d.op]) CMD[d.op](); return; }
+  if(d.op==='clear'){ pushUndo(); fill(c.width,c.height); markDirty(); return; }
+  if(d.op==='fill'){ color=d.color; $('color').value=d.color; if(sel) fillSelection();
+    else { pushUndo(); ctx.save(); ctx.globalAlpha=brushOpacity; ctx.fillStyle=d.color; ctx.fillRect(0,0,c.width,c.height); ctx.restore(); markDirty(); } return; }
+  if(d.op==='opacity'){ $('layOpacity').value=d.value; setLayerOpacity(d.value/100); renderLayersUI(); return; }
+  if(d.op==='resize'){ pushUndo(); layers.forEach(L=>{ const tmp=document.createElement('canvas'); tmp.width=L.canvas.width; tmp.height=L.canvas.height; tmp.getContext('2d').drawImage(L.canvas,0,0);
+    L.canvas.width=d.w; L.canvas.height=d.h; L.ctx.clearRect(0,0,d.w,d.h); L.ctx.drawImage(tmp,0,0); }); setImageSize(d.w,d.h); markDirty(); syncTitle(); applyZoom(); renderLayersUI(); return; }
+  if(d.op==='zoom'){ if(d.dir==='in') setZoom(zoom*1.25); else if(d.dir==='out') setZoom(zoom/1.25); else if(d.value) setZoom(d.value/100); return; }
+  if(d.op==='adjust'){ const sid={brightness:'adjB',contrast:'adjC',saturation:'adjS'}[d.which], vid={brightness:'adjBVal',contrast:'adjCVal',saturation:'adjSVal'}[d.which];
+    if(!adjBase) adjCapture(); const cur=+$(sid).value, nv=Math.max(-100,Math.min(100, d.mode==='set'? d.value : cur+d.value));
+    $(sid).value=nv; $(vid).textContent=nv; adjPreview(); adjApply(); return; }
+}
+$('cmdGo').onclick=()=>{ const v=$('cmdInput').value; runCommand(v); };
+$('cmdInput').addEventListener('keydown', e=>{ if(e.key==='Enter'){ e.preventDefault(); const v=$('cmdInput').value; $('cmdInput').value=''; runCommand(v); } });
+// extra tool hotkeys (M select, W wand, T text) + Tab toggles the panel — suppressed while typing, never with Ctrl.
+window.addEventListener('keydown', e=>{ if(e.ctrlKey||e.metaKey||isTyping()) return; const map={m:'select',w:'wand',t:'text'}, k=e.key.toLowerCase();
+  if(k==='tab'){ e.preventDefault(); togglePanel(); return; }
+  if(map[k]){ tool=map[k]; document.querySelectorAll('#tools .btn').forEach(x=>x.classList.toggle('active',x.dataset.tool===tool)); focusToolSection(tool); showOpts(tool); } });
+
+// ---- guided tutorial (tour.js) — bilingual, first-run + Aiuto menu ----
+let _tour=null;
+function tourLang(){ try{ const l=(localStorage.getItem('anima.lang')||document.documentElement.lang||'en').toLowerCase().slice(0,2); return ['it','en','es','fr','de'].includes(l)?l:'en'; }catch{ return 'en'; } }
+async function loadTour(){ if(!_tour) _tour=await import('./tour.js'); return _tour; }
+async function startTour(force){ try{ const m=await loadTour(); m.startTour({ lang:tourLang(), force:!!force, modelDir:'/apps/paint/models/sdxs-512-dreamshaper-sketch', inShell }); }catch(e){ setMsg(LT('Tutorial non disponibile','Tutorial unavailable')); } }
+async function showShortcuts(){ try{ const m=await loadTour(); m.showShortcuts(tourLang()); }catch{} }
+setTimeout(()=>{ try{ if(!localStorage.getItem('paint.tour.done')) startTour(false); }catch{} }, 700);   // first-run auto-start
+
+// =====================================================================================================
+// ATELIER — AI image generation, fully ISOLATED inside Paint. Generation runs on the CLIENT GPU (WebGPU)
+// via Stable Diffusion XS served from the Cardputer SD; if the model isn't downloaded or WebGPU is absent
+// it falls back to a deterministic procedural preview (honest banner). The prompt box is keyboard-isolated
+// (see isTyping()), so typing never touches the drawing tools. Nothing here routes through ANIMA's engine.
+// =====================================================================================================
+(function(){
+  // ⚠️ Gli asset dell'app si prendono dalla ROTTA STATICA, mai da /api/fs/read.
+  // sd_path() accetta solo i mount veri (system, data, roms, media) e `apps` NON
+  // e' un mount: ogni chiamata veniva rifiutata, in silenzio (i catch{} sono
+  // vuoti), e Paint scivolava fino al CDN. Cosi' 23,8 MB di runtime ONNX stanno
+  // su ogni scheda di ogni console senza che nessuno li legga MAI, e l'app pare
+  // funzionare finche' c'e' internet - cioe' esattamente il caso per cui quei
+  // megabyte erano stati messi sulla scheda. Percorsi RELATIVI alla pagina:
+  // valgono su qualunque IP, porta e board.
+  const assetUrl=(rel)=>new URL(rel,location.href).href;
+  const MODEL_DIR='models/sdxs-512-dreamshaper-sketch';
+  const RES=512;
+  const TEACHER='/data/anima/teacher.json';                              // the device key vault (paired /api/fs)
+  const PREF_KEY='paint.atelier.provider';                               // remembers the user's model choice
+  let engine=null, engKind='', booting=null, generating=false, el={}, back=null;
+  // online/LLM pipeline state — modules lazy-imported. image = the online image engine from the key vault;
+  // chat = { kind:'pc'|'cloud', brand } of who the OS-wide decision (/ai-ask.js) would ask to improve the prompt.
+  // privateMode: the OS mode is Private (anima-mode.js) — nothing may leave this computer.
+  let PIPEMOD=null, aiCfg={chat:null,image:null}, aiLoaded=false, providers=[], selProvider=null, lastInfo=null, privateMode=false;
+
+  const rnd = ()=> (Math.floor(Math.random()*1e9));
+  const escapeHtml = (s)=> String(s==null?'':s).replace(/[&<>"]/g, ch=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[ch]));
+  // Active OS language for Atelier strings. Reads anima.lang first (the canonical OS signal), then the
+  // document lang (kept in sync by /nucleo-i18n.js). Mirrors the top-level paintLang().
+  const uiLang = ()=> { try{ const l=(localStorage.getItem('anima.lang')||document.documentElement.lang||'en').toLowerCase().slice(0,2); return ['it','en','es','fr','de'].includes(l)?l:'en'; }catch{ return 'en'; } };
+  // Same shape + behaviour as the top-level LT(): IT/EN inline, es/fr/de from the shared PAINT_L10N table.
+  const UL = (it,en)=> { const l=uiLang(); if(l==='it') return it; if(l==='en') return en; return (PAINT_L10N[l]&&PAINT_L10N[l][en])||en; };
+
+  // Lazy-load the three pure pipeline modules (providers / online-image / pipeline) once.
+  async function ensurePipeline(){ if(PIPEMOD) return PIPEMOD;
+    const [P,O,L]=await Promise.all([ import('./diffusion/providers.js'), import('./diffusion/online-image.js'), import('./diffusion/pipeline.js') ]);
+    PIPEMOD={ P, O, L }; return PIPEMOD; }
+
+  // The online image engine comes from the device key vault (xAI, or an explicit image endpoint). The LLM that
+  // improves the prompt is NOT resolved here: it is whoever the OS-wide decision would ask (/ai-ask.js) — a model
+  // on the PC with no key, the cloud key the shared router picks, only this computer in Private mode.
+  let _askP=null; const askMod=()=> _askP || (_askP=import('/ai-ask.js').catch((e)=>{ _askP=null; throw e; }));
+  async function loadAi(){ if(aiLoaded) return aiCfg; await ensurePipeline();
+    aiCfg={ chat:null, image:null };
+    try{ const r=await fetch('/api/fs/read?path='+encodeURIComponent(TEACHER),{cache:'no-store'});
+      if(r.ok){ aiCfg.image=PIPEMOD.P.resolveConfigs(await r.json()).image; } }catch{}
+    try{ const M=await import('/anima-mode.js'); privateMode = M.readMode()==='private'; }catch{ privateMode=false; }
+    try{ const A=await askMod(), AI=await aiMod(); const plan=await A.planEngines({ tier:'fast', probe:true }); const k=plan.order[0];
+      aiCfg.chat = k==='pc' ? { kind:'pc', brand:plan.pc.server } : k==='cloud' ? { kind:'cloud', brand:AI.providerOf(plan.cloud.provider).label } : null; }
+    catch{ aiCfg.chat=null; }
+    aiLoaded=true; return aiCfg; }
+
+  // fetch with a hard timeout (AbortController) so a stuck cloud call can't pin the modal forever.
+  function fetchT(url, opts, ms){ const ac=new AbortController(); const t=setTimeout(()=>{ try{ac.abort();}catch{} }, ms||90000);
+    return fetch(url, Object.assign({}, opts, {signal:ac.signal})).finally(()=>clearTimeout(t)); }
+
+  // The prompt enhancer's LLM call: the OS-wide decision (/ai-ask.js), pinned to the engine named on the chip so
+  // the label never lies; browser-direct (the Cardputer never proxies it, "tutto cliente"), 90 s at most.
+  let _ai=null; const aiMod=()=> _ai || (_ai=import('/ai.js').catch((e)=>{ _ai=null; throw e; }));
+  async function llmAsk(system, user){
+    const A=await askMod();
+    const r=await A.askAI({ system, user, tier:'fast', maxTokens:320, pin:aiCfg.chat && aiCfg.chat.kind, signal:AbortSignal.timeout(90000) });
+    return r.text;
+  }
+
+  // Decode an INLINE data: URL (b64 from the online model) → RGBA on a same-origin canvas (no taint/CORS).
+  // Rejects non-data sources and guards the canvas read so a taint can never silently hang the decode promise.
+  function decodeDataUrl(src){ return new Promise((res,rej)=>{
+    if(!/^data:/i.test(String(src||''))){ rej(new Error('sorgente immagine non inline (nessun byte b64)')); return; }
+    const img=new Image();
+    img.onload=()=>{ try{ const w=img.naturalWidth||RES, h=img.naturalHeight||RES; const cv=document.createElement('canvas'); cv.width=w; cv.height=h;
+        const cx=cv.getContext('2d'); cx.drawImage(img,0,0); res({width:w,height:h,data:cx.getImageData(0,0,w,h).data}); }
+      catch(e){ rej(new Error('decodifica immagine fallita')); } };
+    img.onerror=()=>rej(new Error('decodifica immagine fallita')); img.src=src; }); }
+
+  // Build the live capability snapshot the provider list gates on.
+  function mkCaps(st){ return { online: navigator.onLine!==false, webgpu: !!(st&&st.webgpu),
+    modelCached: !!(st&&st.cached), modelOnSD: !!(st&&st.onSD), runtimeOk: !!(st&&st.ortOk), private: privateMode, lang: uiLang() }; }
+
+  function buildModal(){
+    back=document.createElement('div'); back.className='atl-backdrop';
+    back.innerHTML=`
+      <div class="atl" role="dialog" aria-label="Atelier" onclick="event.stopPropagation()">
+        <div class="atl-head"><span>✨</span><h3>${UL('Atelier — genera un’immagine','Atelier — generate an image')}</h3>
+          <button class="atl-mini" id="atlModelBtn" title="${UL('Gestione modello SDXS','SDXS model manager')}">⚙&nbsp;${UL('Modello','Model')}</button>
+          <button class="atl-x" id="atlX" title="${UL('Chiudi (Esc)','Close (Esc)')}">×</button></div>
+        <div class="atl-body">
+          <div class="atl-mm" id="atlManager" style="display:none"></div>
+          <div id="atlStudio">
+          <div class="atl-tabs" id="atlTabs">
+            <div class="atl-tab on" data-mode="text">${UL('Testo → Immagine','Text → Image')}</div>
+            <div class="atl-tab" data-mode="sketch">${UL('Schizzo → Immagine','Sketch → Image')}</div>
+            <div class="atl-tab" data-mode="img">${UL('Da immagine','From image')}</div>
+          </div>
+          <div class="atl-prov">
+            <label>${UL('Modello — tu scegli chi genera','Model — you choose who generates')}</label>
+            <div class="pl"><select id="atlProvider"></select><span class="badge" id="atlProvBadge"></span></div>
+            <div class="pn" id="atlProvNote"></div>
+          </div>
+          <div><label>${UL('Descrizione (prompt)','Description (prompt)')}</label><textarea id="atlPrompt" placeholder="${UL('es. un gatto rosso seduto su un divano, luce calda, stile acquerello','e.g. a red cat sitting on a sofa, warm light, watercolor style')}"></textarea></div>
+          <div><label>${UL('Cosa evitare (negative, opzionale)','What to avoid (negative, optional)')}</label><textarea id="atlNeg" style="min-height:38px" placeholder="${UL('es. sfocato, deforme, testo, filigrana, bassa qualità','e.g. blurry, deformed, text, watermark, low quality')}"></textarea></div>
+          <label class="atl-enh" id="atlEnhanceWrap" style="display:none"><input type="checkbox" id="atlEnhance"> <span id="atlEnhanceLbl">${UL('✨ Migliora il prompt con l’IA','✨ Improve the prompt with AI')}</span> <small>${UL('(un LLM riscrive l’idea in un prompt professionale)','(an LLM rewrites the idea into a professional prompt)')}</small></label>
+          <div class="atl-enhanced" id="atlEnhanced"></div>
+          <div id="atlHint" class="atl-status"></div>
+          <div class="atl-row">
+            <div><label>${UL('Seed (riproducibile)','Seed (reproducible)')}</label><div class="atl-seed"><input type="number" id="atlSeed" value="42" min="0" step="1"><button class="atl-mini" id="atlDice" title="${UL('Seed casuale','Random seed')}">🎲</button></div></div>
+            <div><label>${UL('Varianti:','Variants:')} <span id="atlVarVal">1</span></label><input type="range" id="atlVar" min="1" max="6" step="1" value="1" style="width:100%"></div>
+          </div>
+          <div class="atl-row">
+            <div id="atlCtrlWrap" style="display:none"><label>${UL('Aderenza allo schizzo:','Sketch adherence:')} <span id="atlCtrlVal">0.85</span></label><input type="range" id="atlCtrl" min="0" max="1" step="0.05" value="0.85" style="width:100%"></div>
+            <div id="atlStrWrap" style="display:none"><label>${UL('Forza (img→img):','Strength (img→img):')} <span id="atlStrVal">0.6</span></label><input type="range" id="atlStr" min="0" max="1" step="0.05" value="0.6" style="width:100%"></div>
+          </div>
+          <div class="atl-prog" id="atlProg"><i id="atlProgBar"></i></div>
+          <div class="atl-status" id="atlStatus"></div>
+          <div class="atl-variants" id="atlVariants"></div>
+          <div class="atl-banner" id="atlBanner"></div>
+          </div>
+        </div>
+        <div class="atl-foot" id="atlFoot">
+          <label class="atl-chk"><input type="checkbox" id="atlLayer"> ${UL('nuovo livello','new layer')}</label>
+          <label class="atl-chk"><input type="checkbox" id="atlSave" checked> ${UL('salva sul dispositivo','save to the device')}</label>
+          <button class="atl-go" id="atlGo">${UL('Genera','Generate')}</button>
+        </div>
+        <div class="atl-dl" id="atlDl"></div>
+      </div>`;
+    back.addEventListener('click', ()=>close());
+    document.body.appendChild(back);
+    const q=s=>back.querySelector(s);
+    el={ tabs:q('#atlTabs'), prompt:q('#atlPrompt'), neg:q('#atlNeg'), hint:q('#atlHint'),
+         prov:q('#atlProvider'), provBadge:q('#atlProvBadge'), provNote:q('#atlProvNote'),
+         enhance:q('#atlEnhance'), enhanceWrap:q('#atlEnhanceWrap'), enhanceLbl:q('#atlEnhanceLbl'), enhanced:q('#atlEnhanced'),
+         seed:q('#atlSeed'), dice:q('#atlDice'), varEl:q('#atlVar'), varVal:q('#atlVarVal'),
+         ctrlWrap:q('#atlCtrlWrap'), ctrl:q('#atlCtrl'), ctrlVal:q('#atlCtrlVal'),
+         strWrap:q('#atlStrWrap'), str:q('#atlStr'), strVal:q('#atlStrVal'), prog:q('#atlProg'),
+         progBar:q('#atlProgBar'), status:q('#atlStatus'), variants:q('#atlVariants'), banner:q('#atlBanner'),
+         layer:q('#atlLayer'), save:q('#atlSave'), go:q('#atlGo'), x:q('#atlX'),
+         model:q('#atlModelBtn'), manager:q('#atlManager'), studio:q('#atlStudio'), foot:q('#atlFoot'), dl:q('#atlDl') };
+    el.x.onclick=close;
+    el.model.onclick=openManager;
+    el.go.onclick=generate;
+    el.prov.onchange=onProviderChange;
+    el.dice.onclick=()=>{ el.seed.value=rnd(); };
+    el.str.oninput=()=>{ el.strVal.textContent=(+el.str.value).toFixed(2); };
+    el.ctrl.oninput=()=>{ el.ctrlVal.textContent=(+el.ctrl.value).toFixed(2); };
+    el.varEl.oninput=()=>{ el.varVal.textContent=el.varEl.value; };
+    el.tabs.onclick=(e)=>{ const t=e.target.closest('[data-mode]'); if(!t) return; setMode(t.dataset.mode); };
+  }
+  let mode='text';
+  function setMode(m){ mode=m; [...el.tabs.children].forEach(x=>x.classList.toggle('on', x.dataset.mode===m));
+    el.strWrap.style.display = m==='img' ? '' : 'none';
+    el.ctrlWrap.style.display = m==='sketch' ? '' : 'none';
+    const s = window.__paintSel && window.__paintSel();
+    // word order differs per language, so build it per-language (the ${dim} var itself is never translated)
+    const _dim = s ? (s.w+'×'+s.h) : '', _sl = uiLang();
+    const selNote = !s ? '' : _sl==='it' ? ` · genererò NELLA selezione ${_dim}`
+      : _sl==='es' ? ` · generaré DENTRO la selección ${_dim}`
+      : _sl==='fr' ? ` · générera DANS la sélection ${_dim}`
+      : _sl==='de' ? ` · erzeugt IN die ${_dim}-Auswahl`
+      : ` · will generate INTO the ${_dim} selection`;
+    el.hint.textContent = (m==='sketch' ? UL('Usa il tuo disegno come schizzo guida (ControlNet).','Use your drawing as a guide sketch (ControlNet).')
+      : m==='img' ? UL('Rielabora il contenuto attuale della tela secondo il prompt.','Reworks the current canvas content according to the prompt.')
+      : UL('Genera dal solo testo (tela ignorata).','Generates from text only (canvas ignored).')) + selNote;
+  }
+  function banner(kind, text){ el.banner.className='atl-banner show '+kind; el.banner.textContent=text; }
+  function clearBanner(){ el.banner.className='atl-banner'; el.banner.textContent=''; }
+  function setProg(p){ if(!p){ el.prog.classList.remove('show'); return; } el.prog.classList.add('show');
+    let pct=0;
+    if(p.totalBytes&&p.bytes) pct=Math.round((p.bytes/p.totalBytes)*100);
+    else if(p.index!=null&&p.total) pct=Math.round(p.index/p.total*100);
+    el.progBar.style.width=Math.max(4,Math.min(100,pct))+'%';
+    if(p.phase==='fetch'&&p.bytes){
+      const mb=(p.bytes/1e6).toFixed(0), tot=p.totalBytes?(p.totalBytes/1e6).toFixed(0):'?';
+      el.status.textContent=mb+'/'+tot+' MB';
+    } else if(p.role){ el.status.textContent=UL('Carico ','Loading ')+p.role+'…'; }
+  }
+
+  function open(m){ if(!back) buildModal(); setMode(m||'text'); clearBanner(); el.status.textContent=''; if(el.variants) el.variants.innerHTML=''; if(el.enhanced) el.enhanced.style.display='none'; back.classList.add('open');
+    setTimeout(()=>{ if(el.studio.style.display!=='none' && el.prompt) el.prompt.focus(); },30);
+    showStudio(); ensurePipeline().then(initStudio).catch(()=>{}); }
+  function close(){ if(window.__atelierBusy || generating) return false;   // download/generazione in corso → chiusura bloccata
+    if(back && back.classList.contains('open')){ back.classList.remove('open'); c.focus&&c.focus(); return true; } return false; }
+  window.__atelierClose=close;
+
+  // ---- studio init: resolve providers + populate the selector (NEVER auto-downloads the local model) -----
+  async function initStudio(){
+    await loadAi();
+    let st; try{ st=await probeState(); }catch{ st={cached:false,onSD:false,ortOk:false,webgpu:false}; }
+    providers=PIPEMOD.P.listProviders(aiCfg.image, mkCaps(st));
+    selProvider=PIPEMOD.P.defaultProvider(providers, localStorage.getItem(PREF_KEY));
+    fillProviderSelect(); updateEnhanceUI(); applyProviderUI();
+  }
+  const provTitle=(p)=> p.id==='online' ? ('Online · '+p.brand) : p.id==='local' ? UL('Locale · SDXS (nel browser)','Local · SDXS (in browser)') : UL('Anteprima (non IA)','Preview (not AI)');
+  function fillProviderSelect(){ if(!el.prov) return;
+    el.prov.innerHTML=providers.map(p=>`<option value="${p.id}"${p.available?'':' disabled'}${p.id===selProvider?' selected':''}>${provTitle(p)}${p.available?'':UL(' — non disponibile',' — unavailable')}</option>`).join('');
+  }
+  function onProviderChange(){ selProvider=el.prov.value; try{ localStorage.setItem(PREF_KEY,selProvider); }catch{} clearBanner(); updateEnhanceUI(); applyProviderUI(); }
+  function applyProviderUI(){
+    const p=providers.find(x=>x.id===selProvider)||providers[0]; if(!p) return;
+    if(el.prov && el.prov.value!==selProvider) el.prov.value=selProvider;
+    if(el.provBadge){ el.provBadge.className='badge '+p.kind; el.provBadge.textContent = p.kind==='online'?'cloud':p.kind==='local'?'browser':'demo'; }
+    if(el.provNote) el.provNote.textContent=p.reason||'';
+    setMode(mode);                                                            // refresh the base mode hint…
+    if(selProvider==='online' && mode!=='text' && el.hint) el.hint.textContent += UL('  ·  Online: lo schizzo è ignorato (solo testo→immagine).','  ·  Online: the sketch is ignored (text→image only).');
+    showStudio();
+  }
+  // The prompt-enhancer toggle appears only when a chat LLM is configured; on by default for the AI providers.
+  function updateEnhanceUI(){ if(!el.enhanceWrap) return;
+    if(aiCfg.chat){ const b=aiCfg.chat.brand;
+      el.enhanceWrap.style.display=''; el.enhanceLbl.textContent=UL('✨ Migliora il prompt con ','✨ Improve the prompt with ')+b;
+      if(el.enhance.dataset.touched!=='1') el.enhance.checked = (selProvider!=='preview');
+    } else { el.enhanceWrap.style.display='none'; el.enhance.checked=false; }
+    el.enhance.onchange=()=>{ el.enhance.dataset.touched='1'; };
+  }
+  // Resolve the engine for the chosen provider (online cloud / local SDXS already booted / procedural preview).
+  async function resolveEngine(id, localEngine){
+    if(id==='online'){ if(privateMode) throw new Error(PIPEMOD.P.providerText('private', uiLang()));
+      if(!aiCfg.image) throw new Error(UL('nessun provider immagini online — configura xAI/Grok in Impostazioni · IA','no online image provider — configure xAI/Grok in Settings · AI'));
+      // The image model is picked from the key's own list (newest image model; the saved one while served), so a
+      // retired grok-2-image can't break Atelier. No list -> the configured id, as before.
+      let imgCfg=aiCfg.image;
+      try{ const AI=await aiMod(); const m=await AI.resolveModel(aiCfg.image, { need:'image' }); if(m) imgCfg=Object.assign({}, aiCfg.image, { model:m }); }catch{}
+      const e=PIPEMOD.O.makeOnlineImageEngine({ cfg:imgCfg, fetchImpl:(u,o)=>fetchT(u,o,90000), decode:decodeDataUrl, label:PIPEMOD.P.brandOf(imgCfg) }); await e.load(); return e; }
+    if(id==='preview'){ const de=await import('./diffusion/diffusion-engine.js'); const e=de.makeMockEngine({resolution:RES}); await e.load(); return e; }
+    return localEngine || await boot();                                       // local SDXS
+  }
+
+  // =====================================================================================================
+  //  MODEL MANAGER — explicit, user-driven provisioning of the SDXS engine.
+  //  Sources (priority shown to user): local cache (instant) · Internet (GitHub) · Cardputer SD (WiFi).
+  //  Download is BLOCKING: while it runs the modal is locked (no close, no drag-drop), steps are shown,
+  //  failures are explained with retry/alternative. Once fetched the model lives in IndexedDB → instant next time.
+  // =====================================================================================================
+  const REV='2024-12-lsb';                                                       // cache revision (matches provision-lsb.mjs)
+  const LSB='https://raw.githubusercontent.com/lsb/sdxs-controlnet-sketch/trunk';// internet model source
+  const HF ='https://huggingface.co/IDKiro/sdxs-512-dreamshaper/resolve/main/tokenizer';
+  const NET_SRCS=[                                                               // internet components (download order)
+    {role:'text-encoder', file:'sd_text_encoder_q8.onnx', parts:3, bytes:124e6, label:'Text encoder'},
+    {role:'fused',        file:'sd512q68.onnx',           parts:9, bytes:429e6, label:'Modello fuso (ControlNet + UNet + VAE)'},
+  ];
+  const TOTAL_BYTES=NET_SRCS.reduce((a,s)=>a+s.bytes,0);                         // ≈553 MB
+  const pad3=n=>String(n).padStart(3,'0');
+  const FUSED_IO={fused:{image:'image',promptEmbeds:'prompt_embeds',conditioningScale:'conditioning_scale',latents:'latents',output:'output_image'},text:{input:'input_ids',output:'output_embeddings'}};
+  // ORT runtime (22.5 MB) is too big for the Cardputer httpd (→503), so it's chunked on the SD like the
+  // model and handed to ORT via wasm.wasmBinary. Delivery priority: cache → SD chunks → CDN (version-pinned).
+  const ORT_WASM_DIR='vendor/onnxruntime-web/';                                  // servita statica (vedi assetUrl)
+  const ORT_WASM_FILE='ort-wasm-simd-threaded.asyncify.wasm';
+  const ORT_WASM_PARTS=4, ORT_WASM_BYTES=23678474;                              // from tools/sdxs/chunk-ort-wasm.mjs
+  const ORT_CDN='https://cdn.jsdelivr.net/npm/onnxruntime-web@1.26.0/dist/';     // matches vendored version
+  let modelCache=null, probe=null, ort=null, depsReady=false, manState=null, ortWasmReady=false;
+
+  async function ensureDeps(){
+    if(depsReady) return;
+    const {makeModelCache}=await import('./diffusion/model-cache.js');
+    modelCache=makeModelCache({revision:REV});
+    try{ probe=await import('./diffusion/webgpu-probe.js').then(m=>m.probeDiffusion({})); }catch{ probe={ep:'wasm'}; }
+    try{ ort=await import('./vendor/onnxruntime-web/ort.webgpu.min.mjs').then(m=>m.default||m); }catch{}
+    if(ort&&ort.env&&ort.env.wasm){
+      // ORT must be told where its .wasm/.mjs backend lives, else it fetches from a CDN (offline → fail).
+      // Resolve to the served vendor dir on whatever host (Cardputer IP or dev server).
+      try{ ort.env.wasm.wasmPaths=new URL('./vendor/onnxruntime-web/',location.href).href; }catch{}
+      ort.env.wasm.numThreads=1;          // no SharedArrayBuffer (httpd lacks COOP/COEP) → single-thread
+      ort.env.wasm.proxy=false;
+    }
+    depsReady=true;
+  }
+  const eps=()=> (probe&&probe.ep==='webgpu')?['webgpu','wasm']:['wasm'];
+
+  // Ensure ORT's wasm backend is available without the httpd ever serving the 22.5 MB blob whole.
+  // Priority: cache → SD chunks (/api/fs/read, offline) → whole local file (dev/host w/o 7 MB limit) → CDN.
+  // The first three deliver the EXACT vendored bytes (matched to the local glue .mjs) via wasm.wasmBinary;
+  // only the last resort hits the version-pinned CDN.
+  async function ensureRuntime(onStep){
+    if(ortWasmReady) return;
+    const useBinary=(bin)=>{ modelCache.put('ort-wasm',bin); ort.env.wasm.wasmBinary=bin.buffer; ortWasmReady=true;
+      onStep&&onStep('runtime',{state:'done',bytes:bin.byteLength,totalBytes:bin.byteLength}); };
+
+    // 1) cache (instant, offline)
+    let bin=await modelCache.get('ort-wasm');
+    if(bin){ useBinary(bin); return; }
+
+    // 2) SD chunks via /api/fs/read (Cardputer — 7 MB pieces dodge the static-handler 503)
+    try{
+      onStep&&onStep('runtime',{state:'active'});
+      let parts=ORT_WASM_PARTS, bytes=ORT_WASM_BYTES;
+      const mf=await fetch(assetUrl(ORT_WASM_DIR+'ort-wasm.manifest.json')+'?t='+Date.now()).then(r=>r.ok?r.json():null).catch(()=>null);
+      if(mf&&mf.parts){parts=mf.parts;bytes=mf.bytes;}
+      const chunks=[];let soFar=0;
+      for(let i=0;i<parts;i++){
+        const r=await fetch(assetUrl(ORT_WASM_DIR+ORT_WASM_FILE+'.'+pad3(i))+'?t='+Date.now());
+        if(!r.ok) throw new Error('SD '+r.status);
+        const b=new Uint8Array(await r.arrayBuffer());chunks.push(b);soFar+=b.byteLength;
+        onStep&&onStep('runtime',{state:'active',bytes:soFar,totalBytes:bytes,part:i+1,parts});
+      }
+      const out=new Uint8Array(soFar);let off=0;for(const c of chunks){out.set(c,off);off+=c.byteLength;}
+      useBinary(out); return;
+    }catch{}
+
+    // 3) whole vendored file from the static server (dev server / any host without the 7 MB limit; 503 on the Cardputer → skip)
+    try{
+      const r=await fetch(new URL('./vendor/onnxruntime-web/'+ORT_WASM_FILE,location.href).href);
+      if(r.ok){ useBinary(new Uint8Array(await r.arrayBuffer())); return; }
+    }catch{}
+
+    // 4) CDN (version-pinned; matched glue .mjs + .wasm fetched lazily on createSession)
+    ort.env.wasm.wasmPaths=ORT_CDN; ortWasmReady=true;
+    onStep&&onStep('runtime',{state:'done',bytes:ORT_WASM_BYTES,totalBytes:ORT_WASM_BYTES});
+  }
+
+  // Inspect every source and report what's available right now.
+  async function probeState(){
+    await ensureDeps();
+    const [netF,netT,man]=await Promise.all([
+      modelCache.get('net-fused'),
+      modelCache.get('net-text-encoder'),
+      fetch(assetUrl(MODEL_DIR+'/manifest.json')+'?t='+Date.now()).then(r=>r.ok?r.json():null).catch(()=>null),
+    ]);
+    manState=man;
+    const netCached=!!(netF&&netT);                                             // both internet components present
+    const fusedComp=man&&man.components&&man.components.find(c=>c.role==='fused');
+    const sdCached=fusedComp&&fusedComp.partSha?await modelCache.hasAny(fusedComp.partSha):false;
+    return { cached:netCached||sdCached, cachedKind:netCached?'net':(sdCached?'sd':null),
+             onSD:!!(man&&Array.isArray(man.components)), ortOk:!!(ort&&ort.InferenceSession),
+             webgpu:!!(probe&&probe.ep==='webgpu') };
+  }
+
+  // Tokenizer: SD copy → cached internet copy → HuggingFace.
+  async function getTokenizer(){
+    const {makeClipTokenizer}=await import('./diffusion/clip-tokenizer.js');
+    if(manState){
+      const tj=await fetch(assetUrl(MODEL_DIR+'/tokenizer.json')+'?t='+Date.now()).then(r=>r.ok?r.json():null).catch(()=>null);
+      if(tj){const v=(tj.model&&tj.model.vocab)||tj.vocab||{},m=(tj.model&&tj.model.merges)||tj.merges||[];return makeClipTokenizer({vocab:v,merges:m});}
+    }
+    const ntok=await modelCache.get('net-tokenizer');
+    if(ntok){try{const tj=JSON.parse(new TextDecoder().decode(ntok));return makeClipTokenizer({vocab:tj.vocab,merges:tj.merges});}catch{}}
+    try{
+      const [vR,mR]=await Promise.all([fetch(HF+'/vocab.json'),fetch(HF+'/merges.txt')]);
+      if(!vR.ok||!mR.ok) return null;
+      const vocab=await vR.json();
+      const merges=(await mR.text()).split('\n').filter(l=>l&&!l.startsWith('#'));
+      modelCache.put('net-tokenizer',new TextEncoder().encode(JSON.stringify({vocab,merges})));
+      return makeClipTokenizer({vocab,merges});
+    }catch{return null;}
+  }
+
+  // Download every component for a source into a {role:Uint8Array} map, reporting per-step progress.
+  async function downloadComponents(source, onStep){
+    const bufs={};
+    if(source==='sd'){
+      if(!manState||!Array.isArray(manState.components)) throw new Error('manifest SD assente');
+      const {loadComponent}=await import('./diffusion/sd-loader.js');
+      const rawRead=(url)=>fetch(url+'?t='+Date.now())
+        .then(async r=>r.ok?{ok:true,status:r.status,bytes:new Uint8Array(await r.arrayBuffer())}:{ok:false,status:r.status})
+        .catch(()=>({ok:false,status:0}));
+      for(const comp of manState.components){
+        if(!comp.parts) continue;                                              // skip tokenizer.json (parts:0)
+        onStep(comp.role,{state:'active'});
+        const res=await loadComponent({base:assetUrl(MODEL_DIR+'/'+comp.file),parts:comp.parts,totalBytes:comp.bytes,
+          readPart:modelCache.wrap(rawRead,comp.partSha),
+          onProgress:p=>onStep(comp.role,{state:'active',bytes:p.bytes,totalBytes:p.totalBytes,part:p.index,parts:p.total})});
+        if(!res.ok) throw new Error('lettura SD '+comp.role+' '+(res.status||''));
+        bufs[comp.role]=new Uint8Array(res.buffer);
+        onStep(comp.role,{state:'done',bytes:comp.bytes,totalBytes:comp.bytes});
+      }
+    } else {                                                                    // internet
+      for(const src of NET_SRCS){
+        onStep(src.role,{state:'active'});
+        const chunks=[];let soFar=0;
+        for(let i=0;i<src.parts;i++){
+          const r=await fetch(`${LSB}/${src.file}.${pad3(i)}.db`);
+          if(!r.ok) throw new Error(src.label+': HTTP '+r.status);
+          const b=new Uint8Array(await r.arrayBuffer());
+          chunks.push(b);soFar+=b.byteLength;
+          onStep(src.role,{state:'active',bytes:soFar,totalBytes:src.bytes,part:i+1,parts:src.parts});
+        }
+        const buf=new Uint8Array(soFar);let off=0;for(const ch of chunks){buf.set(ch,off);off+=ch.byteLength;}
+        bufs[src.role]=buf; modelCache.put('net-'+src.role,buf);                // persist for next time
+        onStep(src.role,{state:'done',bytes:soFar,totalBytes:src.bytes});
+      }
+    }
+    return bufs;
+  }
+
+  // Assemble an inference engine from already-loaded component buffers.
+  // onStep (optional) drives the 'runtime' + 'engine' rows of the blocking overlay.
+  async function buildEngine(bufs, source, onStep){
+    const tokenizer=await getTokenizer(); if(!tokenizer) throw new Error('tokenizer non disponibile');
+    await ensureRuntime(onStep);                                                // ORT wasm ready before any session
+    onStep&&onStep('engine',{state:'active'});
+    const {makeFusedEngine,makeDiffusionEngine}=await import('./diffusion/diffusion-engine.js');
+    const createSession=(role,buf)=>ort.InferenceSession.create(buf,{executionProviders:eps()});
+    const loadComp=async(comp)=>{ const b=bufs[comp.role]; return b?{ok:true,buffer:b.buffer}:{ok:false,error:'miss:'+comp.role}; };
+    const makeTensor=(data,dims,type)=>new ort.Tensor(type,data,dims);             // real ort.Tensor (host tests use the plain default)
+    if(source==='sd' && manState && manState.format && manState.format!=='lsb-fused'){
+      const cfg={...manState,ep:probe&&probe.ep||'wasm',components:manState.components};
+      const eng=makeDiffusionEngine({createSession,loadComponent:loadComp,tokenizer,config:cfg,makeTensor});
+      const ld=await eng.load(); if(!ld||!ld.ok) throw new Error('avvio motore fallito'); return eng;
+    }
+    const cfg={format:'lsb-fused',revision:REV,resolution:RES,steps:1,ep:probe&&probe.ep||'wasm',io:FUSED_IO,components:[{role:'fused'},{role:'text-encoder'}]};
+    const eng=makeFusedEngine({createSession,loadComponent:loadComp,tokenizer,config:cfg,makeTensor});
+    const ld=await eng.load(); if(!ld||!ld.ok) throw new Error('avvio motore fallito'); return eng;
+  }
+
+  // Instant load from cache (no network) — used on open when the model is already local.
+  async function loadCached(kind){
+    let bufs;
+    if(kind==='net') bufs={fused:await modelCache.get('net-fused'),'text-encoder':await modelCache.get('net-text-encoder')};
+    else bufs=await downloadComponents('sd',()=>{});                            // chunks are cached → no WiFi
+    return await buildEngine(bufs, kind==='net'?'internet':'sd', null);
+  }
+
+  async function useMock(){
+    selProvider='preview'; try{ localStorage.setItem(PREF_KEY,'preview'); }catch{}
+    if(el.prov && providers.length) applyProviderUI(); else showStudio();
+    el.status.textContent=UL('Anteprima procedurale (non IA) attiva.','Procedural preview (not AI) active.');
+    banner('info',UL('Anteprima procedurale (non IA). Per immagini reali scegli Online (Grok) o scarica il modello locale.','Procedural preview (not AI). For real images choose Online (Grok) or download the local model.'));
+  }
+
+  // ---- view switching + busy lock ----------------------------------------------------------------------
+  function setBusy(b){ window.__atelierBusy=b;
+    if(el.x){ el.x.style.opacity=b?'.35':''; el.x.style.pointerEvents=b?'none':''; }
+    if(el.model) el.model.disabled=!!b; }
+  function showStudio(){ el.manager.style.display='none'; el.studio.style.display=''; el.foot.style.display=''; }
+  function showManagerView(){ el.studio.style.display='none'; el.foot.style.display='none'; el.manager.style.display=''; }
+
+  // ---- boot: instant if cached, otherwise present the manager (never auto-download) --------------------
+  async function boot(){
+    if(engine){ showReady(); return engine; }
+    if(booting) return booting;
+    el.status.textContent=UL('Verifico modello…','Checking model…');
+    booting=(async()=>{
+      let st; try{ st=await probeState(); }catch{ st={cached:false,cachedKind:null,onSD:false,ortOk:false,webgpu:false}; }
+      if(st.cached && st.ortOk){
+        // Model is local, but the runtime may still need a one-time fetch + the GPU must compile the model
+        // — both shown as a short progress overlay so the user is never left staring at a frozen panel.
+        const e=await prepareCachedEngine(st.cachedKind);
+        if(e) return e;
+        if(window.__atelierBusy===false && el.dl.classList.contains('show')) return null;  // error overlay handles it
+      }
+      renderManager(st); showManagerView();
+      return null;
+    })();
+    const r=await booting; booting=null; return r;
+  }
+  function showReady(){
+    const labels = {'sdxs-fused':UL('Pronto · SDXS q68 su WebGPU','Ready · SDXS q68 on WebGPU'),
+                    'sdxs':UL('Pronto · SDXS su WebGPU','Ready · SDXS on WebGPU'),
+                    'mock':UL('Pronto · anteprima procedurale','Ready · procedural preview')};
+    el.status.textContent=labels[engKind]||UL('Pronto','Ready'); }
+
+  // ---- manager view: shows state + source choices ------------------------------------------------------
+  function openManager(){ if(!back||window.__atelierBusy) return; probeState().then(st=>{ renderManager(st); showManagerView(); }).catch(()=>{}); }
+
+  function renderManager(st){
+    const offline = (navigator.onLine===false);
+    const wgLine = st.webgpu ? `<span class="ok">${UL('✓ WebGPU attivo — generazione veloce','✓ WebGPU active — fast generation')}</span>`
+                             : `<span class="warn">${UL('⚠ WebGPU assente — userà la CPU (lento ma funziona)','⚠ WebGPU missing — will use the CPU (slow but works)')}</span>`;
+    const cachedRow = st.cached
+      ? `<div class="atl-mm-state ok"><span class="ic">✓</span><div>${UL('Modello in <b>cache locale</b> — pronto, caricamento istantaneo. Nessun download necessario.','Model in <b>local cache</b> — ready, instant load. No download needed.')}</div></div>`
+      : `<div class="atl-mm-state warn"><span class="ic">⬇</span><div>${UL('Modello <b>non in cache</b>. Scaricalo una sola volta (≈553&nbsp;MB): poi resta nel browser e si avvia subito.','Model <b>not cached</b>. Download it once (≈553&nbsp;MB): then it stays in the browser and starts instantly.')}</div></div>`;
+    const ortBad = !st.ortOk ? `<div class="atl-mm-state warn"><span class="ic">⚠</span><div>${UL('ONNX&nbsp;Runtime non disponibile (serve Chrome/Edge desktop). Puoi comunque usare l’anteprima procedurale.','ONNX&nbsp;Runtime unavailable (needs desktop Chrome/Edge). You can still use the procedural preview.')}</div></div>` : '';
+    const netDis = !st.ortOk || offline;
+    const sdDis  = !st.ortOk || !st.onSD;
+    const actLabel = st.cached?UL('Ri-scarica','Re-download'):UL('Scarica','Download');
+    el.manager.innerHTML = `
+      ${cachedRow}${ortBad}
+      <div class="atl-src ${netDis?'dim':''}">
+        <span class="si">📡</span>
+        <div class="sl"><b>${UL('Scarica da Internet','Download from the Internet')}</b><small>${offline?UL('offline — nessuna connessione','offline — no connection'):UL('GitHub · ~553 MB · richiede connessione','GitHub · ~553 MB · requires a connection')}</small></div>
+        <button data-src="internet" ${netDis?'disabled':''}>${actLabel}</button>
+      </div>
+      <div class="atl-src ${sdDis?'dim':''}">
+        <span class="si">💾</span>
+        <div class="sl"><b>${UL('Scarica dal dispositivo','Download from the device')}</b><small>${st.onSD?UL('SD via WiFi locale · ~553 MB','SD over local WiFi · ~553 MB'):UL('modello non presente sull&#39;SD','model not present on the SD')}</small></div>
+        <button data-src="sd" ${sdDis?'disabled':''}>${actLabel}</button>
+      </div>
+      <div class="atl-mm-alt">
+        <button class="atl-link" data-act="mock">${UL('Usa anteprima procedurale (senza download)','Use procedural preview (no download)')}</button>
+        ${st.cached?`<button class="atl-link danger" data-act="clear">${UL('Rimuovi dalla cache','Remove from cache')}</button>`:''}
+      </div>
+      <div class="atl-status">${wgLine}</div>`;
+    el.manager.querySelectorAll('[data-src]').forEach(b=>b.onclick=()=>startDownload(b.dataset.src));
+    el.manager.querySelectorAll('[data-act]').forEach(b=>b.onclick=async()=>{
+      if(b.dataset.act==='mock'){ await useMock(); }
+      else if(b.dataset.act==='clear'){ b.disabled=true; await modelCache.clear(); engine=null; engKind=''; const ns=await probeState(); renderManager(ns); }
+    });
+  }
+
+  // ---- blocking progress overlay -----------------------------------------------------------------------
+  // mode 'full' = download model + runtime + start engine · mode 'runtime' = model already cached, only
+  // fetch the runtime (first time) + compile on the GPU. dlRetry holds the action the "Riprova" button re-runs.
+  let dlSteps=null, dlRetry=null;
+  const DL_DEFS=(mode)=> mode==='runtime'
+    ? [ {id:'runtime', label:UL('Runtime ORT (motore di inferenza)','ORT runtime (inference engine)'), bytes:ORT_WASM_BYTES},
+        {id:'engine',  label:UL('Avvio motore ','Starting engine ')+(probe&&probe.ep==='webgpu'?'WebGPU':'CPU'), bytes:0} ]
+    : [ {id:'text-encoder', label:'Text encoder', bytes:124e6},
+        {id:'fused',        label:UL('Modello fuso (ControlNet + UNet + VAE)','Fused model (ControlNet + UNet + VAE)'), bytes:429e6},
+        {id:'runtime',      label:UL('Runtime ORT (motore di inferenza)','ORT runtime (inference engine)'), bytes:ORT_WASM_BYTES},
+        {id:'engine',       label:UL('Avvio motore ','Starting engine ')+(probe&&probe.ep==='webgpu'?'WebGPU':'CPU'), bytes:0} ];
+  function renderDl(source, errMsg, mode){
+    const defs=DL_DEFS(mode);
+    const totalBytes=defs.reduce((a,d)=>a+(d.bytes||0),0)||1;
+    const dlBytes=defs.filter(d=>d.bytes).reduce((a,d)=>{const s=dlSteps[d.id];return a+((s&&s.bytes)||0);},0);
+    let pct=Math.min(99,Math.round(dlBytes/totalBytes*100));
+    const engStep=dlSteps['engine']; if(engStep&&engStep.state==='done') pct=100;
+    const stepHtml=defs.map(d=>{
+      const s=dlSteps[d.id]||{state:'pending'};
+      const ic=s.state==='done'?'✓':s.state==='active'?'⟳':s.state==='error'?'✕':'·';
+      let sub='';
+      if(s.state==='active'&&s.bytes&&d.bytes) sub=`<span class="ss">${(s.bytes/1e6).toFixed(0)} / ${(d.bytes/1e6).toFixed(0)} MB${s.part?(UL(' · parte ',' · part ')+s.part+'/'+s.parts):''}</span>`;
+      else if(s.state==='done'&&d.bytes) sub=`<span class="ss">${(d.bytes/1e6).toFixed(0)} ${UL('MB completati','MB done')}</span>`;
+      else if(s.state==='active'&&d.id==='engine') sub=`<span class="ss">${UL('compilazione del modello sulla GPU…','compiling the model on the GPU…')}</span>`;
+      return `<div class="atl-step ${s.state}"><span class="si">${ic}</span><div>${d.label}${sub}</div></div>`;
+    }).join('');
+    const header = errMsg ? UL('⚠ Operazione non riuscita','⚠ Operation failed')
+      : mode==='runtime' ? UL('⚙ Preparo il motore','⚙ Preparing the engine')
+      : UL('⬇ Scarico da ','⬇ Downloading from ')+(source==='internet'?'Internet (GitHub)':'Device (SD)');
+    const footer = errMsg
+      ? `<div class="atl-dl-err"><div class="em">✕ ${errMsg}</div><div class="atl-dl-actions">
+           <button class="primary" data-dl="retry">${UL('Riprova','Retry')}</button>
+           ${mode!=='runtime'&&source==='internet'&&manState?`<button data-dl="sd">${UL('Prova dal dispositivo','Try from the device')}</button>`:''}
+           ${mode!=='runtime'&&source==='sd'?`<button data-dl="internet">${UL('Prova da Internet','Try from the Internet')}</button>`:''}
+           <button data-dl="mock">${UL('Usa anteprima','Use preview')}</button></div></div>`
+      : `<div class="atl-dl-warn">⚠ ${mode==='runtime'?UL('Quasi pronto — un attimo. Non chiudere Atelier.','Almost ready — one moment. Do not close Atelier.'):UL('Download in corso — tieni Atelier aperto e non trascinare file finché non è completo. Puoi continuare a usare il resto del PC.','Download in progress — keep Atelier open and do not drag files until it finishes. You can keep using the rest of the PC.')}</div>`;
+    const sub = errMsg ? '' : (mode==='runtime'?UL('Solo la prima volta: poi l’avvio è immediato.','First time only: then startup is instant.'):UL('Una volta sola: poi il modello resta in cache e parte subito.','One time only: then the model stays cached and starts instantly.'));
+    el.dl.innerHTML=`
+      <h4>${header}</h4>
+      <div class="atl-dl-pct">${pct}%</div>
+      <div class="atl-dl-bar"><i style="width:${Math.max(3,pct)}%"></i></div>
+      <div class="atl-dl-sub">${sub}</div>
+      <div class="atl-steps">${stepHtml}</div>
+      ${footer}`;
+    if(errMsg) el.dl.querySelectorAll('[data-dl]').forEach(b=>b.onclick=()=>{
+      const a=b.dataset.dl;
+      if(a==='mock'){ hideDl(); setBusy(false); useMock(); }
+      else if(a==='retry'){ if(dlRetry) dlRetry(); }
+      else startDownload(a);                                                    // 'sd' / 'internet' alternative
+    });
+  }
+  function showDl(){ el.dl.classList.add('show'); }
+  function hideDl(){ el.dl.classList.remove('show'); }
+
+  // The blocking action: download model (chosen source) → runtime → start engine, modal locked throughout.
+  async function startDownload(source){
+    if(window.__atelierBusy) return;
+    dlSteps={}; dlRetry=()=>startDownload(source); setBusy(true); showDl(); renderDl(source,null,'full');
+    const patch=(id,p)=>{ dlSteps[id]=Object.assign(dlSteps[id]||{},p); renderDl(source,null,'full'); };
+    try{
+      const bufs=await downloadComponents(source,patch);
+      const eng=await buildEngine(bufs,source,patch);                            // runtime + engine steps emitted inside
+      patch('engine',{state:'done'});
+      engine=eng; engKind=eng.kind||'sdxs-fused';
+      selProvider='local'; try{ localStorage.setItem(PREF_KEY,'local'); }catch{}   // just downloaded → prefer local
+      setBusy(false); hideDl(); showStudio(); showReady();
+      initStudio().catch(()=>{});                                                  // refresh selector with the now-cached model
+      banner('info',UL('Modello pronto e salvato in cache — le prossime aperture sono immediate.','Model ready and cached — next openings are instant.'));
+    }catch(err){
+      for(const k of Object.keys(dlSteps)){ if(dlSteps[k].state==='active') dlSteps[k].state='error'; }
+      setBusy(false);                                                           // re-enable close + error actions
+      renderDl(source, (err&&err.message)||String(err), 'full');
+    }
+  }
+
+  // Model already cached → only the runtime (first time) + GPU compile remain. Same overlay, 'runtime' mode.
+  async function prepareCachedEngine(kind){
+    dlSteps={}; dlRetry=()=>prepareCachedEngine(kind); setBusy(true); showDl(); renderDl('cache',null,'runtime');
+    const patch=(id,p)=>{ dlSteps[id]=Object.assign(dlSteps[id]||{},p); renderDl('cache',null,'runtime'); };
+    try{
+      let bufs;
+      if(kind==='net') bufs={fused:await modelCache.get('net-fused'),'text-encoder':await modelCache.get('net-text-encoder')};
+      else bufs=await downloadComponents('sd',()=>{});                          // model chunks cached → instant, no UI
+      const eng=await buildEngine(bufs, kind==='net'?'internet':'sd', patch);   // ensureRuntime + engine steps
+      patch('engine',{state:'done'});
+      engine=eng; engKind=eng.kind||'sdxs-fused';
+      setBusy(false); hideDl(); showStudio(); showReady();
+      return engine;
+    }catch(err){
+      for(const k of Object.keys(dlSteps)){ if(dlSteps[k].state==='active') dlSteps[k].state='error'; }
+      setBusy(false);
+      renderDl('cache', (err&&err.message)||String(err), 'runtime');
+      return null;
+    }
+  }
+
+  // ---- the canvas <-> engine bridge -------------------------------------------------------------------
+  function sketchFromCanvas(){ return { width:c.width, height:c.height, data:ctx.getImageData(0,0,c.width,c.height).data }; }
+  function imageToTemp(img){ const t=document.createElement('canvas'); t.width=img.width; t.height=img.height;
+    t.getContext('2d').putImageData(new ImageData(new Uint8ClampedArray(img.data), img.width, img.height),0,0); return t; }
+
+  function regionSketch(r){ const d=ctx.getImageData(r.x,r.y,r.w,r.h); return { width:r.w, height:r.h, data:d.data }; }
+  async function generate(){
+    if(generating) return;
+    const prompt=(el.prompt.value||'').trim();
+    const negativePrompt=(el.neg.value||'').trim();
+    if(!prompt && mode!=='img'){ banner('warn',UL('Scrivi una descrizione.','Write a description.')); el.prompt.focus(); return; }
+    await ensurePipeline(); await loadAi();
+    if(!selProvider || !providers.length){ try{ await initStudio(); }catch{} }   // ensure providers resolved (e.g. NL-command entry)
+    const provider=selProvider||'preview';
+    // the LOCAL in-browser model must be downloaded/booted first; boot() shows the manager + returns null if absent
+    let localEngine=null;
+    if(provider==='local'){ localEngine=await boot(); if(!localEngine) return; }
+    generating=true; el.go.disabled=true; const goLabel=el.go.textContent; el.go.textContent=UL('Genero…','Generating…'); clearBanner();
+    el.variants.innerHTML=''; if(el.enhanced) el.enhanced.style.display='none';
+    try{
+      const seed0=Math.max(0,(parseInt(el.seed.value,10)||0))>>>0;
+      const nVar=Math.max(1,Math.min(6,parseInt(el.varEl.value,10)||1));
+      const controlScale = mode==='sketch' ? +el.ctrl.value : 1;
+      const s = window.__paintSel && window.__paintSel();                 // generate INTO the selection if present
+      const region = s || {x:0,y:0,w:c.width,h:c.height};
+      // online (text→image) ignores the sketch; the local/preview engines use it for sketch/img modes
+      const sketch = (mode==='text' || provider==='online') ? null : regionSketch(region);
+      const enhanceOn = !!(el.enhance && el.enhance.checked && aiCfg.chat);
+      const enhancer = enhanceOn
+        ? PIPEMOD.O.makePromptEnhancer({ cfg:aiCfg.chat, ask:(sys,u)=>llmAsk(sys,u), label:aiCfg.chat.brand })
+        : null;
+      const pipe=PIPEMOD.L.makeImagePipeline({ resolveEngine:(id)=>resolveEngine(id, localEngine), enhancer });
+      const r=await pipe.run({ provider, prompt, negativePrompt, style:'image', enhance:enhanceOn, n:nVar, seed:seed0, sketch, controlScale, lang:uiLang(),
+        onStage:(st)=>{
+          if(st.phase==='enhance'&&st.state==='active'){ el.status.textContent=UL('✨ Miglioro il prompt (','✨ Improving the prompt (')+(enhancer&&enhancer.brand)+')…'; setProg({index:1,total:6}); }
+          else if(st.phase==='engine'&&st.state==='active'){ el.status.textContent=UL('Preparo il motore…','Preparing the engine…'); }
+          else if(st.phase==='generate'&&st.state==='active'){ el.status.textContent = nVar>1?(UL('Variante ','Variant ')+`${(st.index||0)+1}/${nVar}…`):UL('Generazione in corso…','Generating…'); setProg({index:(st.index||0)+1,total:nVar}); }
+          else if(st.phase==='step'&&st.step){ el.status.textContent='· '+st.step; }   // st.step = engine-provided technical label (kept verbatim)
+        } });
+      setProg(null);
+      lastInfo={ provider, brand:r.brand, online:r.online };
+      // honest enhanced-prompt panel: only when the LLM actually rewrote it, labelled with the ENHANCER brand
+      if(el.enhanced){
+        if(r.enhanced && r.enhanced.source==='llm' && r.enhanced.to!==r.enhanced.from){
+          el.enhanced.className='atl-enhanced'; el.enhanced.style.display='';
+          el.enhanced.innerHTML='<b>Prompt ('+escapeHtml(r.enhanced.brand||'IA')+'):</b> '+escapeHtml(r.enhanced.to);
+        } else if(enhanceOn){
+          el.enhanced.className='atl-enhanced warn'; el.enhanced.style.display='';
+          el.enhanced.textContent=UL('Miglioramento prompt non riuscito — uso il testo originale.','Prompt enhancement failed — using your original text.');
+        }
+      }
+      // snapshot the apply context NOW (variant clicks happen later; mode/strength/layer/selection may change)
+      const applyCtx={ mode, hasSel: !!(window.__paintSel&&window.__paintSel()), strength:+el.str.value, layer: !!(el.layer&&el.layer.checked), info:{provider, brand:r.brand, online:r.online} };
+      const mapped=r.results.map(x=>({ out:{image:x.image,meta:x.meta}, seed:x.seed }));
+      if(mapped.length===1){ await applyResult(mapped[0], region, applyCtx); }
+      else { renderVariants(mapped, region, applyCtx); el.status.textContent=UL('Scegli una variante qui sotto.','Choose a variant below.'); }
+      if(r.errors && r.errors.length){ banner('warn', r.errors.length+UL(' variante/i non riuscite: ',' variant(s) failed: ')+r.errors[0].error); }
+    }catch(err){ setProg(null); banner('warn',UL('Generazione non riuscita: ','Generation failed: ')+(err&&err.message||err)); }
+    finally{ generating=false; el.go.disabled=false; el.go.textContent=goLabel; }
+  }
+  function renderVariants(results, region, actx){ el.variants.innerHTML='';
+    results.forEach(res=>{ const t=imageToTemp(res.out.image); const th=document.createElement('canvas'); th.width=64; th.height=64;
+      th.getContext('2d').drawImage(t,0,0,64,64); th.title='seed '+res.seed;
+      th.onclick=()=>{ [...el.variants.children].forEach(x=>x.classList.remove('pick')); th.classList.add('pick'); applyResult(res, region, actx); };
+      el.variants.appendChild(th); }); }
+  async function applyResult(res, region, actx){ const { out, seed }=res;
+    // use the context captured at generation time (falls back to live state for safety)
+    const a=actx||{ mode, hasSel:!!(window.__paintSel&&window.__paintSel()), strength:+el.str.value, layer:!!(el.layer&&el.layer.checked), info:lastInfo||{} };
+    pushUndo();
+    if(a.layer && typeof addImageLayer==='function') addImageLayer('AI · seed '+seed);   // generate onto a fresh layer
+    const temp=imageToTemp(out.image);
+    if(a.mode==='img' && !a.hasSel){ ctx.save(); ctx.globalAlpha=a.strength; ctx.drawImage(temp,0,0,c.width,c.height); ctx.restore(); }
+    else { ctx.drawImage(temp, region.x, region.y, region.w, region.h); }
+    markDirty(); syncTitle();
+    const info=a.info||{};
+    const label = info.provider==='online' ? (UL('Immagine · ','Image · ')+(info.brand||'Online'))
+      : info.provider==='preview' ? UL('Anteprima (non IA)','Preview (not AI)')
+      : UL('Immagine (SDXS · nel browser)','Image (SDXS · in browser)');
+    let msg = label+' · seed '+seed+(a.hasSel?UL(' · nella selezione',' · in the selection'):'');
+    if(out.meta && out.meta.revisedPrompt) msg += UL(' · prompt rielaborato dal modello',' · prompt reworked by the model');
+    if(el.save.checked){ const name='atelier-'+seed+'-'+Math.random().toString(36).slice(2,6)+'.png'; const ok=await saveGenerated('/data/Pictures/'+name); msg += ok?(UL(' · salvata in /data/Pictures/',' · saved to /data/Pictures/')+name):UL(' · salvataggio fallito',' · save failed'); }
+    setMsg(msg); el.status.textContent=msg;
+  }
+  function saveGenerated(p){ return new Promise(res=>{ compositeCanvas().toBlob(async blob=>{ try{ const r=await fetch('/api/fs/write?path='+encodeURIComponent(p),{method:'POST',body:blob}); res(r.ok); }catch{ res(false);} }, 'image/png', 0.95); }); }
+
+  // wire the toolbar button + expose for menus / ANIMA hand-off
+  const btn=document.getElementById('atelierBtn'); if(btn) btn.addEventListener('click', ()=>open('text'));
+  window.openAtelier=open;
+  // programmatic run for the NL command bar: open the studio, fill the prompt, generate onto a new layer,
+  // and (for icons/logos) auto-remove the background so you get a clean transparent asset.
+  window.__atelierRun = async ({ prompt='', negative='', removeBg=false } = {}) => {
+    open('text'); if(el.prompt) el.prompt.value=prompt; if(el.neg) el.neg.value=negative||'';
+    if(el.varEl){ el.varEl.value='1'; el.varVal.textContent='1'; } if(el.layer) el.layer.checked=true;
+    await generate();
+    if(removeBg && typeof CMD!=='undefined' && CMD.removeBg) CMD.removeBg();
+  };
+  // allow the shell / ANIMA to deep-link: ?atelier=1 or ?atelier=sketch
+  const aq=new URLSearchParams(location.search).get('atelier'); if(aq){ setTimeout(()=>open(aq==='1'?'text':aq),120); }
+})();
+</script>
+<script type="module">
+// Put Paint on the centralized i18n engine. init('paint') loads core + the paint catalog for the active OS
+// language and fills every [data-i18n]/[data-i18n-attr] element (the static chrome), English being the
+// source-of-truth + fallback floor; the engine then observes the DOM and re-applies on any language switch.
+// The onChange hook additionally refreshes Paint's DYNAMIC strings (tool name/hint, selection info, title),
+// which are built imperatively via LT() — applyLang() is a global from the classic script above.
+import I18N from '/nucleo-i18n.js';
+const t = await I18N.init('paint');
+I18N.onChange(() => { try { window.applyLang && window.applyLang(); } catch {} });
+</script>
+</body>
+</html>

@@ -1,11 +1,15 @@
 <!DOCTYPE html>
-<html lang="it">
+<!-- SPDX-License-Identifier: AGPL-3.0-or-later -->
+<html lang="en">
 <head>
 <meta charset="utf-8">
+<script>/* NucleoOS resource guard: a lost same-origin script/stylesheet makes the shell reload this window once (wm.js retryFrame) */addEventListener('error',function(e){var t=e.target,u;if(!t||t===window||parent===window||(t.tagName!=='SCRIPT'&&t.tagName!=='LINK'))return;try{u=new URL(t.src||t.href,location.href);if(u.origin===location.origin)parent.postMessage({type:'app-resource-failed',src:u.pathname},location.origin)}catch(_){}},true)</script>
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title data-i18n="title">Spreadsheet V2</title>
 <style>
 /* ===== NucleoOS Design System ===== */
+    /* Native controls and scrollbars follow the app theme. */
+    :root { color-scheme: dark; } html[data-theme="light"] { color-scheme: light; }
 :root {
   --bg:#0e1830; --panel:#18233a; --panel2:#1f2d4a; --text:#e8eefc;
   --muted:#8aa0c8; --accent:#4ea1ff; --line:#2a3a5e; --field:#0b1220;
@@ -852,7 +856,7 @@ const gridHead = $('gridHead');
 const gridBody = $('gridBody');
 
 function buildHeader() {
-  let h = '<tr><th class="corner" id="cornerCell" title="Seleziona tutto"></th>';
+  let h = '<tr><th class="corner" id="cornerCell" data-i18n-attr="title:tt_selectAll" title="Seleziona tutto"></th>';
   for (let c = 0; c < COLS; c++)
     h += `<th class="colh" style="width:${colWidths[c]}px;min-width:${colWidths[c]}px" data-c="${c}">${colName(c)}<div class="col-resizer" data-c="${c}"></div></th>`;
   h += '</tr>';
@@ -985,23 +989,35 @@ function escHtml(s) { return String(s).replace(/&/g, '&amp;').replace(/</g, '&lt
 
 // ===== CELL INTERACTION =====
 function wireCellClicks() {
-  gridBody.querySelectorAll('td.rh').forEach(td => td.addEventListener('mousedown', e => selectRow((+td.textContent || 1) - 1, e.shiftKey)));
+  gridBody.querySelectorAll('td.rh').forEach(td => td.addEventListener('pointerdown', e => selectRow((+td.textContent || 1) - 1, e.shiftKey)));
+  // Pointer events: one path for mouse, pen and touch (and pointercancel
+  // cleans up the listeners when the system takes over the gesture, which
+  // mouseup never did).
+  // ⚠️ KNOWN LIMIT: with a FINGER the drag stays a scroll of the sheet, not a
+  // range selection. Inverting it would need `touch-action: none` on the
+  // cells, i.e. giving up native scrolling and rewriting it — scrolling matters
+  // more than dragging. Setting it inside the handler does NOT work: the
+  // browser decides at touchstart, not later.
   gridBody.querySelectorAll('td.c').forEach(td => {
-    td.addEventListener('mousedown', e => {
+    td.addEventListener('pointerdown', e => {
+      if (e.button > 0) return;
       const r = +td.dataset.r, c = +td.dataset.c;
       commitEdit();
       if (e.shiftKey) { selR2 = r; selC2 = c; }
       else { curR = r; curC = c; selR2 = -1; selC2 = -1; }
       renderVirtual();
       const onMove = ev => {
+        // elementFromPoint, not ev.target: with setPointerCapture the target
+        // would stay the starting cell for the whole drag.
         const el = document.elementFromPoint(ev.clientX, ev.clientY);
         if (el && el.dataset && el.dataset.r != null) {
           selR2 = +el.dataset.r; selC2 = +el.dataset.c; renderVirtual();
         }
       };
-      const onUp = () => { window.removeEventListener('mousemove', onMove); window.removeEventListener('mouseup', onUp); };
-      window.addEventListener('mousemove', onMove);
-      window.addEventListener('mouseup', onUp);
+      const onUp = () => { window.removeEventListener('pointermove', onMove); window.removeEventListener('pointerup', onUp); window.removeEventListener('pointercancel', onUp); };
+      window.addEventListener('pointermove', onMove);
+      window.addEventListener('pointerup', onUp);
+      window.addEventListener('pointercancel', onUp);
     });
     td.addEventListener('dblclick', () => { curR = +td.dataset.r; curC = +td.dataset.c; startEdit(); });
   });
@@ -1226,7 +1242,7 @@ window.addEventListener('message', e => {
     else if (d.action === 'copy') doCopy(); else if (d.action === 'paste') doPaste();
     return;
   }
-  if (d.type === 'open-file' && d.path) { loadFromPath(d.path); return; }
+  if (d.type === 'open-file' && d.path) { if (confirmOpen()) loadFromPath(d.path); return; }
 });
 
 function newSheet() {
@@ -1240,8 +1256,13 @@ async function saveAs() {
   const p = await fileDialog('save', filePath ? filePath.substring(0, filePath.lastIndexOf('/')) : '/data', filePath ? filePath.split('/').pop() : 'foglio.csv');
   if (p) writeTo(p);
 }
+// Opening another file replaces the sheet: ask first, like New and Exit do (asked once a file is
+// actually picked, so cancelling the dialog never prompts).
+function confirmOpen() {
+  return !dirty || confirm(spT('confirm_open', null, 'Aprire un altro file? Le modifiche non salvate andranno perse.'));
+}
 async function openFile() {
-  const p = await fileDialog('open'); if (p) loadFromPath(p);
+  const p = await fileDialog('open'); if (p && confirmOpen()) loadFromPath(p);
 }
 function exit() {
   if (dirty && !confirm(spT('confirm_exit', null, 'Uscire senza salvare?'))) return;
@@ -1257,6 +1278,8 @@ function clearAll() {
 }
 
 function markDirty() { dirty = true; syncTitle(); }
+// warn before closing with unsaved changes (covers standalone + the shell's window close)
+window.addEventListener('beforeunload', (e) => { if (dirty) { e.preventDefault(); e.returnValue = ''; } });
 function setMsg(m) { $('stInfo').textContent = m; }
 function syncTitle() {
   const name = filePath ? filePath.split('/').pop() : spT('st_untitled', null, 'senza titolo');
@@ -1436,6 +1459,10 @@ function animaCellValue(query) {
   return '⏳';
 }
 let animaTimer = null;
+// ANIMA on the device (capability anima.device, nucleo-caps.js): where ANIMA lives in the browser the device would
+// only abstain, so it is not asked (an empty answer, as its none:true gives). If the capability module cannot be
+// loaded, the device answers as before.
+const animaDevP = import('/nucleo-caps.js').then((m) => m.default.has('anima.device'), () => true);
 function scheduleAnima() { if (animaTimer || animaResolving) return; animaTimer = setTimeout(resolveAnima, 50); }
 async function resolveAnima() {
   animaTimer = null; if (animaResolving || !animaPending.length) return;
@@ -1446,12 +1473,13 @@ async function resolveAnima() {
     ++animaDone;
     setMsg(spT('msg_animaOffline', { done: animaDone, total: animaTotal }, `🧠 ANIMA offline… ${animaDone}/${animaTotal}`));
     try {
-      const data = await (await fetch('/api/anima?lang=it&mode=off&q=' + encodeURIComponent(q), { cache: 'no-store' })).json();
+      const dev = await animaDevP;
+      const data = dev ? await (await fetch('/api/anima?lang=it&mode=off&q=' + encodeURIComponent(q), { cache: 'no-store' })).json() : { reply: '' };
       let ans = (data.reply || '').trim();
       if (!ans || /non lo so|don't know|not sure/i.test(ans)) ans = '#N/D';
       // offline miss + a key present -> escalate to the online teacher, which also LEARNS it
       // on the device (so the same =ANIMA() resolves offline next time). Self-distilling.
-      if (ans === '#N/D' && grokKey) {
+      if (ans === '#N/D' && dev && grokKey && !(await osMode()).priv) {
         try { const d2 = await (await fetch('/api/anima?lang=it&mode=on&q=' + encodeURIComponent(q), { cache: 'no-store' })).json();
           const a2 = (d2.reply || '').trim(); if (a2 && !/non lo so|don't know|not sure/i.test(a2)) ans = a2; } catch {}
       }
@@ -1956,9 +1984,17 @@ function doInsights() {
 // (so next time it's answered offline). "Proceed as if online", but verified.
 // ===========================================================================
 let grokKey = null;
+// The OS-wide mode (/anima-mode.js), read live: Private = nothing leaves this computer. Every cloud step here asks
+// it — the copilot's Grok skill and cloud planner, =ANIMA()'s online escalation, and the device's assistant, which
+// is asked with mode=off (offline only) instead of mode=on (its online tier). None of them looked before.
+let _modeP = null;
+async function osMode() {
+  try { _modeP = _modeP || import('/anima-mode.js'); const M = await _modeP; const m = M.readMode(); return { priv: m === 'private', dev: M.deviceMode(m) }; }
+  catch { _modeP = null; return { priv: false, dev: 'on' }; }
+}
 async function loadGrokKey() {
-  // Only "is a key set?": the keys stay on the device (ai.js readTeacher returns a placeholder).
-  try { const ai = await import('/ai.js'); const j = await ai.readTeacher(); if (j && !j.unpaired && j.key) grokKey = j; } catch {}
+  // the shared, cached vault reader (ai.js) — not a raw read of teacher.json of its own
+  try { const t = await (await import('/ai.js')).readTeacher(); grokKey = (t && !t.unpaired && t.key) ? t : null; } catch {}
   const b = document.getElementById('grokBadge'); if (b) { b.style.display = grokKey ? 'inline-block' : 'none'; b.title = grokKey ? spT('grok_badge_avail', null, 'Grok online disponibile (fallback verificato)') : ''; }
 }
 // Cell contents are UNTRUSTED (a crafted .csv/.xlsx cell can carry a prompt injection). Fence them so the
@@ -1987,7 +2023,7 @@ async function grokSkill(q, lang) {
     // code POSTed any key to a Groq /chat/completions → silent 401 on Claude, falling to remoteAnima.)
     const ai = await import('/ai.js');
     const cfg = await ai.readTeacher();
-    if (!cfg || !cfg.key) { loading.remove(); return remoteAnima(q, lang); }
+    if (!cfg || !cfg.key || (await osMode()).priv) { loading.remove(); return remoteAnima(q, lang); }
     const out = await ai.cloudToolCall(cfg, { system: GROK_SYS(lang, ctx), messages: [{ role: 'user', content: q }], maxTokens: 320, responseFormat: { type: 'json_object' } });
     loading.remove();
     const raw = (out && out.text) || '';
@@ -2028,6 +2064,7 @@ async function grokSkill(q, lang) {
 async function cloudLLMChat(messages, opts = {}) {
   // Provider-aware (Claude/Groq/xAI/Gemini) via the shared client — Anthropic needs the system message
   // hoisted out of the array, so split a leading {role:'system'} off and pass it separately.
+  if ((await osMode()).priv) throw new Error('no-cloud-key');   // Private: the cloud planner never runs
   const ai = await import('/ai.js');
   const cfg = await ai.readTeacher();
   if (!cfg || !cfg.key) throw new Error('no-cloud-key');
@@ -2041,7 +2078,8 @@ async function cloudLLMChat(messages, opts = {}) {
 // (coherence cross + Grok-veto + bilingual dedup live there — we don't bypass them).
 function teachDevice(q, lang) {
   if (!isQuestion(q) || looksLikeData(q)) return;   // never learn from a non-question / bare data
-  try { fetch('/api/anima?lang=' + (lang === 'en' ? 'en' : 'it') + '&mode=on&q=' + encodeURIComponent(q)).then(r => r.json()).then(d => { if (d && d.learned) setMsg(spT('msg_animaLearned', null, lang === 'en' ? '🧠 ANIMA learned this — offline next time.' : '🧠 ANIMA l\'ha imparato — offline la prossima volta.')); }).catch(() => {}); } catch {}
+  // mode=on = the device's online teacher: never in Private mode
+  try { Promise.all([osMode(), animaDevP]).then(([m, dev]) => (m.priv || !dev) ? null : fetch('/api/anima?lang=' + (lang === 'en' ? 'en' : 'it') + '&mode=on&q=' + encodeURIComponent(q)).then(r => r.json())).then(d => { if (d && d.learned) setMsg(spT('msg_animaLearned', null, lang === 'en' ? '🧠 ANIMA learned this — offline next time.' : '🧠 ANIMA l\'ha imparato — offline la prossima volta.')); }).catch(() => {}); } catch {}
 }
 
 // ===== language + extra executors (bilingual IT/EN) =====
@@ -2049,7 +2087,7 @@ function detectLang(q) {
   const t = ' ' + q.toLowerCase() + ' ';
   const en = (t.match(/\b(the|of|column|sum|average|count|sort|chart|add|remove|highlight|rows?|cells?|how|what|find|make|please|value|values|each|every|show|give|this|in|is|are|me)\b/g) || []).length;
   const it = (t.match(/\b(la|il|lo|le|colonna|somma|media|conta|della|ogni|che|come|valori|riga|righe|celle|cosa|fai|dammi|per|favore|questa|questi|sono|nel|nella|mi|del)\b/g) || []).length;
-  return en > it ? 'en' : 'it';
+  return it > en ? 'it' : 'en';
 }
 // === SAFETY: never treat DATA/garbage as a question for the knowledge tier. ===
 // A bare date/number/time/cell-ref/code is data, not a question → it must NEVER be
@@ -2147,7 +2185,7 @@ async function remoteAnima(q, lang) {
   // question to the device's own assistant — a heavy context wrapper just confuses it.
   const loading = botHTML('<span class="think"><span class="spin"></span> ' + spT('remote_thinking', null, (en ? 'Asking ANIMA on the device…' : 'Consulto ANIMA sul dispositivo…')) + '</span>');
   try {
-    const data = await (await fetch('/api/anima?lang=' + (en ? 'en' : 'it') + '&mode=on&q=' + encodeURIComponent(q))).json();
+    const data = (await animaDevP) ? await (await fetch('/api/anima?lang=' + (en ? 'en' : 'it') + '&mode=' + (await osMode()).dev + '&q=' + encodeURIComponent(q))).json() : { reply: '' };
     loading.remove();
     const reply = (data.reply || '').trim();
     if (!reply || /non lo so|non ho capito|don'?t know|not sure|#n\/d/i.test(reply)) {            // graceful: say it a tono + show what I can do
@@ -2366,7 +2404,9 @@ function makeSandbox() {
     run: async (code, env, opts) => {
       const m = await runMod();
       if (opts && opts.mode === 'check') return m.checkSyntax(code);
-      const rt = m.default({ fs: false, http: false, anima: false, notify: false, timeoutMs: 4000, cwd: '/', maxLogBytes: 64 * 1024 });
+      // hw:false too — createRunner defaults hardware ON, so "all ambient authority denied" was not
+      // true for os.hw.* (IR/GPIO/Wi-Fi) in a transform written by a model.
+      const rt = m.default({ fs: false, http: false, anima: false, notify: false, hw: false, timeoutMs: 4000, cwd: '/', maxLogBytes: 64 * 1024 });
       try { return await rt.run(code, env || {}); } finally { rt.dispose(); }
     },
   };

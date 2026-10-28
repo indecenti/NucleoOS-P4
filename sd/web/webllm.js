@@ -1,3 +1,4 @@
+/* SPDX-License-Identifier: AGPL-3.0-or-later */
 // NucleoOS — language models that run IN THE BROWSER, on the user's GPU (WebGPU + WebLLM).
 //
 // Nothing leaves the computer: the weights download once from the WebLLM CDN, are cached by the

@@ -1,45 +1,51 @@
-// Centro Notifiche di sistema — la spina dorsale web delle notifiche NucleoOS.
-// Un contratto, N produttori, 2 superfici (qui il web; il device è il gemello nativo).
-// Vedi docs/notify-protocol.md. Caricato pigramente da shell.js come copilot.js.
+/* SPDX-License-Identifier: AGPL-3.0-or-later */
+// System Notification Center — the web backbone of NucleoOS notifications.
+// One contract, N producers, 2 surfaces (the web here; the device is the native twin).
+// See docs/notify-protocol.md. Lazily loaded by shell.js like copilot.js.
 //
-// Tutto è event-driven: nessun polling, nessun /api per keystroke. Le notifiche arrivano
-// o da Notify.emit(...) in-process, o dal bus eventi via WebSocket (topic notify.post,
-// più il legacy calendar.reminder finché il firmware non è migrato).
+// Everything is event-driven: no polling, no /api per keystroke. Notifications arrive
+// either from Notify.emit(...) in-process, or from the event bus via WebSocket (topic notify.post,
+// plus the legacy calendar.reminder until the firmware has migrated).
 
-const LS_LIST = 'nucleo.notify.list';   // storico (cap 50)
-const LS_DND  = 'nucleo.notify.dnd';    // '1' = Non disturbare
-const LS_VOL  = 'nucleo.notify.vol';    // 0..100 volume melodia
-const LS_QUIET= 'nucleo.notify.quiet';  // 'HH:MM-HH:MM' ore silenziose, vuoto = off
+import I18N from './nucleo-i18n.js';
+
+const t = I18N.scope('shell');
+
+const LS_LIST = 'nucleo.notify.list';   // history (cap 50)
+const LS_DND  = 'nucleo.notify.dnd';    // '1' = Do Not Disturb
+const LS_VOL  = 'nucleo.notify.vol';    // 0..100 melody volume
+const LS_QUIET= 'nucleo.notify.quiet';  // 'HH:MM-HH:MM' quiet hours, empty = off
 const CAP = 50;
 
-// Default per sorgente: icona + tag leggibile.
+// Default per source: icon + i18n key of the tag (resolved at render time, so it
+// follows the live OS language — the labels used to be hard-coded Italian in a 5-language OS).
 const SRC = {
-  calendar: { ic: '🔔', tag: 'Calendario' },
-  system:   { ic: '⚙️', tag: 'Sistema' },
-  anima:    { ic: '✨', tag: 'ANIMA' },
-  voice:    { ic: '🎤', tag: 'Voce' },
-  recorder: { ic: '🎙️', tag: 'Registratore' },
-  ota:      { ic: '⬆️', tag: 'Aggiornamento' },
-  app:      { ic: '📦', tag: 'App' },
+  calendar: { ic: '🔔', tagKey: 'nc_src_calendar' },
+  system:   { ic: '⚙️', tagKey: 'nc_src_system' },
+  anima:    { ic: '✨', tagKey: 'nc_src_anima' },
+  voice:    { ic: '🎤', tagKey: 'nc_src_voice' },
+  recorder: { ic: '🎙️', tagKey: 'nc_src_recorder' },
+  ota:      { ic: '⬆️', tagKey: 'nc_src_ota' },
+  app:      { ic: '📦', tagKey: 'nc_src_app' },
 };
 
-// Accordi consonanti, un timbro per livello — vera polifonia (più oscillatori insieme).
-// Brevi, attacco morbido, release esponenziale: campanella/carillon, non buzzer.
+// Consonant chords, one timbre per level — true polyphony (several oscillators together).
+// Short, soft attack, exponential release: little bell/chime, not a buzzer.
 const CHORD = {
-  info:     { notes: [659.25, 987.77],            type: 'sine',     gain: 0.16, roll: 0.0  }, // E5+B5 quinta
-  success:  { notes: [523.25, 659.25, 783.99],    type: 'sine',     gain: 0.16, roll: 0.06 }, // DO maggiore, arpeggio
-  warn:     { notes: [587.33, 880.0],             type: 'triangle', gain: 0.15, roll: 0.05 }, // RE5+LA5
-  critical: { notes: [659.25, 659.25, 987.77],    type: 'triangle', gain: 0.18, roll: 0.06 }, // più attento, mai stridulo
+  info:     { notes: [659.25, 987.77],            type: 'sine',     gain: 0.16, roll: 0.0  }, // E5+B5 fifth
+  success:  { notes: [523.25, 659.25, 783.99],    type: 'sine',     gain: 0.16, roll: 0.06 }, // C major, arpeggio
+  warn:     { notes: [587.33, 880.0],             type: 'triangle', gain: 0.15, roll: 0.05 }, // D5+A5
+  critical: { notes: [659.25, 659.25, 987.77],    type: 'triangle', gain: 0.18, roll: 0.06 }, // more attention-grabbing, never shrill
   none:     null,
 };
 
-// Earcon SIGNATURE per sorgente (CHI) — mirror esatto del firmware notify_signature(): suona PRIMA
-// dell'accordo di livello (urgenza). Stessa "DNA sonora" su entrambi i corpi (web + device).
+// SIGNATURE earcon per source (WHO) — exact mirror of the firmware notify_signature(): plays BEFORE
+// the level chord (urgency). Same "sonic DNA" on both bodies (web + device).
 const SIG = {
-  anima:    [{ hz: 2093.0, t: 0, d: 0.10 }, { hz: 2637.02, t: 0.05, d: 0.12 }], // sparkle acuto
-  calendar: [{ hz: 783.99, t: 0, d: 0.16 }],                                    // rintocco caldo
-  ota:      [{ hz: 523.25, t: 0, d: 0.10 }, { hz: 783.99, t: 0.07, d: 0.12 }],  // ascendente
-  recorder: [{ hz: 880.0,  t: 0, d: 0.10 }, { hz: 698.46, t: 0.07, d: 0.12 }],  // discendente
+  anima:    [{ hz: 2093.0, t: 0, d: 0.10 }, { hz: 2637.02, t: 0.05, d: 0.12 }], // high sparkle
+  calendar: [{ hz: 783.99, t: 0, d: 0.16 }],                                    // warm chime
+  ota:      [{ hz: 523.25, t: 0, d: 0.10 }, { hz: 783.99, t: 0.07, d: 0.12 }],  // ascending
+  recorder: [{ hz: 880.0,  t: 0, d: 0.10 }, { hz: 698.46, t: 0.07, d: 0.12 }],  // descending
   voice:    [{ hz: 659.25, t: 0, d: 0.14 }],
   app:      [{ hz: 587.33, t: 0, d: 0.12 }],
   system:   [{ hz: 523.25, t: 0, d: 0.13 }],
@@ -48,13 +54,13 @@ const SIG_LEN = 0.16;
 
 export function initNotify(OS_API) {
   const { byId, WM, openFile, FsIndex } = OS_API || {};
-  let all = load();          // notifiche [{id,src,lvl,icon,title,body,action,sound,sticky,ts,read,count}]
+  let all = load();          // notifications [{id,src,lvl,icon,title,body,action,sound,sticky,ts,read,count}]
   let dnd = localStorage.getItem(LS_DND) === '1';
-  let actx = null;           // AudioContext pigro (creato al primo suono dopo un gesto utente)
+  let actx = null;           // Lazy AudioContext (created on the first sound after a user gesture)
 
-  // ---- persistenza -------------------------------------------------------
-  // localStorage è sincrono: una raffica di notifiche farebbe N scritture. Le coalesciamo in UNA
-  // (timer breve), con flush immediato se la pagina sta per chiudersi → niente perdita di storico.
+  // ---- persistence -------------------------------------------------------
+  // localStorage is synchronous: a burst of notifications would cause N writes. We coalesce them into ONE
+  // (short timer), with an immediate flush if the page is about to close → no history loss.
   function load() {
     try { const a = JSON.parse(localStorage.getItem(LS_LIST)); return Array.isArray(a) ? a : []; } catch { return []; }
   }
@@ -67,50 +73,78 @@ export function initNotify(OS_API) {
   window.addEventListener('pagehide', flushSave);
   document.addEventListener('visibilitychange', () => { if (document.hidden) flushSave(); });
 
-  // ---- DOM: campanella in tray + flyout ---------------------------------
+  // ---- DOM: bell in tray + flyout ---------------------------------
   const tray = document.getElementById('tray');
   const bell = document.createElement('span');
-  bell.id = 'notif-bell'; bell.title = 'Notifiche'; bell.setAttribute('role', 'button');
+  bell.id = 'notif-bell'; bell.title = t('nc_title'); bell.setAttribute('role', 'button');
+  bell.tabIndex = 0; bell.setAttribute('aria-label', t('nc_title'));   // keyboard-reachable
   bell.innerHTML =
     '<svg viewBox="0 0 16 16" width="15" height="15" fill="none" stroke="currentColor" stroke-width="1.3" aria-hidden="true">' +
     '<path d="M4 6.5a4 4 0 0 1 8 0c0 3 1 4 1.4 4.5H2.6C3 10.5 4 9.5 4 6.5z" stroke-linejoin="round"/>' +
     '<path d="M6.5 13a1.5 1.5 0 0 0 3 0" stroke-linecap="round"/></svg>' +
     '<span class="nb-badge" hidden>0</span>';
-  // Inserita prima dell'orologio (ordine Win11: notifiche vicino alla data/ora).
+  // Inserted before the clock (Win11 order: notifications next to the date/time).
   const clock = document.getElementById('clock');
   if (tray && clock) tray.insertBefore(bell, clock); else if (tray) tray.appendChild(bell);
 
   const center = document.createElement('section');
   center.id = 'notif-center'; center.className = 'hidden';
-  center.setAttribute('aria-label', 'Centro Notifiche');
+  center.setAttribute('aria-label', t('nc_title'));
   center.innerHTML =
     '<div class="nc-head">' +
-      '<span class="nc-title">Notifiche</span>' +
-      '<button id="nc-dnd" title="Non disturbare">🌙 <span>DND</span></button>' +
-      '<button id="nc-clear" title="Pulisci tutto">Pulisci</button>' +
+      `<span class="nc-title">${t('nc_title')}</span>` +
+      `<button id="nc-dnd" title="${t('nc_dnd_title')}">🌙 <span>DND</span></button>` +
+      `<button id="nc-amb" title="${t('amb_toggle_title')}">✨</button>` +
+      `<button id="nc-clear" title="${t('nc_clear_title')}">${t('nc_clear')}</button>` +
     '</div>' +
     '<div class="nc-digest" id="nc-digest" hidden></div>' +
     '<div class="nc-list" id="nc-list"></div>';
   document.body.appendChild(center);
+  // Live language switch: retranslate the static chrome and re-render the open list.
+  I18N.onChange(() => {
+    bell.title = t('nc_title'); bell.setAttribute('aria-label', t('nc_title'));
+    center.setAttribute('aria-label', t('nc_title'));
+    center.querySelector('.nc-title').textContent = t('nc_title');
+    dndBtn.title = t('nc_dnd_title');
+    ambBtn.title = t('amb_toggle_title');
+    clearBtn.title = t('nc_clear_title'); clearBtn.childNodes[0].textContent = t('nc_clear');
+    if (isOpen()) render();
+  });
 
   const listEl = center.querySelector('#nc-list');
   const digestEl = center.querySelector('#nc-digest');
   const dndBtn = center.querySelector('#nc-dnd');
+  const ambBtn = center.querySelector('#nc-amb');
   const clearBtn = center.querySelector('#nc-clear');
 
-  // ---- apertura/chiusura -------------------------------------------------
+  // Proactive-ANIMA switch (ambient.js). The panel owns only the button: it flips the LS key and
+  // announces it with an event; ambient.js is the one that starts/stops. Loose coupling on
+  // purpose — no cross-imports between the two lazy modules.
+  const AMB_LS = 'nucleo.ambient';
+  const ambOn = () => (localStorage.getItem(AMB_LS) || '1') !== '0';
+  const paintAmb = () => ambBtn.classList.toggle('active', ambOn());
+  ambBtn.addEventListener('click', () => {
+    const on = !ambOn();
+    try { localStorage.setItem(AMB_LS, on ? '1' : '0'); } catch {}   // quota/private mode must not kill the Center
+    paintAmb();
+    document.dispatchEvent(new CustomEvent('nucleo:ambient-toggle', { detail: { on } }));
+  });
+  paintAmb();
+
+  // ---- open/close --------------------------------------------------------
   function isOpen() { return !center.classList.contains('hidden'); }
   function open() {
     center.classList.remove('hidden');
     markAllRead(); render(); syncBadge();
-    // chiudi gli altri flyout per coerenza Win11
+    // close the other flyouts for Win11 consistency
     const ac = document.getElementById('action-center'); if (ac) ac.classList.add('hidden');
-    const sm = document.getElementById('start-menu'); if (sm) sm.classList.add('open') && sm.classList.remove('open');
+    const sm = document.getElementById('start-menu'); if (sm) sm.classList.add('hidden');   // the shell toggles `hidden`, not `open`
   }
   function close() { center.classList.add('hidden'); }
   function toggle() { isOpen() ? close() : open(); }
 
   bell.addEventListener('click', (e) => { e.stopPropagation(); toggle(); });
+  bell.addEventListener('keydown', (e) => { if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); toggle(); } });
   document.addEventListener('click', (e) => {
     if (isOpen() && !center.contains(e.target) && !bell.contains(e.target)) close();
   });
@@ -123,29 +157,29 @@ export function initNotify(OS_API) {
     const m = q.match(/^(\d{2}):(\d{2})-(\d{2}):(\d{2})$/); if (!m) return false;
     const now = new Date(); const cur = now.getHours() * 60 + now.getMinutes();
     const a = (+m[1]) * 60 + (+m[2]), b = (+m[3]) * 60 + (+m[4]);
-    return a <= b ? (cur >= a && cur < b) : (cur >= a || cur < b);  // finestra che scavalca mezzanotte
+    return a <= b ? (cur >= a && cur < b) : (cur >= a || cur < b);  // window that crosses midnight
   }
   function muted() { return dnd || inQuietHours(); }
   function setDND(on) {
-    dnd = !!on; localStorage.setItem(LS_DND, dnd ? '1' : '0');
+    dnd = !!on; try { localStorage.setItem(LS_DND, dnd ? '1' : '0'); } catch {}   // runs during init — a quota throw here would abort initNotify
     dndBtn.classList.toggle('active', dnd); bell.classList.toggle('dnd', dnd);
   }
   setDND(dnd);
 
-  // ---- melodia polifonica (Web Audio, vera polifonia) --------------------
-  // Una voce: fondamentale + 2ª armonica (timbro carillon) con ADSR morbido.
+  // ---- polyphonic melody (Web Audio, true polyphony) --------------------
+  // One voice: fundamental + 2nd harmonic (chime timbre) with a soft ADSR.
   function playVoice(master, hz, t, dur, type) {
     const osc = actx.createOscillator(); osc.type = type; osc.frequency.value = hz;
     const o2 = actx.createOscillator(); o2.type = 'sine'; o2.frequency.value = hz * 2;
     const g = actx.createGain();
     g.gain.setValueAtTime(0.0001, t);
-    g.gain.exponentialRampToValueAtTime(1, t + 0.012);            // attacco morbido ~12ms
-    g.gain.exponentialRampToValueAtTime(0.0001, t + dur);         // release esponenziale
+    g.gain.exponentialRampToValueAtTime(1, t + 0.012);            // soft attack ~12ms
+    g.gain.exponentialRampToValueAtTime(0.0001, t + dur);         // exponential release
     const g2 = actx.createGain(); g2.gain.value = 0.35; g2.connect(g);
     osc.connect(g); o2.connect(g2); g.connect(master);
     osc.start(t); o2.start(t); osc.stop(t + dur + 0.05); o2.stop(t + dur + 0.05);
   }
-  // Earcon = firma sorgente (CHI) + accordo livello (urgenza) in una sola frase polifonica.
+  // Earcon = source signature (WHO) + level chord (urgency) in a single polyphonic phrase.
   function chime(n) {
     const level = (n && (n.sound || n.lvl)) || 'info';
     const spec = CHORD[level] || CHORD.info; if (!spec) return;
@@ -158,8 +192,8 @@ export function initNotify(OS_API) {
       const master = actx.createGain();
       master.gain.value = spec.gain * vol;
       master.connect(actx.destination);
-      (SIG[n && n.src] || SIG.system).forEach((v) => playVoice(master, v.hz, t0 + v.t, v.d, 'sine'));     // firma (chi)
-      spec.notes.forEach((hz, i) => playVoice(master, hz, t0 + SIG_LEN + i * spec.roll, 0.5, spec.type)); // accordo (urgenza)
+      (SIG[n && n.src] || SIG.system).forEach((v) => playVoice(master, v.hz, t0 + v.t, v.d, 'sine'));     // signature (who)
+      spec.notes.forEach((hz, i) => playVoice(master, hz, t0 + SIG_LEN + i * spec.roll, 0.5, spec.type)); // chord (urgency)
     } catch {}
   }
 
@@ -172,7 +206,7 @@ export function initNotify(OS_API) {
   }
   function markAllRead() { all.forEach((x) => { x.read = true; }); save(); }
 
-  // ---- rendering del flyout ----------------------------------------------
+  // ---- flyout rendering --------------------------------------------------
   function fmtWhen(ts) {
     const d = new Date(ts), now = new Date();
     const same = d.toDateString() === now.toDateString();
@@ -181,22 +215,22 @@ export function initNotify(OS_API) {
   }
   const esc = (s) => String(s == null ? '' : s).replace(/[&<>"]/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' }[c]));
 
-  // Digest: una riga riassuntiva calcolata dallo storico (zero costo).
+  // Digest: a one-line summary computed from the history (zero cost).
   function digestText() {
     if (!all.length) return '';
     let cal = 0, ai = 0, unread = 0;
     for (const n of all) { if (n.src === 'calendar') cal++; else if (n.src === 'anima') ai++; if (!n.read) unread++; }
-    const p = [`${all.length} ${all.length === 1 ? 'notifica' : 'notifiche'}`];
-    if (cal) p.push(`${cal} calendario`);
+    const p = [t('nc_digest_count', { count: all.length, n: all.length })];
+    if (cal) p.push(t('nc_digest_cal', { n: cal }));
     if (ai) p.push(`${ai} ANIMA`);
-    if (unread) p.push(`${unread} da leggere`);
+    if (unread) p.push(t('nc_digest_unread', { n: unread }));
     return p.join(' · ');
   }
   function updateDigest() { const t = digestText(); digestEl.textContent = t; digestEl.hidden = !t; }
 
   function render() {
     updateDigest();
-    if (!all.length) { listEl.innerHTML = '<div class="nc-empty">Nessuna notifica</div>'; return; }
+    if (!all.length) { listEl.innerHTML = `<div class="nc-empty">${esc(t('nc_empty'))}</div>`; return; }
     listEl.innerHTML = '';
     for (const n of all) {
       const meta = SRC[n.src] || SRC.app;
@@ -211,9 +245,9 @@ export function initNotify(OS_API) {
             `<span class="nc-when">${fmtWhen(n.ts)}</span>` +
           '</div>' +
           (n.body ? `<div class="nc-txt">${esc(n.body)}</div>` : '') +
-          `<div class="nc-tag">${esc(meta.tag)}</div>` +
+          `<div class="nc-tag">${esc(t(meta.tagKey))}</div>` +
         '</div>' +
-        '<button class="nc-x" title="Rimuovi">×</button>';
+        `<button class="nc-x" title="${esc(t('nc_remove'))}">×</button>`;
       row.querySelector('.nc-x').addEventListener('click', (e) => { e.stopPropagation(); remove(n.id); });
       row.addEventListener('click', () => { runAction(n.action); close(); });
       listEl.appendChild(row);
@@ -223,7 +257,7 @@ export function initNotify(OS_API) {
   function remove(id) { all = all.filter((x) => x.id !== id); save(); render(); syncBadge(); }
   function clearAll() { all = []; save(); render(); syncBadge(); }
 
-  // ---- toast transitorio (arricchito: livello + azione) ------------------
+  // ---- transient toast (enriched: level + action) ------------------------
   function toast(n) {
     const container = document.getElementById('toast-container'); if (!container) return;
     const meta = SRC[n.src] || SRC.app;
@@ -245,13 +279,13 @@ export function initNotify(OS_API) {
     if (!n.sticky) setTimeout(kill, n.lvl === 'critical' ? 12000 : 6500);
   }
 
-  // ---- router azioni (stesso contratto del copilot) ----------------------
+  // ---- action router (same contract as the copilot) ----------------------
   function actionLabel(act) {
     if (!act) return '';
     const [k, v] = splitAct(act);
-    if (k === 'app') return 'Apri';
-    if (k === 'file') return 'Apri';
-    if (k === 'anima') return 'Chiedi ad ANIMA';
+    if (k === 'app') return t('open');
+    if (k === 'file') return t('open');
+    if (k === 'anima') return t('nc_ask_anima');
     return '';
   }
   function splitAct(act) { const i = String(act).indexOf(':'); return i < 0 ? [act, ''] : [act.slice(0, i), act.slice(i + 1)]; }
@@ -259,19 +293,31 @@ export function initNotify(OS_API) {
     if (!act) return;
     const [k, v] = splitAct(act);
     try {
-      if (k === 'app') { const a = byId && byId(v); if (a && WM) WM.open(a); }
+      if (k === 'app') {
+        // "app:settings@updates" deep-links a tab inside the app: a one-shot localStorage hint
+        // covers a cold app boot, a postMessage covers one already open (same contract, see the
+        // Settings boot + message listener).
+        const at = v.indexOf('@'); const id = at < 0 ? v : v.slice(0, at); const tab = at < 0 ? '' : v.slice(at + 1);
+        if (tab) try { localStorage.setItem('nucleo.settings.tab', tab); } catch {}
+        const a = byId && byId(id); if (a && WM) WM.open(a);
+        if (tab && WM) try {
+          const w = WM.list().find((x) => x.app && x.app.id === id);
+          const f = w && w.el.querySelector('iframe');
+          if (f) f.contentWindow.postMessage({ t: 'settings.tab', d: tab }, '*');
+        } catch {}
+      }
       else if (k === 'file') { if (openFile) openFile(v); }
       else if (k === 'anima') {
-        // Inoltra al copilot di sistema se presente (Ctrl+Spazio).
+        // Forward to the system copilot if present (Ctrl+Space).
         document.dispatchEvent(new CustomEvent('nucleo:anima-ask', { detail: { q: v } }));
       }
     } catch (e) { console.warn('[notify] action failed', act, e); }
   }
 
-  // ---- ingresso unico: emit ----------------------------------------------
+  // ---- single entry point: emit ------------------------------------------
   function emit(input) {
     const n = normalize(input); if (!n) return;
-    // coalescing per id: rimpiazza in cima, incrementa il contatore.
+    // coalescing per id: replace at the top, increment the counter.
     const prev = all.find((x) => x.id === n.id);
     all = all.filter((x) => x.id !== n.id);
     n.count = prev ? (prev.count || 1) + 1 : 1;
@@ -280,7 +326,7 @@ export function initNotify(OS_API) {
     save();
     if (isOpen()) { n.read = true; save(); render(); }
     else if (!muted()) { toast(n); chime(n); }
-    else { /* DND/ore silenziose: niente toast/suono, resta nello storico */ }
+    else { /* DND/quiet hours: no toast/sound, stays in the history */ }
     syncBadge();
     return n.id;
   }
@@ -299,23 +345,23 @@ export function initNotify(OS_API) {
       action: input.action || input.act || '',
       sound: input.sound || input.snd || lvl,
       sticky: !!(input.sticky),
-      ts: input.ts ? (input.ts < 1e12 ? input.ts * 1000 : input.ts) : Date.now(),  // accetta epoch s o ms
+      ts: input.ts ? (input.ts < 1e12 ? input.ts * 1000 : input.ts) : Date.now(),  // accepts epoch s or ms
       read: false,
     };
   }
 
-  // ---- ingresso dal bus eventi (WebSocket) -------------------------------
+  // ---- entry from the event bus (WebSocket) -------------------------------
   function fromBus(topic, d) {
     if (topic === 'notify.post' && d) return emit(d);
-    if (topic === 'calendar.reminder' && d) {  // legacy, finché il firmware non emette notify.post
+    if (topic === 'calendar.reminder' && d) {  // legacy, until the firmware emits notify.post
       return emit({
         id: 'cal-' + (d.time || ''), src: 'calendar', lvl: 'info', icon: '🔔',
-        title: d.text || 'Promemoria', body: d.time ? `Promemoria · ${d.time}` : '',
+        title: d.text || t('nc_reminder'), body: d.time ? `${t('nc_reminder')} · ${d.time}` : '',
         action: 'app:calendar', sound: 'info',
       });
     }
   }
 
-  syncBadge();   // ripristina il badge dallo storico persistito
+  syncBadge();   // restore the badge from the persisted history
   return { emit, fromBus, open, close, toggle, isOpen, clearAll, setDND, get all() { return all; } };
 }

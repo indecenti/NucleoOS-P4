@@ -38,7 +38,8 @@ AI_SIGNATURE = re.compile(
     r"claude-session:\s|claude\.ai/code/session", re.I)
 
 SECRET_LINE = [
-    ("private key", re.compile(r"-----BEGIN [A-Z ]*PRIVATE KEY-----")),
+    # an input's placeholder (the SSH app's "paste your key here" field) is the header alone, never a key
+    ("private key", re.compile(r"(?<!placeholder=[\"'])-----BEGIN [A-Z ]*PRIVATE KEY-----")),
     ("Anthropic key", re.compile(r"sk-ant-[A-Za-z0-9_-]{20,}")),
     ("OpenAI key", re.compile(r"\bsk-(proj-)?[A-Za-z0-9_-]{32,}")),
     ("Google API key", re.compile(r"\bAIza[0-9A-Za-z_-]{35}\b")),

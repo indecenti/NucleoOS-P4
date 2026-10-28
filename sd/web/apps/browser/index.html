@@ -1,11 +1,15 @@
 <!DOCTYPE html>
-<html lang="it">
+<!-- SPDX-License-Identifier: AGPL-3.0-or-later -->
+<html lang="en">
 <head>
   <meta charset="utf-8">
+  <script>/* NucleoOS resource guard: a lost same-origin script/stylesheet makes the shell reload this window once (wm.js retryFrame) */addEventListener('error',function(e){var t=e.target,u;if(!t||t===window||parent===window||(t.tagName!=='SCRIPT'&&t.tagName!=='LINK'))return;try{u=new URL(t.src||t.href,location.href);if(u.origin===location.origin)parent.postMessage({type:'app-resource-failed',src:u.pathname},location.origin)}catch(_){}},true)</script>
   <title data-i18n="appTitle">Aegis Browser</title>
   <!-- Offline-first: rely on the system font stack ('Outfit', system-ui, sans-serif) instead of a
        render-blocking remote webfont — the device often has no internet. -->
   <style>
+    /* Native controls (audio/video bars, date/time pickers, file inputs, selects) follow the app theme. */
+    :root { color-scheme: dark; } html[data-theme="light"] { color-scheme: light; }
     :root {
       --bg-color: #0b0f17;
       --panel-bg: rgba(15, 23, 42, 0.65);
@@ -686,6 +690,9 @@
           <input type="text" id="sd-down-filename" placeholder="file.zip" data-i18n-attr="placeholder:dlFilenamePlaceholder">
         </div>
 
+        <!-- Shown where the device cannot fetch through itself (no net.proxy capability) -->
+        <div id="dl-unavailable" hidden style="font-size: 12px; color: var(--text-secondary); line-height: 1.4;" data-i18n="dlUnavailable">Il salvataggio su SD non è disponibile su questo dispositivo.</div>
+
         <!-- Auth status banner -->
         <div id="dl-auth-banner" style="display: none; background: rgba(239,68,68,0.1); border: 1px solid rgba(239,68,68,0.25); border-radius: 6px; padding: 8px 10px; font-size: 12px; color: #fca5a5; line-height: 1.4;" data-i18n-html="dlAuthBanner">
           ⚠️ <b>Dispositivo non associato.</b> Il salvataggio su SD richiede il pairing. Inserisci il PIN mostrato sul dispositivo nella schermata iniziale di NucleoOS.
@@ -754,7 +761,7 @@
     }
 
     // ===== Mini-modal helpers (sostituiscono confirm/prompt nativi) =====
-    // Il device gira il browser in un iframe: i dialog nativi sono inaffidabili.
+    // Il Cardputer gira il browser in un iframe: i dialog nativi sono inaffidabili.
 
     function showInlineConfirm(message, onYes) {
       const existing = document.getElementById('__b_confirm');
@@ -883,6 +890,15 @@
     function getProxyUrl() {
       return '/api/proxy?url=';
     }
+    // Only a device with the net.proxy capability (nucleo-caps.js) can fetch for us: elsewhere the SD save is
+    // not offered and no request is made. If the capability module cannot be loaded, the proxy answers as before.
+    let sdProxy = null;
+    const sdProxyP = import('/nucleo-caps.js').then((m) => m.default.has('net.proxy'), () => true).then((v) => (sdProxy = v));
+    sdProxyP.then((ok) => {
+      if (ok) return;
+      const n = document.getElementById('dl-unavailable'); if (n) n.hidden = false;
+      const b = document.getElementById('btn-start-sd-download'); if (b) b.disabled = true;
+    });
 
     function saveSettings() {
       try {
@@ -1204,9 +1220,9 @@
       const wrapper = document.getElementById(`wrapper-${tabId}`);
 
       // No on-device page proxy: external sites can't be reliably framed (X-Frame-Options/CSP)
-      // and relaying a whole page through the device would burn its scarce heap. We're already
+      // and relaying a whole page through the Cardputer would burn its scarce heap. We're already
       // inside a real browser, so navigation hands off to a real tab. EXCEPTION: a direct file link
-      // is offered for download straight onto the device SD (single fetch via the on-device proxy,
+      // is offered for download straight onto the Cardputer SD (single fetch via the on-device proxy,
       // streamed to /data/downloads by /api/fs/write) — a bounded transfer, not a live page.
       try {
         addToSessionHistory(url, url);
@@ -1230,18 +1246,19 @@
           tab.historyIndex = tab.history.length - 1;
         }
         tab.isLoading = false;
-        document.getElementById('loading-spinner').style.display = 'none';
         if (tabId === state.activeTabId) switchTab(tabId);
         renderTabs();
       } catch (err) {
         showIframeError(tabId, url, err.message);
         tab.isLoading = false;
         if (tabId === state.activeTabId) switchTab(tabId);
+      } finally {
+        document.getElementById('loading-spinner').style.display = 'none';
       }
     }
 
     // Honest in-app card shown after a URL is handed off to a real browser tab.
-    // It also offers to save the target onto the device SD (single proxy fetch -> /api/fs/write).
+    // It also offers to save the target onto the Cardputer SD (single proxy fetch -> /api/fs/write).
     function createHandoffHtml(url, blocked) {
       return `
         <div class="tab-overlay">
@@ -1252,14 +1269,14 @@
           ${cardDownloadProgressHtml()}
           <div style="display: flex; gap: 10px; flex-wrap: wrap; justify-content: center;">
             <button class="btn-open-ext" data-i18n="openAgain">Apri di nuovo</button>
-            <button class="btn-save-sd" style="background: var(--success-color);" data-i18n="saveTodevice">⬇ Salva su device</button>
+            <button class="btn-save-sd" style="background: var(--success-color);" data-i18n="saveToCardputer">⬇ Salva sul dispositivo</button>
             <button class="btn-secondary btn-home-load" data-i18n="homeBtn">Home</button>
           </div>
         </div>
       `;
     }
 
-    // Shown when the URL points at a downloadable file: save it straight onto the device SD
+    // Shown when the URL points at a downloadable file: save it straight onto the Cardputer SD
     // (/data/downloads, via the on-device proxy + /api/fs/write) or open it in a real tab.
     function createDownloadHtml(url, filename) {
       return `
@@ -1270,7 +1287,7 @@
           <span data-i18n-html="dlCardBody">Salvalo sul dispositivo (SD: <code>/data/downloads/</code>) oppure aprilo nel tuo browser reale.</span></p>
           ${cardDownloadProgressHtml()}
           <div style="display: flex; gap: 10px; flex-wrap: wrap; justify-content: center;">
-            <button class="btn-save-sd" style="background: var(--success-color);" data-i18n="saveTodevice">⬇ Salva su device</button>
+            <button class="btn-save-sd" style="background: var(--success-color);" data-i18n="saveToCardputer">⬇ Salva su device</button>
             <button class="btn-open-ext" data-i18n="openExternal">↗ Apri in scheda esterna</button>
             <button class="btn-secondary btn-home-load" data-i18n="homeBtn">Home</button>
           </div>
@@ -1296,10 +1313,11 @@
       const homeBtn = wrapper.querySelector('.btn-home-load');
       if (homeBtn) homeBtn.onclick = () => loadTabUrl(tabId, 'home');
       const saveBtn = wrapper.querySelector('.btn-save-sd');
-      if (saveBtn) saveBtn.onclick = () => runCardDownload(wrapper, url, filenameFromUrl(url), saveBtn);
+      if (saveBtn && sdProxy === false) saveBtn.style.display = 'none';
+      else if (saveBtn) saveBtn.onclick = () => runCardDownload(wrapper, url, filenameFromUrl(url), saveBtn);
     }
 
-    // Save a URL to the device SD from inside a tab card, showing inline progress in the card.
+    // Save a URL to the Cardputer SD from inside a tab card, showing inline progress in the card.
     async function runCardDownload(wrapper, url, filename, btn) {
       const text = wrapper.querySelector('.card-dl-text');
       const bar  = wrapper.querySelector('.card-dl-bar');
@@ -1603,7 +1621,7 @@
     const dlLog = []; // { filename, url, size, ts, ok }
 
     // File extensions a browser would download rather than render. Such URLs are offered for a
-    // direct save onto the device SD instead of being handed off to an external tab.
+    // direct save onto the Cardputer SD instead of being handed off to an external tab.
     const DOWNLOADABLE_EXT = /\.(zip|rar|7z|tar|gz|tgz|bz2|xz|iso|img|bin|hex|exe|apk|dmg|deb|rpm|msi|pdf|epub|mobi|doc|docx|xls|xlsx|ppt|pptx|csv|tsv|json|xml|md|mp3|wav|flac|ogg|m4a|aac|opus|mp4|mkv|avi|mov|webm|nfv|png|jpe?g|gif|webp|bmp|svg|ico|ttf|otf|woff2?|wasm)$/i;
     function isDownloadUrl(url) {
       try { return DOWNLOADABLE_EXT.test(new URL(url).pathname.split('?')[0]); }
@@ -1625,42 +1643,54 @@
     // human message (auth failures carry .authRequired so the pairing banner can be shown).
     async function downloadUrlToSd(url, filename, onStep = () => {}) {
       if (!filename) filename = filenameFromUrl(url);
+      if (!(await sdProxyP)) throw new Error(t('dlUnavailable', null, 'Il salvataggio su SD non è disponibile su questo dispositivo.'));
 
-      onStep(t('stepAuth', null, 'Verifica autenticazione...'), 10);
-      const authSt = await checkAuthStatus();
-      if (authSt.required && !authSt.paired) {
-        const e = new Error(t('errNotPaired', null, 'Dispositivo non associato — completa il pairing prima di scaricare'));
-        e.authRequired = true; throw e;
-      }
+      let withDownloadLock = null;
+      try { withDownloadLock = (await import('/dlgate.js')).withDownloadLock; } catch (_e) {}
 
-      onStep(t('stepProxy', null, 'Connessione e download tramite proxy...'), 25);
-      const response = await fetch(getProxyUrl() + encodeURIComponent(url));
-      if (!response.ok) throw new Error(t('errRemoteHttp', { status: response.status }, `Il server remoto ha risposto: HTTP ${response.status}`));
+      const run = async () => {
+        onStep(t('stepAuth', null, 'Verifica autenticazione...'), 10);
+        const authSt = await checkAuthStatus();
+        if (authSt.required && !authSt.paired) {
+          const e = new Error(t('errNotPaired', null, 'Dispositivo non associato — completa il pairing prima di scaricare'));
+          e.authRequired = true; throw e;
+        }
 
-      onStep(t('stepTransfer', null, 'Trasferimento in corso...'), 55);
-      const buffer = await response.arrayBuffer();
+        onStep(t('stepProxy', null, 'Connessione e download tramite proxy...'), 25);
+        const response = await fetch(getProxyUrl() + encodeURIComponent(url));
+        if (!response.ok) throw new Error(t('errRemoteHttp', { status: response.status }, `Il server remoto ha risposto: HTTP ${response.status}`));
 
-      onStep(t('stepSdFolder', null, 'Preparazione cartella SD...'), 68);
-      await ensureDirectory(DOWNLOADS_DIR);
+        onStep(t('stepTransfer', null, 'Trasferimento in corso...'), 55);
+        const buffer = await response.arrayBuffer();
 
-      const targetPath = `${DOWNLOADS_DIR}/${filename}`;
-      onStep(t('stepWriteSd', { name: filename }, `Scrittura su SD: ${filename}...`), 80);
-      const writeResp = await fetch(`/api/fs/write?path=${encodeURIComponent(targetPath)}`, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/octet-stream' },
-        body: buffer
-      });
-      if (writeResp.status === 401 || writeResp.status === 403) {
-        const e = new Error(t('errAccessDenied', null, 'Accesso negato — assicurati di essere associato al dispositivo'));
-        e.authRequired = true; throw e;
-      }
-      if (!writeResp.ok) {
-        const errText = await writeResp.text();
-        throw new Error(t('errSdWrite', { status: writeResp.status, detail: errText.trim() }, `Scrittura SD fallita (${writeResp.status}): ${errText.trim()}`));
-      }
+        onStep(t('stepSdFolder', null, 'Preparazione cartella SD...'), 68);
+        await ensureDirectory(DOWNLOADS_DIR);
 
-      onStep(t('stepSavedOk', null, '✅ Salvato con successo!'), 100);
-      return { ok: true, size: buffer.byteLength, filename };
+        const targetPath = `${DOWNLOADS_DIR}/${filename}`;
+        onStep(t('stepWriteSd', { name: filename }, `Scrittura su SD: ${filename}...`), 80);
+        const writeResp = await fetch(`/api/fs/write?path=${encodeURIComponent(targetPath)}`, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/octet-stream' },
+          body: buffer
+        });
+        if (writeResp.status === 401 || writeResp.status === 403) {
+          const e = new Error(t('errAccessDenied', null, 'Accesso negato — assicurati di essere associato al dispositivo'));
+          e.authRequired = true; throw e;
+        }
+        if (!writeResp.ok) {
+          const errText = await writeResp.text();
+          throw new Error(t('errSdWrite', { status: writeResp.status, detail: errText.trim() }, `Scrittura SD fallita (${writeResp.status}): ${errText.trim()}`));
+        }
+
+        onStep(t('stepSavedOk', null, '✅ Salvato con successo!'), 100);
+        return { ok: true, size: buffer.byteLength, filename };
+      };
+
+      if (!withDownloadLock) return run();
+      const BUSY = {};
+      const result = await withDownloadLock(filename, run, { ifAvailable: true, skipValue: BUSY });
+      if (result === BUSY) throw new Error(t('errDlBusy', null, 'Un altro download è già in corso — riprova tra poco'));
+      return result;
     }
 
     // Pulsante: usa la pagina corrente come URL da scaricare
@@ -1833,9 +1863,9 @@
   <script type="module">
     import I18N from '/nucleo-i18n.js';
     await I18N.init('browser');
-    // Live language switch: declarative [data-i18n*] nodes are repainted by the engine itself; here we
-    // refresh the imperatively-set tab titles (and re-render home screens to pick up the new strings).
-    I18N.onChange(() => {
+    // Refresh the imperatively-set tab titles (and re-render home screens) in the active OS language.
+    // Declarative [data-i18n*] nodes are handled by the engine itself; this covers the JS-built bits.
+    const refreshDynamic = () => {
       try {
         if (typeof state === 'object' && Array.isArray(state.tabs)) {
           state.tabs.forEach((tab) => {
@@ -1848,7 +1878,11 @@
           if (typeof renderTabs === 'function') renderTabs();
         }
       } catch (_e) {}
-    });
+    };
+    // The first tab is created before this module loads, so its title fell back to the literal default.
+    // Repaint once now that the catalog is in, then on every live language change (reload-free).
+    refreshDynamic();
+    I18N.onChange(refreshDynamic);
   </script>
 </body>
 </html>

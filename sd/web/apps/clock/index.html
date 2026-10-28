@@ -1,10 +1,14 @@
 <!doctype html>
+<!-- SPDX-License-Identifier: AGPL-3.0-or-later -->
 <html lang="en">
 <head>
   <meta charset="utf-8">
+  <script>/* NucleoOS resource guard: a lost same-origin script/stylesheet makes the shell reload this window once (wm.js retryFrame) */addEventListener('error',function(e){var t=e.target,u;if(!t||t===window||parent===window||(t.tagName!=='SCRIPT'&&t.tagName!=='LINK'))return;try{u=new URL(t.src||t.href,location.href);if(u.origin===location.origin)parent.postMessage({type:'app-resource-failed',src:u.pathname},location.origin)}catch(_){}},true)</script>
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <title>Clock</title>
   <style>
+    /* Native controls and scrollbars follow the app theme. */
+    :root { color-scheme: dark; } html[data-theme="light"] { color-scheme: light; }
     :root {
       --bg:#0e1830; --panel:#18233a; --text:#e8eefc; --muted:#8aa0c8;
       --accent:#4ea1ff; --line:#2a3a5e;
@@ -143,7 +147,7 @@
   <button class="tab active" data-tab="clock"  data-i18n="tab_clock">Clock</button>
   <button class="tab"        data-tab="sw"      data-i18n="stopwatch">Stopwatch</button>
   <button class="tab"        data-tab="timer"   data-i18n="tab_timer">Timer</button>
-  <button id="gear" title="Settings">⚙</button>
+  <button id="gear" title="Settings" data-i18n-attr="title:settings;aria-label:settings">⚙</button>
 </div>
 
 <!-- ── Clock ── -->
@@ -219,6 +223,7 @@
 
 <script type="module">
 import I18N from '/nucleo-i18n.js';
+import Caps from '/nucleo-caps.js';   // what this device can do (time.set)
 const t = await I18N.init('clock');
 
 const $ = id => document.getElementById(id);
@@ -243,9 +248,25 @@ async function loadSettings() {
   if (s?.ui?.theme)     document.documentElement.dataset.theme = s.ui.theme;
   if (s?.device?.locale) locale = s.device.locale;
 }
+// clock.json read with its outcome: a 404 (never saved) or an unparsable file is "nothing to keep", but a
+// failed read (offline, 401, 503) leaves the saved prefs unknown -> prefsKnown stays false and no toggle may
+// write defaults over them until a later read succeeds.
+let prefsKnown = false;
+async function readPrefsFile() {
+  try {
+    const r = await fetch('/api/fs/read?path=' + encodeURIComponent(CFG_PATH), { cache: 'no-store' });
+    if (r.status === 404) return { ok: true, data: null };
+    if (!r.ok) return { ok: false };
+    let data = null; try { data = JSON.parse(await r.text()); } catch {}
+    return { ok: true, data: data && typeof data === 'object' && !Array.isArray(data) ? data : null };
+  } catch { return { ok: false }; }
+}
 async function loadPrefs() {
-  const p = await readJSON(CFG_PATH);
-  if (p && typeof p === 'object') Object.assign(prefs, p);
+  const res = await readPrefsFile();
+  if (res.ok) { prefsKnown = true; if (res.data) Object.assign(prefs, res.data); }
+  syncPrefsUI();
+}
+function syncPrefsUI() {
   $('o24').checked  = !!prefs.format24;
   $('osec').checked = !!prefs.showSeconds;
   $('oanal').checked = prefs.analog !== false;
@@ -304,9 +325,15 @@ function tick() {
   const el = $('time');
   el.innerHTML = ts + (suffix ? `<span id="ampm">${suffix}</span>` : '');
   el.className = prefs.showSeconds ? '' : 'nosec';
-  $('date').textContent = d.toLocaleDateString(locale,
-    { weekday: 'long', year: 'numeric', month: 'long', day: 'numeric' });
+  $('date').textContent = fmtDate(d);
   if (prefs.analog !== false) updateAnalog(d);
+}
+// settings.json's locale is free text: a malformed tag ("it_IT") makes toLocaleDateString throw a
+// RangeError on every tick, which froze the date line and the analog hands. Fall back to the browser's.
+const DATE_OPTS = { weekday: 'long', year: 'numeric', month: 'long', day: 'numeric' };
+function fmtDate(d) {
+  try { return d.toLocaleDateString(locale, DATE_OPTS); }
+  catch { locale = undefined; return d.toLocaleDateString(undefined, DATE_OPTS); }
 }
 
 // ── Device badge + silent browser-time push ───────────────────────────────────
@@ -330,10 +357,10 @@ async function pollDevice(snap) {
         ? t('dev_synced_drift', { secs: Math.round(drift), hh, mm })
         : t('dev_synced', { hh, mm });
     } else {
-      // Push browser clock once as best-effort fallback (no auth needed, low risk)
+      // Push browser clock once as best-effort fallback (no auth needed, low risk), where the device can set it
       if (!timePushed) {
         timePushed = true;
-        try {
+        if (await Caps.has('time.set')) try {
           const ok = (await fetch('/api/time/set', {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
@@ -360,7 +387,7 @@ document.querySelectorAll('.tab').forEach(btn => {
 
 // ── Stopwatch ─────────────────────────────────────────────────────────────────
 let swBase = 0, swStart = 0, swRunning = false, swRaf;
-let lapTimes = [], lapCum = [];
+let lapTimes = [], lapCum = [], lapCount = 0;   // lapCount: laps taken since reset (only the last 10 are shown)
 const swDisp = $('sw-disp'), lapsEl = $('laps');
 
 function showSw(ms) {
@@ -383,16 +410,16 @@ $('sl').onclick = () => {
   const elapsed = swBase + (swRunning ? performance.now() - swStart : 0);
   if (elapsed < 100) return;
   const prev = lapCum.length ? lapCum[lapCum.length - 1] : 0;
-  lapCum.push(elapsed); lapTimes.unshift(elapsed - prev);
+  lapCum.push(elapsed); lapTimes.unshift(elapsed - prev); lapCount++;
   if (lapTimes.length > 10) { lapTimes.pop(); lapCum.shift(); }
   lapsEl.innerHTML = lapTimes.map((ms, i) => {
-    const n = lapTimes.length - i;
+    const n = lapCount - i;
     const m = Math.floor(ms / 60000), s = Math.floor(ms % 60000 / 1000), cs = Math.floor(ms % 1000 / 10);
     return `<div class="lap-row"><span class="lap-num">${t('lap')} ${n}</span><span>${pad(m)}:${pad(s)}.${pad(cs)}</span></div>`;
   }).join('');
 };
 $('sr').onclick = () => {
-  swRunning = false; swBase = 0; lapTimes = []; lapCum = [];
+  swRunning = false; swBase = 0; lapTimes = []; lapCum = []; lapCount = 0;
   cancelAnimationFrame(swRaf); lapsEl.innerHTML = ''; showSw(0);
   $('se').textContent = t('start'); $('se').className = 'btn primary';
 };
@@ -405,7 +432,7 @@ const timerDisp = $('timer-disp');
 const timerDone = $('timer-done');
 timerArc.setAttribute('stroke-dasharray', CIRCUM);
 
-let timerTotal = 5 * 60 * 1000, timerBase = 0, timerStart = 0, timerRunning = false, timerRaf;
+let timerTotal = 5 * 60 * 1000, timerBase = 0, timerStart = 0, timerRunning = false, timerRaf, timerTO;
 
 function showTimer(remain) {
   const m = Math.floor(remain / 60000), s = Math.floor(remain % 60000 / 1000);
@@ -426,33 +453,42 @@ function beep() {
   } catch {}
 }
 
+// Canonical completion — idempotent; called by rAF loop or the hidden-tab timeout.
+function completeTimer() {
+  if (!timerRunning) return;
+  timerRunning = false; timerBase = timerTotal;
+  clearTimeout(timerTO); cancelAnimationFrame(timerRaf);
+  showTimer(0);
+  timerDone.textContent = t('timer_done'); timerDone.classList.add('blink');
+  $('te').textContent = t('start'); $('te').className = 'btn primary';
+  beep();
+}
+
 function loopTimer() {
   if (!timerRunning) return;
   const remain = Math.max(0, timerTotal - timerBase - (performance.now() - timerStart));
   showTimer(remain);
-  if (remain <= 0) {
-    timerRunning = false; timerBase = timerTotal;
-    timerDone.textContent = t('timer_done'); timerDone.classList.add('blink');
-    $('te').textContent = t('start'); $('te').className = 'btn primary';
-    beep(); return;
-  }
+  if (remain <= 0) { completeTimer(); return; }
   timerRaf = requestAnimationFrame(loopTimer);
 }
 
 $('te').onclick = () => {
   if (timerRunning) {
-    timerRunning = false; timerBase += performance.now() - timerStart; cancelAnimationFrame(timerRaf);
+    timerRunning = false; timerBase += performance.now() - timerStart;
+    cancelAnimationFrame(timerRaf); clearTimeout(timerTO);
     $('te').textContent = t('start'); $('te').className = 'btn primary';
   } else {
     if (timerBase >= timerTotal) { timerBase = 0; timerDone.textContent = ''; timerDone.classList.remove('blink'); }
     timerRunning = true; timerStart = performance.now();
     timerDone.textContent = ''; timerDone.classList.remove('blink');
     $('te').textContent = t('stop'); $('te').className = 'btn';
+    // rAF pauses in hidden iframes — this fires completion even when not painting.
+    timerTO = setTimeout(completeTimer, timerTotal - timerBase);
     loopTimer();
   }
 };
 $('tr').onclick = () => {
-  timerRunning = false; timerBase = 0; cancelAnimationFrame(timerRaf);
+  timerRunning = false; timerBase = 0; cancelAnimationFrame(timerRaf); clearTimeout(timerTO);
   timerDone.textContent = ''; timerDone.classList.remove('blink');
   $('te').textContent = t('start'); $('te').className = 'btn primary';
   showTimer(timerTotal);
@@ -472,15 +508,28 @@ $('t-pm1').onclick  = () => adjustTimer( 60000);
 showTimer(timerTotal);
 
 // ── Settings ──────────────────────────────────────────────────────────────────
-$('gear').onclick     = () => $('cfg').classList.add('open');
-$('cfgclose').onclick = () => $('cfg').classList.remove('open');
+const openCfg  = () => $('cfg').classList.add('open');
+const closeCfg = () => $('cfg').classList.remove('open');
+$('gear').onclick     = openCfg;
+$('cfgclose').onclick = closeCfg;
+$('cfg').addEventListener('click', (e) => { if (e.target === $('cfg')) closeCfg(); });   // click sul backdrop
+document.addEventListener('keydown', (e) => { if (e.key === 'Escape' && $('cfg').classList.contains('open')) closeCfg(); });
 
-async function onPrefChange() {
-  prefs.format24    = $('o24').checked;
-  prefs.showSeconds = $('osec').checked;
-  prefs.analog      = $('oanal').checked;
+const PREF_OF = { o24: 'format24', osec: 'showSeconds', oanal: 'analog' };
+async function onPrefChange(e) {
+  const key = PREF_OF[e.target.id], val = e.target.checked;
+  prefs[key] = val;
   tick(); applyAnalog();
   $('cfgsave').textContent = t('saving');
+  if (!prefsKnown) {
+    // The boot read failed: the saved prefs are unknown. Re-read now and change ONLY this field on top of
+    // them; if the device still can't be read, write nothing (defaults would replace the user's choices).
+    const res = await readPrefsFile();
+    if (!res.ok) { $('cfgsave').textContent = t('save_unread'); return; }
+    prefsKnown = true;
+    Object.assign(prefs, { format24: true, showSeconds: true, analog: true }, res.data || {}, { [key]: val });
+    syncPrefsUI(); tick();
+  }
   $('cfgsave').textContent = (await writeJSON(CFG_PATH, prefs)) ? t('save_ok') : t('save_fail');
 }
 $('o24').onchange   = onPrefChange;
@@ -495,6 +544,26 @@ window.addEventListener('message', e => {
   if (e.data?.type === 'set-theme' && e.data.theme)
     document.documentElement.dataset.theme = e.data.theme;
 });
+// ── Keyboard shortcuts ────────────────────────────────────────────────────────
+window.addEventListener('keydown', e => {
+  const tag = document.activeElement?.tagName;
+  if (tag === 'INPUT' || tag === 'SELECT' || tag === 'TEXTAREA') return;
+  if (e.key === 'Escape') {
+    if ($('cfg').classList.contains('open')) { $('cfg').classList.remove('open'); e.preventDefault(); }
+    return;
+  }
+  const onSw    = $('page-sw').classList.contains('active');
+  const onTimer = $('page-timer').classList.contains('active');
+  if (e.key === ' ') {
+    if (onSw)    { $('se').click(); e.preventDefault(); }
+    if (onTimer) { $('te').click(); e.preventDefault(); }
+  } else if (onSw && (e.key === 'l' || e.key === 'L')) {
+    $('sl').click();
+  } else if (onSw && (e.key === 'r' || e.key === 'R')) {
+    $('sr').click();
+  }
+});
+
 I18N.onChange(() => {
   $('se').textContent = swRunning    ? t('stop') : t('start');
   $('te').textContent = timerRunning ? t('stop') : t('start');

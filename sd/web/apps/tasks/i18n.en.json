@@ -12,5 +12,10 @@
   "empty_active": "Nothing to do — all clear! 🎉",
   "empty_all": "No tasks yet.<br>Type above and press Enter.",
   "toggle": "Toggle",
-  "count": "{active} active · {total} total"
+  "count": "{active} active · {total} total",
+  "read_failed": "Couldn't read your tasks from the device. Editing is paused so nothing gets overwritten — try again shortly.",
+  "read_corrupt": "The tasks file on the device can't be read: it is left untouched so nothing is lost.",
+  "not_paired": "This browser isn't paired with the device — pair it to save your tasks.",
+  "save_failed": "Not saved — the device isn't answering, retrying",
+  "not_loaded": "Tasks not loaded from the device yet."
 }

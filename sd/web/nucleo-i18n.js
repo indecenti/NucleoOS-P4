@@ -1,3 +1,4 @@
+/* SPDX-License-Identifier: AGPL-3.0-or-later */
 // nucleo-i18n.js — NucleoOS centralized internationalization runtime.
 //
 // One engine, served once from the shell root (`/nucleo-i18n.js`), imported by the shell AND every
@@ -13,9 +14,9 @@
 //  • LIVE         — changing the language in Settings repaints every open window with no reload,
 //                   using the browser's same-origin `storage` event (fires in all iframes but the
 //                   setter) plus an in-document event for same-frame subscribers.
-//  • HONEST       — a missing key falls back lang→base(it)→key and is never a blank; the i18n gate
+//  • HONEST       — a missing key falls back lang→base(en)→key and is never a blank; the i18n gate
 //                   (tools/i18n-check.mjs) keeps catalogs in parity so that fallback rarely fires.
-//  • DEVICE-CHEAP — all of this runs in the browser; the device only serves small static JSON.
+//  • DEVICE-CHEAP — all of this runs in the browser; the Cardputer only serves small static JSON.
 //
 // Quick start (in an app):
 //   import I18N from '/nucleo-i18n.js';
@@ -24,7 +25,7 @@
 //   I18N.apply();                               // fills [data-i18n] in the document
 //   I18N.onChange(() => repaintDynamicBits());  // re-render anything t() built imperatively
 
-const BASE = 'it';                               // primary language; the fallback floor for every key
+const BASE = 'en';                               // default + fallback floor for every key (English-first OS)
 const RUNTIME_KEY = 'anima.lang';                // the localStorage key the whole OS already reads
 const LOCALE_KEY = 'nucleo.locale';              // optional regional-format override (display lang ≠ format)
 
@@ -33,6 +34,11 @@ const LOCALE_KEY = 'nucleo.locale';              // optional regional-format ove
 export const LANGS = [
   { code: 'it', label: 'Italiano', flag: '🇮🇹', dir: 'ltr', locale: 'it-IT' },
   { code: 'en', label: 'English',  flag: '🇬🇧', dir: 'ltr', locale: 'en-US' },
+  // Tier-2 languages (translation in progress): every missing key falls back through base (en), so a
+  // partial catalog is safe. They appear in the Settings/onboarding pickers as soon as they're listed.
+  { code: 'es', label: 'Español',  flag: '🇪🇸', dir: 'ltr', locale: 'es-ES' },
+  { code: 'fr', label: 'Français', flag: '🇫🇷', dir: 'ltr', locale: 'fr-FR' },
+  { code: 'de', label: 'Deutsch',  flag: '🇩🇪', dir: 'ltr', locale: 'de-DE' },
 ];
 const LANG_CODES = LANGS.map((l) => l.code);
 const META = Object.fromEntries(LANGS.map((l) => [l.code, l]));
@@ -44,6 +50,7 @@ const loaded = new Set();          // namespaces whose files we've already fetch
 const subscribers = new Set();     // onChange callbacks (this document only)
 let activeLang = null;             // resolved once on first access
 let installed = false;             // global listeners installed?
+let senderGuard = null;            // optional extra check on set-language senders (the shell wires its trustedSender)
 
 // --- language resolution & persistence --------------------------------------
 
@@ -67,7 +74,8 @@ function resolveLang() {
   let l = null;
   try { l = normalize(localStorage.getItem(RUNTIME_KEY)); } catch {}
   if (!l) l = normalize(document.documentElement.getAttribute('lang'));
-  if (!l) l = normalize(navigator.language);
+  // No navigator.language auto-detect: the OS is English-first by default, and the first-run wizard
+  // asks the user to pick — so an unset preference resolves to English (BASE), not the browser locale.
   activeLang = l || BASE;
   return activeLang;
 }
@@ -82,37 +90,106 @@ function urlFor(ns, lang) {
   return `/apps/${ns}/i18n.${lang}.json`;
 }
 
-async function fetchCatalog(url) {
-  if (rawCatalogs.has(url)) return rawCatalogs.get(url);   // in-memory dedup within this document
-  let obj = null;
+// Catalogs this OS session already holds. The shell (top document) publishes its Map; an app window of the
+// same origin reads core/shell from it instead of asking the Cardputer again. Measured 2026-09-30: a cold
+// boot that restored four app windows fetched core.en + core.<lang> SIX times each (once per document, twice
+// in Settings, whose three concurrent init('core') raced this cache). Sandboxed/cross-origin frames can't
+// see the top window: they fetch as before.
+function sharedCatalog(url) {
   try {
-    // No app-level persistent cache on purpose: the service worker already precaches core/shell and
-    // the HTTP cache covers the rest, so fetches are cheap — and a persistent cache would serve a
-    // STALE catalog for the whole session after a deploy/edit. The in-memory Map is enough.
-    const r = await fetch(url, { cache: 'no-cache' });
-    if (r.ok) obj = await r.json();
-  } catch {}
-  // A missing/empty catalog is fine (the namespace just inherits core + falls back to keys).
-  if (obj == null) obj = {};
-  rawCatalogs.set(url, obj);
-  return obj;
+    const top = globalThis.top;
+    if (!top || top === globalThis || !top.__nucleoCatalogs) return undefined;
+    return top.__nucleoCatalogs.get(url);
+  } catch { return undefined; }
+}
+try { if (globalThis.top === globalThis) globalThis.__nucleoCatalogs = rawCatalogs; } catch {}
+
+// A catalog the LINK failed to deliver is not an empty catalog. The Cardputer answers "503 low memory" under
+// load and its httpd now and then resets a socket mid-response; caching that miss as {} used to leave the whole
+// session in English (the fallback floor) with no way back but a reload. Such a miss is retried here, then
+// handed out as FAILED (empty, so the build still falls back to English) and never cached: buildMerged
+// schedules a repair that fetches it again and repaints once it arrives. A 404 is a real "no catalog".
+const FAILED = Object.freeze({});
+const RETRY_MS = [400, 1200];
+const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
+
+function fetchCatalog(url) {
+  // In-memory dedup within this document — the PROMISE is stored at once, so concurrent init() calls
+  // share one request instead of racing past an empty cache.
+  if (rawCatalogs.has(url)) return Promise.resolve(rawCatalogs.get(url));
+  const shared = /^\/i18n\//.test(url) ? sharedCatalog(url) : undefined;
+  if (shared !== undefined) { rawCatalogs.set(url, shared); return Promise.resolve(shared); }
+  const job = (async () => {
+    let obj = null;
+    for (let i = 0; ; i++) {
+      let transient = true;                   // a network error, or a body cut short (not JSON)
+      try {
+        // No app-level persistent cache on purpose: the service worker already precaches core/shell and
+        // the HTTP cache covers the rest, so fetches are cheap — and a persistent cache would serve a
+        // STALE catalog for the whole session after a deploy/edit. The in-memory Map is enough.
+        const r = await fetch(url, { cache: 'no-cache' });
+        transient = r.status === 408 || r.status === 429 || r.status >= 500;
+        if (r.ok) obj = await r.json();
+      } catch {}
+      if (obj != null) break;
+      if (!transient) { obj = {}; break; }   // a missing catalog is fine: the namespace inherits core + English
+      if (i >= RETRY_MS.length) {
+        rawCatalogs.delete(url);              // not cached: the next build (or a repair) asks again
+        return FAILED;
+      }
+      await sleep(RETRY_MS[i]);
+    }
+    rawCatalogs.set(url, obj);
+    return obj;
+  })();
+  rawCatalogs.set(url, job);        // pending: later callers here — and app windows via the top Map — share it
+  return job;
 }
 
 // Build the resolved lookup table for (ns, lang): core(base) ⊂ core(active) ⊂ ns(base) ⊂ ns(active).
 // Later layers win, so the active language overrides base, and the namespace overrides core.
-async function buildMerged(ns, lang) {
+async function buildMerged(ns, lang, { force = false } = {}) {
   const key = `${ns}|${lang}`;
-  if (merged.has(key)) return merged.get(key);
-  // core: base + active. Both are precached by the service worker → zero device read, and the base
-  // layer is a free fallback floor. App namespace: ACTIVE language ONLY — the i18n gate guarantees
-  // IT/EN key parity, so fetching the base catalog too would be a redundant SD read on the device.
-  const coreLangs = lang === BASE ? [BASE] : [BASE, lang];
-  const jobs = coreLangs.map((L) => fetchCatalog(urlFor('core', L)));
-  if (ns !== 'core') jobs.push(fetchCatalog(urlFor(ns, lang)));
-  const layers = await Promise.all(jobs);               // [core(base), core(active), ns(active)] — later wins
+  if (!force && merged.has(key)) return merged.get(key);
+  // ENGLISH IS THE FALLBACK FLOOR (BASE) for BOTH layers. We always load the base(en) catalog under
+  // the active one — for `core` AND for the app namespace — so a key missing from the active-language
+  // file resolves to English, never to a raw key on screen. This matters for the tier-2 languages
+  // (es/fr/de), whose per-app catalogs may be partial: without the ns(en) floor they'd fall through
+  // to the key. core(en) is service-worker precached; the one extra ns(en) fetch is HTTP-cached and
+  // tiny, and buys a guaranteed English fallback everywhere. Order = later wins.
+  const langChain = lang === BASE ? [BASE] : [BASE, lang];   // [en] or [en, active]
+  const urls = langChain.map((L) => urlFor('core', L));
+  if (ns !== 'core') for (const L of langChain) urls.push(urlFor(ns, L));
+  const layers = await Promise.all(urls.map(fetchCatalog));   // [core(en), core(active), ns(en), ns(active)] — later wins
   const out = Object.assign({}, ...layers);
-  merged.set(key, out);
+  merged.set(key, out);                     // replaced whole, never deleted: a render meanwhile reads the old table
+  if (layers.includes(FAILED)) {
+    // Keep what arrived (English at worst, never raw keys) and fetch the rest again in the background.
+    incomplete.add(key);
+    urls.forEach((u, i) => { if (layers[i] === FAILED) rawCatalogs.delete(u); });
+    scheduleRepair(ns, lang);
+  } else incomplete.delete(key);
   return out;
+}
+
+// Rebuild a table that was built while a catalog could not be fetched and, once it is complete, repaint this
+// document. Spaced attempts (the device may stay busy for a while); after the last one English stays.
+const incomplete = new Set();       // `${ns}|${lang}` tables built with a FAILED layer
+const repairs = new Map();          // `${ns}|${lang}` -> { n: attempts made, pending }
+const REPAIR_MS = [3000, 8000, 20000, 45000];
+function scheduleRepair(ns, lang) {
+  const key = `${ns}|${lang}`;
+  const st = repairs.get(key) || { n: 0, pending: false };
+  if (st.pending || st.n >= REPAIR_MS.length) return;
+  st.pending = true; repairs.set(key, st);
+  setTimeout(async () => {
+    st.pending = false; st.n++;
+    await buildMerged(ns, lang, { force: true });       // still failing: it schedules the next attempt itself
+    if (incomplete.has(key) || lang !== activeLang) return;
+    syncDocAttrs();
+    I18N.apply(document, defaultNamespace());
+    subscribers.forEach((cb) => { try { cb(lang); } catch {} });
+  }, REPAIR_MS[st.n]);
 }
 
 // --- formatting (the "professional OS" touch: locale-correct dates/numbers) --
@@ -217,6 +294,18 @@ const I18N = {
 
   // Return a namespace-bound t() without re-loading (use after init for convenience).
   scope(ns) { return (key, vars) => translate(ns, key, vars); },
+
+  // The shell knows WHICH frames are curated (same-origin AND not sandboxed); it hands that check in here
+  // so the set-language relay below obeys the same trust boundary as the shell's own message router.
+  setSenderGuard(fn) { senderGuard = typeof fn === 'function' ? fn : null; },
+
+  // The raw catalog of ONE namespace in ANY language (not only the active one) — for callers that must
+  // match text across languages, e.g. the shell's app search finding "Rechner" while the UI is in
+  // Italian. Shares the in-memory dedup, so the base/active files already loaded cost nothing again.
+  catalog(ns, lang) {
+    const l = normalize(lang);
+    return l ? fetchCatalog(urlFor(ns || 'core', l)) : Promise.resolve({});
+  },
 
   // Fill every [data-i18n*] element under `root`. Call after building DOM dynamically.
   apply(root = document, defaultNs = 'core') {
@@ -338,10 +427,15 @@ function install() {
       subscribers.forEach((cb) => { try { cb(activeLang); } catch {} });
     }
   });
-  // Same-frame relay (e.g. the shell tells its children, or a test dispatches it directly).
+  // Same-frame relay (e.g. the shell tells its children, or a test dispatches it directly). Same-origin
+  // senders only: a sandboxed (opaque-origin) agent app or a foreign page in the Browser app used to be able
+  // to switch the whole OS language with one postMessage.
   window.addEventListener('message', (e) => {
     const d = e && e.data;
-    if (d && d.type === 'set-language') { const l = normalize(d.lang); if (l && l !== activeLang) applyNewLang(l); }
+    if (!d || d.type !== 'set-language') return;
+    if (e.origin !== location.origin) return;
+    try { if (senderGuard && !senderGuard(e)) return; } catch { return; }
+    const l = normalize(d.lang); if (l && l !== activeLang) applyNewLang(l);
   });
 }
 

@@ -1,0 +1,38 @@
+{
+  "_lang": "de",
+  "title": "WiFi-Manager",
+  "btn_auto": "Auto",
+  "auto_hint": "Automatische Aktualisierung alle 25s",
+  "connect": "Verbinden",
+  "reconnect": "Neu verbinden",
+  "forget": "Vergessen",
+  "password": "Passwort",
+  "password_keep": "Passwort (leer = gespeichertes verwenden)",
+  "saved": "gespeichert",
+  "saved_hint": "Gespeichertes Netzwerk — automatische Wiederverbindung",
+  "priority": "Priorität",
+  "connecting": "Verbinde mit {ssid}…",
+  "connected_to": "Verbunden mit {ssid}",
+  "connect_failed": "Verbindung fehlgeschlagen — prüfe das Passwort",
+  "forgotten": "Netzwerk vergessen",
+  "need_pair": "Kopple das Gerät, um Netzwerke zu verwalten",
+  "src_idle": "inaktiv",
+  "empty_msg": "Keine Netzwerke gefunden.<br>Drücke <b>Scannen</b>, um erneut zu suchen.",
+  "count": {
+    "one": "{count} Netzwerk",
+    "other": "{count} Netzwerke"
+  },
+  "count_open": {
+    "one": "{count} offen",
+    "other": "{count} offen"
+  },
+  "ch": "Kanal {ch}",
+  "sec_open": "offen",
+  "sec_open_hint": "Offenes Netzwerk",
+  "hidden_ssid": "(versteckt)",
+  "src_failed": "Scan fehlgeschlagen — Gerät nicht erreichbar oder beschäftigt",
+  "src_need_pair": "nicht gekoppelt — koppel diesen Browser zum Scannen",
+  "src_live": "Live-Scan",
+  "forget_failed": "Netzwerk konnte nicht vergessen werden",
+  "wifi_unavailable": "Die WLAN-Verwaltung ist auf diesem Gerät nicht verfügbar."
+}

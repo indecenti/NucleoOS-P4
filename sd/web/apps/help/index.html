@@ -1,12 +1,16 @@
 <!doctype html>
-<html lang="it">
+<!-- SPDX-License-Identifier: AGPL-3.0-or-later -->
+<html lang="en">
 <head>
   <meta charset="utf-8">
+  <script>/* NucleoOS resource guard: a lost same-origin script/stylesheet makes the shell reload this window once (wm.js retryFrame) */addEventListener('error',function(e){var t=e.target,u;if(!t||t===window||parent===window||(t.tagName!=='SCRIPT'&&t.tagName!=='LINK'))return;try{u=new URL(t.src||t.href,location.href);if(u.origin===location.origin)parent.postMessage({type:'app-resource-failed',src:u.pathname},location.origin)}catch(_){}},true)</script>
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <title>System Help & Documentation</title>
   <!-- Offline-first: use the system font stack (see --font-sans/--font-mono fallbacks below)
        instead of render-blocking remote webfonts — the device often has no internet. -->
   <style>
+    /* Native controls (audio/video bars, date/time pickers, file inputs, selects) follow the app theme. */
+    :root { color-scheme: dark; } html[data-theme="light"] { color-scheme: light; }
     :root {
       --bg: #080c16;
       --bg-gradient: radial-gradient(circle at 80% 20%, #171d38 0%, #080c16 100%);
@@ -800,6 +804,10 @@
       return list;
     }
 
+    // Manual records are DATA: synopses like "cat <file>" must reach the card as text. Interpolated raw,
+    // every <placeholder> became an unknown HTML element and vanished (72 of 77 topics lost text).
+    const h = (v) => String(v ?? '').replace(/[&<>"']/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
+
     // Formatta la stringa JSON applicandovi colori Swagger premium
     function syntaxHighlightJSON(jsonStr) {
       if (typeof jsonStr !== 'string') {
@@ -846,7 +854,16 @@
         const text = n.nodeValue;
         if (regex.test(text)) {
           const span = document.createElement('span');
-          span.innerHTML = text.replace(regex, '<mark class="search-highlight">$1</mark>');
+          text.split(regex).forEach((part, i) => {
+            if (i % 2 === 1) {
+              const mark = document.createElement('mark');
+              mark.className = 'search-highlight';
+              mark.textContent = part;
+              span.appendChild(mark);
+            } else if (part) {
+              span.appendChild(document.createTextNode(part));
+            }
+          });
           n.parentNode.replaceChild(span, n);
         }
       });
@@ -859,7 +876,7 @@
           <div class="card-header">
             <div class="card-meta">
               <span class="category">${manual.category === 'guide' ? t('label_guides') : t('label_commands')}</span>
-              <h2>${data.title}</h2>
+              <h2>${h(data.title)}</h2>
             </div>
             ${(manual.category !== 'guide' && manual.category !== 'system') ? `
               <button class="exec-btn" id="exec-cmd-btn">
@@ -873,20 +890,20 @@
 
           <div class="section-title">${t('synopsis')}</div>
           <div class="synopsis-box">
-            <code>${data.synopsis}</code>
+            <code>${h(data.synopsis)}</code>
             <button class="copy-btn" id="copy-synopsis">
               <span>${t('copy')}</span>
             </button>
           </div>
 
           <div class="section-title">${t('description')}</div>
-          <p class="description-text">${data.description}</p>
+          <p class="description-text">${h(data.description)}</p>
       `;
 
       if (data.details) {
         html += `
           <div class="section-title">${t('details')}</div>
-          <pre class="details-box">${data.details}</pre>
+          <pre class="details-box">${h(data.details)}</pre>
         `;
       }
 
@@ -931,32 +948,32 @@
           let inputType = '';
           if (p.name === 'reset') {
             inputType = `
-              <select class="param-input" id="param-${p.name}" style="background:var(--code-bg); color:var(--text); border:1px solid var(--border)">
+              <select class="param-input" id="param-${h(p.name)}" style="background:var(--code-bg); color:var(--text); border:1px solid var(--border)">
                 <option value="0" ${p.default === '0' ? 'selected' : ''}>0 (No / Keep Context)</option>
                 <option value="1" ${p.default === '1' ? 'selected' : ''}>1 (Yes / Reset Context)</option>
               </select>
             `;
           } else if (p.name === 'lang' && manual.id === 'api-anima') {
             inputType = `
-              <select class="param-input" id="param-${p.name}" style="background:var(--code-bg); color:var(--text); border:1px solid var(--border)">
+              <select class="param-input" id="param-${h(p.name)}" style="background:var(--code-bg); color:var(--text); border:1px solid var(--border)">
                 <option value="it" ${p.default === 'it' ? 'selected' : ''}>it (Italiano)</option>
                 <option value="en" ${p.default === 'en' ? 'selected' : ''}>en (English)</option>
               </select>
             `;
           } else if (p.type === 'textarea') {
-            inputType = `<textarea class="param-input textarea" id="param-${p.name}" placeholder="${p.default || ''}">${p.default || ''}</textarea>`;
+            inputType = `<textarea class="param-input textarea" id="param-${h(p.name)}" placeholder="${h(p.default)}">${h(p.default)}</textarea>`;
           } else {
-            inputType = `<input type="text" class="param-input" id="param-${p.name}" value="${p.default || ''}" placeholder="${p.default || ''}">`;
+            inputType = `<input type="text" class="param-input" id="param-${h(p.name)}" value="${h(p.default)}" placeholder="${h(p.default)}">`;
           }
 
           paramsHtml += `
             <div class="param-row">
               <div class="param-label">
-                <span class="param-name">${p.name}</span>
+                <span class="param-name">${h(p.name)}</span>
                 <span class="param-type">${p.type === 'textarea' ? t('body_param') : t('query_param')}</span>
                 ${labelRequired}
               </div>
-              <div class="param-desc">${desc}</div>
+              <div class="param-desc">${h(desc)}</div>
               ${inputType}
             </div>
           `;
@@ -968,19 +985,19 @@
       content.innerHTML = `
         <div class="api-card">
           <div class="api-header">
-            <span class="api-badge ${manual.method.toLowerCase()}">${manual.method}</span>
-            <h2>${manual.path}</h2>
+            <span class="api-badge ${h(manual.method.toLowerCase())}">${h(manual.method)}</span>
+            <h2>${h(manual.path)}</h2>
           </div>
 
           <div>
             <div class="api-section-title">${t('description')}</div>
-            <p class="description-text">${data.description}</p>
+            <p class="description-text">${h(data.description)}</p>
           </div>
 
           ${data.details ? `
             <div>
               <div class="api-section-title">${t('details')}</div>
-              <pre class="details-box" style="margin-bottom:0">${data.details}</pre>
+              <pre class="details-box" style="margin-bottom:0">${h(data.details)}</pre>
             </div>
           ` : ''}
 
@@ -1100,7 +1117,7 @@
               }
             }
           } catch (e) {
-            text = t('read_error', { msg: e.message });
+            text = h(t('read_error', { msg: e.message }));
           }
 
           if (text === '') text = t('empty_response');
@@ -1137,7 +1154,7 @@
                 <span>${t('status')}: <span class="status-badge status-5xx">✗ ${t('conn_error')}</span></span>
                 <span>${t('time')}: <span class="response-time">${latency} ms</span></span>
               </div>
-              <pre class="response-body" style="color:#ff6b6b"><code>${error.message}\n\n${t('conn_note')}</code></pre>
+              <pre class="response-body" style="color:#ff6b6b"><code>${h(error.message)}\n\n${h(t('conn_note'))}</code></pre>
             </div>
           `;
         } finally {
@@ -1304,7 +1321,7 @@
     // Carica lo spec API (Mini Swagger) con cache intelligente versionata.
     // Lo spec è generato a build-time dalle route reali del firmware (tools/gen-api-spec.mjs),
     // quindi cambia SOLO a un nuovo flash/sync. Lo teniamo in localStorage con chiave = versione
-    // firmware: a cache calda non leggiamo affatto il file dalla SD del device (mai pesare sul
+    // firmware: a cache calda non leggiamo affatto il file dalla SD del Cardputer (mai pesare sul
     // device). /api/status è throttlato lato firmware ed è il segnale d'invalidazione più economico.
     const API_SPEC_CACHE = 'help.apispec.v1';
     async function loadApiSpec() {

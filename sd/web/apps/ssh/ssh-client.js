@@ -1,6 +1,7 @@
+/* SPDX-License-Identifier: AGPL-3.0-or-later */
 // NucleoOS SSH — browser transport to nucleo-ssh-bridge (WebSocket ↔ real SSH).
 //
-// The device only serves these files; the live SSH traffic goes browser → bridge → host and never
+// The Cardputer only serves these files; the live SSH traffic goes browser → bridge → host and never
 // touches the chip. Control messages are JSON text frames; shell I/O is binary frames.
 //
 // AGENT SEAM (predisposed, not wired to the agent app yet): every client exposes exec(cmd) for

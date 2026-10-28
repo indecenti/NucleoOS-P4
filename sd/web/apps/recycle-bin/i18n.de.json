@@ -1,0 +1,29 @@
+{
+  "_lang": "de",
+  "title": "Papierkorb",
+  "restore_all": "Alle wiederherstellen",
+  "empty_bin": "Papierkorb leeren",
+  "restore": "Wiederherstellen",
+  "count": {
+    "one": "· {count} Element",
+    "other": "· {count} Elemente"
+  },
+  "count_empty": "· leer",
+  "empty_title": "Der Papierkorb ist leer.",
+  "empty_hint": "In File Commander gelöschte Dateien landen hier und können wiederhergestellt werden.",
+  "toast_restored_to": "Wiederhergestellt in {path}",
+  "toast_restore_failed": "Wiederherstellung fehlgeschlagen",
+  "toast_deleted_perm": "Endgültig gelöscht",
+  "toast_restored_all": "Alles wiederhergestellt",
+  "toast_bin_emptied": "Papierkorb geleert",
+  "confirm_empty": {
+    "one": "{count} Element endgültig löschen? Dies kann nicht rückgängig gemacht werden.",
+    "other": "{count} Elemente endgültig löschen? Dies kann nicht rückgängig gemacht werden."
+  },
+  "confirm_purge": "„{name}“ endgültig löschen? Dies kann nicht rückgängig gemacht werden.",
+  "toast_delete_failed": "Löschen fehlgeschlagen — das Element ist noch im Papierkorb",
+  "err_index_unreadable": "Der Papierkorb kann gerade nicht gelesen werden — es wurde nichts geändert. Bitte erneut versuchen.",
+  "load_failed": "Der Papierkorb kann gerade nicht gelesen werden. Bitte gleich erneut versuchen.",
+  "toast_pair_needed": "Kopplung auf dem Gerät erforderlich",
+  "toast_restore_partial": "{count} nicht wiederhergestellt (erneut versuchen)"
+}

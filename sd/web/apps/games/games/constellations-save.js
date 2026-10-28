@@ -1,14 +1,15 @@
+/* SPDX-License-Identifier: AGPL-3.0-or-later */
 // constellations-save.js — cross-play campaign bridge for "Costellazioni 3D".
 //
-// The device native game and this web game share ONE run: the canonical /sd/data/costellazioni/
+// The Cardputer native game and this web game share ONE run: the canonical /sd/data/costellazioni/
 // save.bin on the device SD. The firmware exposes it as JSON at /api/game/costellazioni/save
 // (registered in nucleo_app/app_constellations.cpp), so the web never parses raw struct bytes —
-// it GETs/POSTs the same fields. save.bin stays the single source of truth; the device keeps
+// it GETs/POSTs the same fields. save.bin stays the single source of truth; the Cardputer keeps
 // writing it natively. Auth is the OS session cookie (same-origin) — no token plumbing.
 //
 // Conflict model: the struct has no timestamp, so `epoch` (the jump counter, monotonic per run) is
 // the progress clock, tie-broken by missions completed, then kills, then credits. On save we first
-// re-read the device copy; if it advanced past ours, the device moved the run forward while the
+// re-read the device copy; if it advanced past ours, the Cardputer moved the run forward while the
 // tab was idle → the device wins and we reload (storeSave returns {conflict, disk}).
 
 const URL = '/api/game/costellazioni/save';
@@ -54,24 +55,40 @@ function progressGreater(a, b) {
   return false;
 }
 
+// The device copy, read for real. 'none' ONLY on a 404; a failed or garbled read THROWS — it is not
+// "no save". A save of another struct version comes back as 'newer' / 'older' (never normalized into ours).
+async function readDisk() {
+  const r = await fetch(URL, { credentials: 'same-origin', cache: 'no-store' });
+  if (r.status === 404) return { state: 'none' };
+  if (!r.ok) throw new Error('GET ' + r.status);
+  const s = await r.json();
+  if (!s || typeof s !== 'object' || Array.isArray(s)) throw new Error('save unreadable');
+  if (s.ver !== SAVE_VER) return { state: s.ver > SAVE_VER ? 'newer' : 'older' };
+  return { state: 'ok', save: normalize(s) };
+}
+
 // Read the shared run. Returns the save object, or null if there is no continuable run
 // (no save.bin / incompatible version / network error).
 export async function loadSave() {
   try {
-    const r = await fetch(URL, { credentials: 'same-origin', cache: 'no-store' });
-    if (r.status === 404) return null;
-    if (!r.ok) throw new Error('GET ' + r.status);
-    const s = await r.json();
-    if (!s || s.ver !== SAVE_VER) return null;     // future/incompatible struct → no continue, never corrupt
-    return normalize(s);
+    const d = await readDisk();
+    return d.state === 'ok' ? d.save : null;       // future/incompatible struct → no continue, never corrupt
   } catch (e) { console.warn('[costellazioni] loadSave failed', e); return null; }
 }
 
 // Persist the run. Epoch-merge guard: if the device copy has progressed beyond `save`, abort and
 // return { ok:false, conflict:true, disk } so the UI can reload from disk and warn the player.
-export async function storeSave(save) {
-  const disk = await loadSave();
-  if (disk && progressGreater(disk, save)) return { ok: false, conflict: true, disk };
+// `base` (optional) is the copy this tab last read or wrote: when the card still holds exactly that, nobody else
+// moved the run, so `save` is its continuation even if it ranks lower (spending credits — a purchase, a refuel,
+// a relight — lowers the progress key's last tie-break and used to be refused and rolled back as a "conflict").
+// The guard needs the device copy: when it cannot be read (busy, offline, garbled) or it is a save from a
+// NEWER firmware, this THROWS instead of writing blind — the old code took a failed re-read for "no save"
+// and POSTed straight over the Cardputer's run.
+export async function storeSave(save, base = null) {
+  const disk = await readDisk();
+  if (disk.state === 'newer') throw new Error('the card holds a save from a newer version');
+  const untouched = !!base && disk.state === 'ok' && JSON.stringify(disk.save) === JSON.stringify(normalize(base));
+  if (disk.state === 'ok' && !untouched && progressGreater(disk.save, save)) return { ok: false, conflict: true, disk: disk.save };
   const body = normalize(save); body.ver = SAVE_VER;
   const r = await fetch(URL, {
     method: 'POST', credentials: 'same-origin',

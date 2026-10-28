@@ -1,10 +1,14 @@
+/* SPDX-License-Identifier: AGPL-3.0-or-later */
 // Offline shell cache. Keeps the desktop usable when the device is unreachable;
 // API calls always go to the network (never cached) so live data stays fresh.
-const CACHE = 'nucleo-shell-v119';  // v119: the .gz twins of shell.js, copilot.js, apps/ssh/app.js and i18n/coverage.json were older than the files (the device serves the twin), so browsers got the shell of 2026-09-24 and the copilot of 2026-10-01; twins regenerated. v118: the AI keys stay on the device — ai.js / ai-keys.js / Settings read /api/anima/teacher (keys masked, VAULT_KEY placeholder) and every model call goes through the device relay /api/llm, which adds the key for the request's host and streams the answer back. v117: Settings ▸ IA permissions gain the write (files) and rule (automations) rows. v116: Settings ▸ IA gains ANIMA's eyes (vision_model, the vision helper for a text-only chat model); teacher.json keeps vision_model / vision_base / vision_key / vision across saves. v115: Settings ▸ IA permissions gain the shell row and the autonomous-mode switch (permissions.json "mode":"auto"). v114: Settings ▸ IA gains the Telegram channel (bot token, pairing code, live status via /api/anima/telegram) and MEMORY.md in the workspace editor. v113: Settings ▸ IA gains the ANIMA workspace (SOUL.md / USER.md / HEARTBEAT.md editor, proactive-check interval via /api/anima/hb, per-action model permissions in permissions.json). v112: Settings ▸ IA gains the hands-free voice section (wake word on/off, word, sensitivity, live status via /api/anima/wake). v111: Settings ▸ IA gains the home Whisper server (stt_url) for voice transcription without cloud. v110: AI models made whole — Settings ▸ IA: the device network mode (offline/local/hybrid/llm), a LAN model server (Ollama / LM Studio / llama.cpp) bridged by the device's /api/llm relay (back, LAN + AI hosts only), live model lists for every provider, and the browser-GPU model (webllm.js: WebLLM catalogue, download/progress, test, cache removal); the Copilot follows the device's mode, gets /help /mode /model /models /status, ↑↓ history, tool outcomes and the GPU model as fallback. v109: Video Player plays the camera AVI recordings (Motion-JPEG + PCM) and MPEG-1 films (pl_mpeg WASM) via canvas engines with HTTP Range streaming (no-Range fallback); roll APP_CACHE so the new player modules load. v108: Mail app polished icon (curated envelope) + native category renamed Network->Communication. v107: new Mail app — send email via Gmail/Outlook/Yahoo/iCloud or any SMTP (device-native SMTP-over-TLS :465 + AUTH LOGIN); accounts in NVS with write-only passwords, Compose/Sent/Accounts tabs, /api/mail/* endpoints (auth-gated). v105: Voice Recorder gains BROWSER-side CHUNKED transcription for long takes (1-2h) — pulls the WAV in byte ranges (/api/fs/read 206), transcribes ≤8-min segments directly against Whisper (browser Groq key) + map-reduce summary, bypassing the device's 25MB/single-shot-TLS limit; new longtranscribe.js, device path kept for MP3/no-key. v104: ANIMA chat gains the same 🌐 Web mode — a compose-box toggle routes the turn to Groq's compound (built-in web search) for current, CITED answers (Sources list, deduped), Groq-only + browser-direct, gated behind a Groq key, overriding the selected mode when armed; reuses ANIMA's markdown renderer + engine-map (🌐 Online · Web). v103: AI Chat (groq-chat) gains a 🌐 Web mode — routes the turn to Groq's agentic "compound" system (built-in web search) for current, CITED answers; non-streamed so executed_tools search_results render as a clean Sources list, with a firm system prompt suppressing compound's raw process/code dumps. v102: AI Chat (groq-chat) now RENDERS Markdown — replies were shown raw (## headings, |tables|, **bold**, lists, links all literal). Added a compact, XSS-safe block+inline renderer (code fences already worked). v101: AI Chat (groq-chat) dark-mode fix — the model dropdown rendered its native <option> popup on a white OS background (unreadable in dark): added color-scheme:dark + explicit dark <option> colors. v100: roll APP_CACHE so the fixed AI Chat (groq-chat) loads — it now calls Groq BROWSER-DIRECT (api.groq.com) instead of the device /api/llm proxy, which OOMed mid-stream (503 low-mem-for-TLS / errno 113) on this PSRAM-less chip; the stale v99 copy kept hammering the dying proxy. v99: Start-menu Android button now serves the REAL built NucleoMind APK (/downloads/NucleoMind.apk, com.nucleoos.mind — the on-device LLM companion); the never-built NucleoOS Capacitor wrapper (android-app, needs Android Studio/JDK17) stays a build-machine TODO. v98: File Commander hides .gz shadow dupes (each was a dead click → stray /api/fs/list 404). v97: app icons loading="lazy" (cut the cold-load icon burst in every browser; the SW governor is inert over http LAN IP so this is the only client-side throttle that runs). v96: anti-overload pass — /api/fs/list now goes through the SW MAX_INFLIGHT=2 gate (was bypassing it: crawl/reconcile/File-Commander list traffic stacked on the device); + adaptive /api/status polling (pause-when-hidden + error backoff). v95: roll APP_CACHE so the updated ANIMA app loads — web offline ANIMA now runs in-browser (WASM) and NEVER scales onto the device (skipDevice); the device keeps L1 unloaded while a web client is connected. v94: (a) shell connects to /ws?shell=1 so ONLY the real web OS triggers the device's remote handoff (screen-off + RAM reclaim) — a standalone app page opening /ws no longer blanks the device; (b) close /ws on pagehide so the device reclaims it in ~4s on tab close instead of waiting the ~20s keep-alive reaper. v93: web-OS boot resilience — fetchJSON retries 503/timeout w/ backoff (boot flooded the single-task PSRAM-less device → /api/apps timed out → boot hung → /ws never attached) + SW concurrency 3->2 + boot logs. v92: Costellazioni — longer/harder missions (7-12 waves, tougher foes), missiles 3 + pickups (missile/shield/repair drops), richer SFX + dynamic music bed. v91: 8 background biomes per sector w/ smooth cross-fade + whoosh, enemy threat-colour ramp, more waves (4-9), punchier SFX. v90: right-mouse fires missiles + render-side interpolation of enemy ships (silky, no 30Hz stutter). v89: bump to roll APP_CACHE so the rebuilt Costellazioni 3D web game (real glTF ship models + GLTFLoader, arcade HUD, missiles, dynamic warp/nebula, engage-and-hold combat, varied missions) actually loads instead of the stale cached copy. v88: /ws reconnect discipline — single socket (never parallel), exponential backoff (3s→30s) instead of a fixed 3s storm, and pause while the tab is hidden; kills the endless failed-handshake requests at the PSRAM-less device when unpaired/offline. v87: boot loading screen = full-screen animated atom (canvas, web twin of the firmware splash) replacing the spinner; stops itself on .hidden. v86: ANIMA online-only fallback ladder — cloud chat ALWAYS browser-direct (even exec=device; firmware mbedTLS OOMs on this PSRAM-less chip), deleted the firmware online rung, browser-only labelled offline degrade (skipDevice). v85: drop the 535KB wallpaper.png from precache (it's a JPEG-misnamed-.png never displayed — the live wallpaper is /data/Pictures/wallpaper.png; it only tripped the webfs low-heap defer). v84: agentic loop browser-direct independent of exec. v83: workspace invite-before-write + WS4/WS5 fixes. v82: loop as default online engine. v81: multi-model router + workspace-as-context
+// Bump this on every shell change that must reach already-installed clients. The reason for each
+// roll goes in docs/shell-cache-log.md — NOT here: it used to be one 10.5 KB comment on this line,
+// half the whole service worker, re-shipped to every browser on every update check.
+const CACHE = 'nucleo-shell-v161-8ea2b19d64b6';   // v161 — opt-in auto-update (cancellable countdown + Settings hand-off, see docs/shell-cache-log.md)
 // Per-version cache for app assets (/apps/<id>/...). Tied to the shell version so a deploy (which
 // bumps CACHE) drops it; the shell also flushes it on apps.changed (OTA app update) via postMessage.
 const APP_CACHE = CACHE + '-apps';
-const ASSETS = ['./', 'index.html', 'style.css', 'copilot.css', 'notify.css', 'onboarding.css', 'shell.js', 'boot-fetch.js', 'copilot.js', 'notify.js', 'onboarding.js', 'ai.js', 'ai-keys.js', 'webllm.js', 'shortcuts.js', 'wm.js', 'fsindex.js', 'busy.js', 'dlgate.js', 'micgate.js', 'nucleo-i18n.js', 'i18n/core.it.json', 'i18n/core.en.json', 'i18n/shell.it.json', 'i18n/shell.en.json', 'manifest.webmanifest', 'icon.png'];   // NB: wallpaper.png removed — it's a 535KB JPEG-misnamed-.png never displayed (live wallpaper = /data/Pictures/wallpaper.png) that only tripped the webfs low-heap defer
+const ASSETS = ['./', 'index.html', 'style.css', 'copilot.css', 'notify.css', 'onboarding.css', 'shell.js', 'boot-fetch.js', 'copilot.js', 'anima-mode.js', 'notify.js', 'onboarding.js', 'ambient.js', 'ai.js', 'ai-keys.js', 'webllm.js', 'shortcuts.js', 'search-rank.js', 'appbroker.js', 'migrations.js', 'wm.js', 'fsindex.js', 'busy.js', 'dlgate.js', 'micgate.js', 'system-ui.js', 'nucleo-i18n.js', 'nucleo-app.js', 'nucleo-caps.js', 'caps-fallback.json', 'update-check.js', 'update-core.js', 'sha256.js', 'store-client.js', 'ai-engines.js', 'ai-ask.js', 'capabilities.js', 'local-ai-help.js', 'seq-import.js', 'i18n/core.it.json', 'i18n/core.en.json', 'i18n/core.es.json', 'i18n/core.fr.json', 'i18n/core.de.json', 'i18n/shell.it.json', 'i18n/shell.en.json', 'i18n/shell.es.json', 'i18n/shell.fr.json', 'i18n/shell.de.json', 'manifest.webmanifest', 'icon.png', 'icons.json', 'app-catalog.json'];   // NB: wallpaper.png removed — it's a 535KB JPEG-misnamed-.png never displayed (live wallpaper = /data/Pictures/wallpaper.png) that only tripped the webfs low-heap defer
 
 // --- Device request gate (shared reads, exclusive writes) ----------------------
 // The firmware httpd has max_open_sockets=4 + lru_purge_enable (it deliberately RESETS
@@ -12,6 +16,9 @@ const ASSETS = ['./', 'index.html', 'style.css', 'copilot.css', 'notify.css', 'o
 // ~80% fragmented — the largest contiguous block is only ~7.5KB and has historically
 // grazed 16 bytes free. A burst of parallel requests starves the heap; a write that lands
 // mid-burst can't even malloc its 2KB floor and returns "500 oom".
+// On editions with a bigger server (Linux handheld) the same gate is just a politeness throttle:
+// an uncontrolled burst of parallel requests (cold boot, crawls) degrades the whole OS plus media
+// streaming at once, and serializing writes keeps fs mutations ordered from this client's view.
 //
 // Counting semaphore with permits = MAX_INFLIGHT. A normal request (asset / fs read) takes
 // ONE permit (so up to MAX_INFLIGHT run together). A WRITE takes ALL permits: it can only
@@ -22,6 +29,9 @@ const ASSETS = ['./', 'index.html', 'style.css', 'copilot.css', 'notify.css', 'o
 const MAX_INFLIGHT = 2;   // 3->2: serialise harder so the PSRAM-less single-task device is never flooded at boot (v93)
 let active = 0;            // permits currently held
 const queue = [];         // FIFO of { need, resolve }
+// In-flight /api/anima GETs, keyed by path+query: identical questions asked at the same moment share
+// ONE request instead of racing each other at the device. Entries are removed when the job settles.
+const animaInflight = new Map();
 function pump() {
   // Strictly head-of-line: never grant a later waiter past a blocked one (prevents the
   // exclusive write from being starved by reads that keep slipping into freed slots).
@@ -33,24 +43,38 @@ function pump() {
 }
 function acquire(need) { return new Promise((resolve) => { queue.push({ need, resolve }); pump(); }); }
 function release(need) { active -= need; pump(); }
-async function netFetch(req, signal) {
-  try { return await fetch(req, signal ? { signal } : undefined); }
+async function netFetch(req) {
+  try { return await fetch(req); }
   catch (err) {
     // A transient lru_purge reset / momentary OOM. Replaying a body is unsafe, so
     // only retry idempotent GETs (no body) after a short breath.
     if (req.method !== 'GET') throw err;
-    await new Promise((r) => setTimeout(r, 250));
-    return await fetch(req);
+    // Three tries with backoff: one lost module of a dynamic import() fails the WHOLE graph, and the browser
+    // remembers it until a reload (the ANIMA agent runtime stayed dead after one reset in a busy moment).
+    for (const ms of [250, 800]) {
+      await new Promise((r) => setTimeout(r, ms));
+      try { return await fetch(req); } catch (e) { err = e; }
+    }
+    throw err;
   }
 }
+// A write holds the WHOLE pool — but only for so long. It used to be ABORTED after 15 s, which killed
+// every multi-MB upload (desktop drop, File Commander) mid-transfer: 504, then retried three times. The
+// SW cannot see a body's size (Content-Length is not exposed on a FetchEvent request), so it never aborts
+// a write; instead, past EXCLUSIVE_MAX_MS it hands back EVERY permit and the upload carries on ungated.
+// (Keeping one, as v149 did, wedged the gate: with MAX_INFLIGHT = 2 the next write needs both, so it sat
+// at the head of the FIFO for as long as the first one hung — and every read queued behind it froze.)
+// A hung write therefore can no longer freeze the desktop either. Callers that want a deadline (the
+// shell's small config saves) set their own — that abort reaches us through req.signal.
+const EXCLUSIVE_MAX_MS = 15000;
 async function gatedFetch(req, exclusive) {
   const need = exclusive ? MAX_INFLIGHT : 1;
   await acquire(need);
+  let held = need;
+  const downgrade = exclusive ? setTimeout(() => { const give = held; held = 0; if (give) release(give); }, EXCLUSIVE_MAX_MS) : null;
   try {
-    // A write holds the WHOLE pool, so cap it with a timeout: a hung exclusive lock would
-    // otherwise freeze the desktop. A tiny JSON save to SD is sub-second; 15s is generous.
-    return await netFetch(req, exclusive ? AbortSignal.timeout(15000) : null);
-  } finally { release(need); }
+    return await netFetch(req);
+  } finally { clearTimeout(downgrade); release(held); }
 }
 
 // --- ANIMA Forge: serve installed model weights from the verified install cache --------------------
@@ -62,6 +86,37 @@ async function gatedFetch(req, exclusive) {
 // KEEP forgeModelKey byte-identical to apps/anima/www/forge/model-url-map.js (pinned by
 // tools/anima-host/forge-model-url-map.test.mjs). Returns null for non-model URLs → SW leaves them alone.
 const MODEL_CACHE = 'anima-forge-models';
+// Durable wallpaper/image cache. Unlike the version-scoped shell CACHE (wiped on every deploy), this
+// is preserved across shell version bumps (see the activate `keep` set) — so a wallpaper the user
+// picked loads ONCE and stays available offline / in WASM forever, exactly like the content-addressed
+// model cache. Served stale-while-revalidate so a changed file still refreshes in the background.
+const WALLPAPER_CACHE = 'nucleo-wallpaper';
+const isImagePath = (p) => !!p && /\.(png|jpe?g|gif|svg|webp)$/i.test(p);
+// The durable store must stay SMALL: every image read lands here (gallery browsing included), it
+// survives every deploy, and an unbounded cache eventually trips origin-quota eviction — which can
+// take the SHA-verified Forge model cache down with it. Keep the last N images, drop the oldest.
+const WALLPAPER_CACHE_MAX = 24;
+async function trimWallpaperCache(cache) {
+  try {
+    const keys = await cache.keys();
+    for (let i = 0; i < keys.length - WALLPAPER_CACHE_MAX; i++) await cache.delete(keys[i]);
+  } catch {}
+}
+// A file changed under a cached image: drop every cached read of that path (or of anything below it, for
+// a folder move/delete). Without this a Paint save reopened with the OLD pixels and a deleted image kept
+// being served, from a cache that even survives deploys.
+async function dropCachedImages(paths) {
+  const ps = paths.filter(Boolean).map((p) => p.replace(/\/+$/, ''));
+  if (!ps.length) return;
+  try {
+    const cache = await caches.open(WALLPAPER_CACHE);
+    for (const k of await cache.keys()) {
+      let kp = null; try { kp = new URL(k.url).searchParams.get('path'); } catch {}
+      if (kp && ps.some((p) => kp === p || kp.startsWith(p + '/'))) await cache.delete(k);
+    }
+  } catch {}
+}
+const changedPaths = (url) => [url.searchParams.get('path'), url.searchParams.get('from'), url.searchParams.get('to')];
 function forgeModelKey(url) {
   const u = String(url).split('?')[0].split('#')[0];
   let m = /\/forge\/models\/([^/]+)\/(.+)$/.exec(u);
@@ -92,9 +147,12 @@ self.addEventListener('activate', (e) => {
   // Drop only STALE versions. Preserve the live shell cache, the live app cache, AND the Forge model
   // cache — the latter is content-addressed (/fc/<id>/<file>), NOT version-scoped, so wiping it on a
   // shell bump used to throw away GBs of SHA-verified model weights and force a full re-download.
-  const keep = new Set([CACHE, APP_CACHE, MODEL_CACHE]);
+  // Only the shell's OWN old versions go ('nucleo-shell-v…' and their '-apps', the only names any release
+  // ever used): caches other code owns stay — WebLLM keeps a downloaded browser model (often > 1 GB) in
+  // 'webllm/model', and an OS update used to throw it away.
+  const keep = new Set([CACHE, APP_CACHE, MODEL_CACHE, WALLPAPER_CACHE]);
   e.waitUntil(caches.keys().then((ks) =>
-    Promise.all(ks.filter((k) => !keep.has(k)).map((k) => caches.delete(k)))).then(() => self.clients.claim()));
+    Promise.all(ks.filter((k) => k.startsWith('nucleo-shell-') && !keep.has(k)).map((k) => caches.delete(k)))).then(() => self.clients.claim()));
 });
 
 // Let the shell force-refresh the app cache without a full SW version bump — wired to the
@@ -118,31 +176,79 @@ self.addEventListener('fetch', (e) => {
     return;
   }
 
+  // Everything else that is not the device (LLM providers, GitHub, CDNs) goes straight to the network.
+  // Routed through gatedFetch it held one of the DEVICE's permits for a request the device never sees,
+  // and a CORS/network failure came back as a fake 504 "device unreachable".
+  if (url.origin !== self.location.origin) return;
+
   const p = url.pathname;
   if (p.startsWith('/api/')) {
-    // Caching dinamico (lato client) per le immagini via API (come lo sfondo)
-    if (p === '/api/fs/read' && url.searchParams.get('path')?.match(/\.(png|jpe?g|gif|svg)$/i)) {
-      e.respondWith(caches.match(e.request).then((hit) => {
-        if (hit) return hit; // Ritorna l'immagine dalla cache istantaneamente
-        return gatedFetch(e.request).then((res) => {
-          if (res.ok) {
-            const copy = res.clone();
-            caches.open(CACHE).then((c) => c.put(e.request, copy));
-          }
+    // Images read via the file API (wallpapers, gallery thumbnails) → DURABLE cache with
+    // stale-while-revalidate. A cached copy is returned instantly (offline / WASM-safe) AND the
+    // network is queried in the background to refresh it if the file changed. The store is the
+    // deploy-surviving WALLPAPER_CACHE, so the wallpaper truly loads ONCE — a shell version bump no
+    // longer discards it and forces a re-download off the single-task device.
+    if (p === '/api/fs/read' && isImagePath(url.searchParams.get('path'))) {
+      e.respondWith((async () => {
+        const cache = await caches.open(WALLPAPER_CACHE);
+        const hit = await cache.match(e.request);
+        const network = gatedFetch(e.request).then(async (res) => {
+          // A cache failure (quota, a 206 partial) must never cost the caller a good network answer.
+          if (res && res.ok && res.status === 200) { try { await cache.put(e.request, res.clone()); await trimWallpaperCache(cache); } catch {} }
           return res;
-        }).catch(() => new Response('', { status: 504, statusText: 'device busy' }));
-      }));
+        }).catch(() => null);
+        if (hit) { e.waitUntil(network); return hit; }          // instant; refresh silently
+        const res = await network;
+        return res || new Response('', { status: 504, statusText: 'device busy' });
+      })());
       return;
     }
-    // Letture/scritture file: richiesta/risposta corte, mai in cache (dati vivi). La WRITE
-    // gira ESCLUSIVA (prende tutti i permessi): il dispositivo la serve da sola, con tutto l'heap
-    // libero, così trova un blocco contiguo grande invece di andare in OOM a metà burst.
+    // File reads/writes: short request/response, never cached (live data). The WRITE
+    // runs EXCLUSIVE (takes all permits): the device serves it alone, with the whole heap
+    // free, so it finds a large contiguous block instead of running OOM mid-burst.
     if (p === '/api/fs/read' || p === '/api/fs/list' || p === '/api/fs/write') {
       const exclusive = (p === '/api/fs/write');   // list = shared read (need=1), like read
-      e.respondWith(gatedFetch(e.request, exclusive).catch(() => new Response('', { status: 504, statusText: 'device busy' })));
+      e.respondWith((async () => {
+        if (exclusive) await dropCachedImages(changedPaths(url));
+        const res = await gatedFetch(e.request, exclusive).catch(() => new Response('', { status: 504, statusText: 'device busy' }));
+        if (exclusive && res.ok) await dropCachedImages(changedPaths(url));   // a read racing the write may have re-cached the old bytes
+        return res;
+      })());
       return;
     }
-    return; // Endpoint live/streaming (chat, logs, llm): dritti in rete, niente gate, niente cache.
+    // Move / delete: not gated (as before), but they change what a cached image path holds.
+    if ((p === '/api/fs/move' || p === '/api/fs/delete') && e.request.method !== 'GET') {
+      e.respondWith((async () => {
+        const res = await fetch(e.request);
+        if (res.ok) await dropCachedImages(changedPaths(url));
+        return res;
+      })());
+      return;
+    }
+    // /api/anima: the question to the assistant. Twelve surfaces call it — copilot, shell
+    // search, onboarding, ai.js, and the anima/agent/settings/spreadsheet/games/my-facts/recorder/
+    // code-runner apps — and none of them knows about the others: the "never concurrent calls" rule was left
+    // to the good manners of twelve files. On a chip without PSRAM, with 4-6 sockets shared by all
+    // the iframes, two questions at once are enough to time out the OS file reads.
+    //
+    // SHARED slot (need=1), not exclusive: a 'mode=on' query opens a TLS session on the device and can last
+    // seconds — giving it the exclusive permits would freeze every /api/fs/read of the shell.
+    //
+    // And COALESCING, which is the real gain here: the same question asked together by several surfaces
+    // (search bridges to the copilot, an app asks for the same fact) becomes ONE request
+    // only, and everyone reads the same answer. Zero extra bytes, less concurrency: negative cost.
+    if (p === '/api/anima' && e.request.method === 'GET') {
+      const key = url.pathname + url.search;
+      const inflight = animaInflight.get(key);
+      if (inflight) { e.respondWith(inflight.then((r) => r.clone())); return; }
+      const job = gatedFetch(e.request, false)
+        .catch(() => new Response('', { status: 504, statusText: 'device busy' }))
+        .finally(() => animaInflight.delete(key));
+      animaInflight.set(key, job);
+      e.respondWith(job.then((r) => r.clone()));
+      return;
+    }
+    return; // Live/streaming endpoints (chat, logs, llm): straight to the network, no gate, no cache.
   }
   // App assets (/apps/<id>/...): the device serves them no-cache, so without this EVERY cold open
   // re-downloaded the whole app (~25-440 KB) from the single-task httpd. Cache-first, version-keyed:
@@ -162,8 +268,8 @@ self.addEventListener('fetch', (e) => {
     })());
     return;
   }
-  // Asset statici dello shell: prima la cache, poi rete con gate + retry, e un fallback
-  // pulito così un reset transitorio non diventa un "Uncaught Failed to fetch" in console.
+  // Static shell assets: cache first, then network with gate + retry, and a clean
+  // fallback so a transient reset does not become an "Uncaught Failed to fetch" in the console.
   e.respondWith((async () => {
     const hit = await caches.match(e.request);
     if (hit) return hit;
