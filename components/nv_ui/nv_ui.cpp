@@ -68,11 +68,11 @@ static const char *TAG = "ui";
 
 // ================================================================= app registry (public C)
 namespace {
-// The natives + up to 64 store-installed WASM tiles (apps_app kMaxWasmApps) must fit: 32 once
-// silently dropped the last natives when ~16 WASM apps were installed. kMaxEntries/kMaxPages
-// (below) follow from this.
-constexpr int kMaxApps = 96;
-const NvApp *g_apps[kMaxApps];
+// The natives + up to NV_WASM_MAX_APPS (84) installed WASM tiles must fit: 32 once silently dropped
+// the last natives when ~16 WASM apps were installed. kMaxEntries/kMaxPages (below) follow from
+// this, and kMaxEntries * 32 must stay under the NVS order string (static_assert below).
+constexpr int kMaxApps = 116;
+NV_PSRAM_BSS const NvApp *g_apps[kMaxApps];   // PSRAM: internal RAM is budgeted
 int g_app_n = 0;
 void launcher_apps_changed(void);   // fwd: rebuilds the launcher once it exists (defined below)
 }  // namespace
@@ -306,7 +306,7 @@ GridGeom s_g;          // valid after grid_compute() (start of build_launcher)
 
 // ---- drag / reorder / pages ----
 constexpr uint32_t kSnapDurMs   = 200;   // relayout animation duration
-constexpr int      kMaxPages    = 6;     // ceil((96 apps + 8 folders) / 18)
+constexpr int      kMaxPages    = 7;     // ceil((116 apps + 8 folders) / 18)
 constexpr uint32_t kPageAnimMs  = 220;   // page slide duration
 constexpr int      kEdgeFlipPx  = 28;    // finger-at-edge zone that flips the page mid-drag...
 constexpr uint32_t kEdgeFlipMs  = 450;   // ...after this dwell
@@ -847,7 +847,7 @@ void img_set_icon_sized(lv_obj_t *img, const NvApp *a, int size) {
 // ---- launcher model + edit-mode state ----
 // An ENTRY occupies one grid slot: an app (value = registry index) or a folder
 // (value = kEntFolder + folder id). Folders hold app registry indices only — no nesting.
-constexpr int kMaxEntries = kMaxApps + kMaxFolders;   // 104; fits within kMaxPages pages
+constexpr int kMaxEntries = kMaxApps + kMaxFolders;   // 124; fits within kMaxPages pages
 static_assert(kMaxEntries <= kMaxPages * 18, "launcher entries must fit kMaxPages pages of 18");
 
 struct Folder {

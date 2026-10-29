@@ -13,6 +13,7 @@
 #include "nv_wasm_wasi.h" // WASI preview1 guests (wasi-sdk): stdio, sandboxed data folder, sleep
 #include "nv_hid_host.h"   // ABI v9 nv.gfx_pad: USB keyboard for games
 #include "nv_pad.h"        // ABI v9/v11: game controllers (USB HID, XInput, Bluetooth LE)
+#include "voxel_nv.h"     // ABI v20 VoxelSpaceNG terrain engine (nv.vs_*, nv_wasm_vs.cpp)
 #include "vertice.h"      // ABI v9 Vertice 3D engine (nv.vx_*)
 #include "nv_wasm_w4.h"   // WASM-4 carts: env drawing/sound imports, touch gamepad, frame loop helpers
 #include "nv_wasm_net.h"  // ABI v12 network imports (http_req, ws_*, mqtt_*, ha_*)
@@ -90,6 +91,7 @@ struct RunReq {
     const char    *fallback;     // app.wasm to load instead when `mod` is an app.aot WAMR rejects
     void          *code_blk;     // app.aot: block placed for its native code (os_mmap_set_exec_handoff)
     size_t         code_size;
+    void          *mem_blk;      // interpreter run: block placed for its linear memory (os_mmap_set_handoff)
     char           tag[44];      // log tag ("wasmapp" or "app:<id>")
     Exec          *ex;           // async sink; NULL on the synchronous demo paths
     char          *out;          // sync fallback sink (demo paths)
@@ -1994,9 +1996,12 @@ void log_frag(const char *tag, const char *when) {
     NV_LOGI(TAG, "%s", line);
 }
 
-// Size of an app.aot's native code (WAMR AOT_SECTION_TYPE_TEXT = 2) from its section headers, and
-// of the whole file; 0 when the image cannot be read.
-size_t aot_text_size(const char *path, size_t *file_size) {
+// Size of an app.aot's native code (WAMR AOT_SECTION_TYPE_TEXT = 2) from its section headers, of
+// the whole file and of the linear memory it starts with (init data section = 1: import memory
+// count, memory count, then flags, page size, initial pages; 0 when not there). 0 when the image
+// cannot be read.
+size_t aot_text_size(const char *path, size_t *file_size, size_t *start_mem) {
+    *start_mem = 0;
     const int fd = open(path, O_RDONLY);
     if (fd < 0) return 0;
     struct stat st;
@@ -2005,9 +2010,14 @@ size_t aot_text_size(const char *path, size_t *file_size) {
     size_t text = 0;
     if (read(fd, h, sizeof h) == (ssize_t)sizeof h && h[0] == 0x746f6100u) {   // "\0aot"
         off_t at = sizeof h;
-        for (int i = 0; i < 32; i++) {
+        for (int i = 0; i < 32 && !text; i++) {
             if (lseek(fd, at, SEEK_SET) != at || read(fd, h, sizeof h) != (ssize_t)sizeof h) break;
-            if (h[0] == 2) { text = h[1]; break; }
+            if (h[0] == 1) {
+                uint32_t m[5];   // import memories, memories, flags, page size, initial pages
+                if (read(fd, m, sizeof m) == (ssize_t)sizeof m && m[0] == 0 && m[1] >= 1)
+                    *start_mem = (size_t)m[3] * m[4];
+            }
+            if (h[0] == 2) text = h[1];
             at += (off_t)sizeof h + (off_t)h[1];
         }
     }
@@ -2033,26 +2043,38 @@ bool largest_walk(walker_heap_into_t, walker_block_info_t b, void *user) {
 const char *place_top(size_t code, size_t mem, void **code_out, void **mem_out) {
     LargestFree l = {};
     heap_caps_walk(MALLOC_CAP_SPIRAM, largest_walk, &l);
-    // TLSF searches for a block one size class above the request (1/32 of its power of two: 128 KB
-    // for 4-8 MB) and the headers come on top: that much stays free above the last block.
-    const size_t slack = code / 16 + 4096;
-    const size_t need = mem + code + slack;
-    if (l.size < need + 64 * 1024) return "too small";
+    // TLSF sorts free blocks into size classes 1/32 of a power of two wide (128 KB at 4-8 MB,
+    // 512 KB at 16-32 MB) and searches one class above a request: one class of the last block plus
+    // the headers stays free above it.
+    auto tlsf_step = [](size_t n) { size_t p = 1; while (p <= n / 2) p <<= 1; return p / 32; };
+    const size_t last = code ? code : mem;
+    const size_t need = mem + code + tlsf_step(last) + 8192;
     const uint32_t caps = MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT;
-    void *low = heap_caps_aligned_alloc(128, l.size - need, caps);   // holds the bottom end meanwhile
+    // Take the largest block whole - no other is big enough, so TLSF has to give exactly that one
+    // (down to its class's lower edge, the most a search can ask for) - then shrink it in place:
+    // TLSF trims the tail without moving, and that tail, the top end, is the one free block big
+    // enough for the memory. Asking for the bottom end alone did not work: a request that size went to the
+    // smallest hole it fitted in, elsewhere.
+    const size_t whole = l.size / tlsf_step(l.size) * tlsf_step(l.size) - 4096;
+    if (whole < need + 64 * 1024) return "too small";
+    void *low = heap_caps_malloc(whole, caps);
     if (!low) return "no bottom";
     void *c = nullptr, *m = nullptr;
     const char *why = nullptr;
     if ((uintptr_t)low < l.addr || (uintptr_t)low >= l.addr + l.size) {
         why = "bottom elsewhere";
+    } else if (void *same = heap_caps_realloc(low, whole - need, caps); same != low) {
+        why = "bottom moved";   // never for a shrink
+        if (same) low = same;
     } else {
         m = heap_caps_aligned_alloc(128, mem, caps);
-        c = m ? heap_caps_aligned_alloc(128, code, caps) : nullptr;
-        if (!c) why = m ? "no code block" : "no memory block";
+        c = m && code ? heap_caps_aligned_alloc(128, code, caps) : nullptr;
+        if (!m) why = "no memory block";
+        else if (code && !c) why = "no code block";
     }
     heap_caps_free(low);
     if (why) { if (m) heap_caps_free(m); return why; }
-    *code_out = c;
+    if (code_out) *code_out = c;
     *mem_out = m;
     return nullptr;
 }
@@ -2289,6 +2311,10 @@ void *run_worker(void *p) {
                  : (uint8_t *)heap_caps_malloc(r->mod_size, MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
     bool borrowed = is_aot;   // buf is the Exec's own copy (r->mod): never freed here
     if (!is_aot && r->code_blk) { heap_caps_free(r->code_blk); r->code_blk = nullptr; }
+    struct MemBlkGuard {   // a placed memory block no instance took (load failed before instantiate)
+        RunReq *r;
+        ~MemBlkGuard() { if (r->mem_blk) { heap_caps_free(r->mem_blk); r->mem_blk = nullptr; } }
+    } mem_guard{r};
     if (!buf) { set_err(r->err, sizeof r->err, "oom"); goto done; }
     if (!is_aot) {
         memcpy(buf, r->mod, r->mod_size);
@@ -2315,6 +2341,13 @@ void *run_worker(void *p) {
                         r->tag, (unsigned)(s_aot_fail_size / 1024),
                         (unsigned)(heap_caps_get_free_size(MALLOC_CAP_SPIRAM) / 1024),
                         (unsigned)(heap_caps_get_largest_free_block(MALLOC_CAP_SPIRAM) / 1024));
+            if (!module && r->fallback && r->ex && !r->mem_blk) {
+                // The app.wasm runs instead: the block placed for the AOT memory (top of PSRAM) holds
+                // the interpreter's memory, rather than a fresh one at the bottom.
+                pthread_mutex_lock(&r->ex->lock);
+                if (r->ex->bytes && r->ex->bytes == r->mod) { r->mem_blk = r->ex->bytes; r->ex->bytes = nullptr; }
+                pthread_mutex_unlock(&r->ex->lock);
+            }
             release_module_bytes(r, module != nullptr);   // loaded: the block becomes the memory
             buf = nullptr;
         } else {
@@ -2403,6 +2436,11 @@ void *run_worker(void *p) {
         // An app run from the UI keeps the whole handoff block as room to grow in place: the
         // broker already reserved its ram_budget. A console program (Terminal, the sc-im engine of
         // Fogli) only gets its start size and gives the rest back to the system.
+        if (r->mem_blk) {   // interpreter run: its memory goes where exec_start placed it
+            if (void *prev = os_mmap_set_handoff(r->mem_blk, heap_caps_get_allocated_size(r->mem_blk)))
+                heap_caps_free(prev);
+            r->mem_blk = nullptr;
+        }
         os_mmap_set_handoff_keep(!r->console);
         wasm_module_inst_t inst = wasm_runtime_instantiate_ex(module, &ia, ebuf, sizeof(ebuf));
         os_mmap_set_handoff_keep(false);
@@ -2507,6 +2545,7 @@ void *run_worker(void *p) {
         // ABI v9: the 3D scene belongs to this run. Freed here, on the worker, after the guest can
         // no longer call in — the only thread that ever touches the engine.
         vx_close();
+        voxel_close();     // ABI v20: the terrain world belongs to the run too
         app_pcm_close();   // ABI v10: a stream the guest left open ends with the run
         nv_wsnd_shutdown(); // ABI v15: the run's voices and decoded sounds go with it
         for (int i = 0; i < NV_PAD_MAX; i++) nv_pad_rumble(i, 0, 0, 0);   // ABI v11: no motor left running
@@ -2568,6 +2607,19 @@ void req_defaults(RunReq *r) {
 }
 
 }  // namespace
+
+// ABI v20 helpers for nv_wasm_vs.cpp (declared in nv_wasm_net.h).
+bool nv_wasm_app_asset(const char *name, const char *sub, const char *ext, char *out, size_t n) {
+    return asset_path(name, sub, ext, out, n);
+}
+
+uint16_t *nv_wasm_gfx_frame_target(int *w, int *h, int *rot) {
+    if (!s_gfx.open || !s_gfx.buf[s_gfx.draw_idx]) return nullptr;
+    mark_dirty(0, 0, s_gfx.w, s_gfx.h);
+    *w = s_gfx.w; *h = s_gfx.h; *rot = s_gfx.rot;
+    return gfx_dst();
+}
+
 
 // ABI v12 (nv_wasm_net.cpp): the permissions of the run executing `env`.
 uint32_t nv_wasm_env_perms(wasm_exec_env_t env) {
@@ -2665,6 +2717,7 @@ bool nv_wasm_init(void) {
         NV_LOGW(TAG, "register_natives(nv) failed");
     nv_wasm_net_register();   // ABI v12: http_req / ws_* / mqtt_* / ha_* (nv_wasm_net.cpp)
     nv_wasm_dl_register();    // ABI v18: dl_* (nv_wasm_dl.cpp, the system downloader nv_dl)
+    nv_wasm_vs_register();    // ABI v20: vs_* (nv_wasm_vs.cpp, the VoxelSpaceNG terrain engine)
     nv_wasm_jpeg_register();  // ABI v19: jpeg_info / jpeg_decode (nv_wasm_jpeg.cpp, the hardware decoder)
 
 
@@ -3084,7 +3137,7 @@ bool nv_wasm_requires_met(const nv_wasm_app_t *a, char *err, size_t n) {
 
 int nv_wasm_dependents(const char *id, char *who, size_t n) {
     if (who && n) who[0] = '\0';
-    constexpr int kMax = 64;
+    constexpr int kMax = NV_WASM_MAX_APPS;
     auto *apps = (nv_wasm_app_t *)heap_caps_malloc(sizeof(nv_wasm_app_t) * kMax, MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
     if (!apps) return 0;
     const int cnt = nv_wasm_scan(apps, kMax);
@@ -3542,11 +3595,15 @@ nv_wrun_id_t nv_wasm_exec_start(const nv_wasm_app_t *app, char *err, size_t err_
     if (aot) {
         // The code block exactly as WAMR's loader asks for it (espidf_memmap.c p4_exec_alloc: one
         // cache line for the origin pointer + the text rounded to 4, then to whole lines; riscv32
-        // has no PLT), placed with the memory block at the top end of PSRAM (place_top).
-        size_t file_size = 0;
-        const size_t text = aot_text_size(aot_path, &file_size);
+        // has no PLT), placed with the memory block at the top end of PSRAM (place_top). A console
+        // run's memory is trimmed to its start size anyway (os_mmap_set_handoff_keep), so it only
+        // needs that much: WordGrinder starts at 768 KB of its 16 MB, and asking for the 16 MB
+        // left its 3.2 MB of code without room even right after boot.
+        size_t file_size = 0, start_mem = 0;
+        const size_t text = aot_text_size(aot_path, &file_size, &start_mem);
         void *mem_blk = nullptr;
-        const size_t mem_size = file_size > mem_room ? file_size : mem_room;
+        const size_t want = console ? (start_mem ? start_mem + 4096 : 0) : mem_room;
+        const size_t mem_size = file_size > want ? file_size : want;
         if (text && file_size) {
             code_size = 128 + ((((text + 3) & ~(size_t)3) + 127) & ~(size_t)127);
             const char *miss = place_top(code_size, mem_size, &code_blk, &mem_blk);
@@ -3582,6 +3639,15 @@ nv_wrun_id_t nv_wasm_exec_start(const nv_wasm_app_t *app, char *err, size_t err_
         why = read_module(app->wasm_path, &bytes, &sz);
     }
     if (why) { exec_unclaim(); set_err(err, err_n, why); return NV_WRUN_NONE; }
+    // An interpreted app run from the UI gets its memory block at the top end of PSRAM too (the
+    // broker reserved its budget): left to instantiate it took the bottom end, and what the system
+    // allocated meanwhile cut the free space up for the next app's AOT image.
+    void *mem_blk = nullptr;
+    if (!aot && !console && !app->w4 && mem_room >= 1024 * 1024) {
+        if (const char *miss = place_top(0, mem_room, nullptr, &mem_blk))
+            NV_LOGI(TAG, "'%s': memory %u KB not placed at the top of PSRAM (%s)", app->id,
+                    (unsigned)(mem_room / 1024), miss);
+    }
 
     if (!s_exec.outbuf) {
         s_exec.outbuf = (char *)heap_caps_malloc(kOutCap, MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
@@ -3589,6 +3655,7 @@ nv_wrun_id_t nv_wasm_exec_start(const nv_wasm_app_t *app, char *err, size_t err_
         if (!s_exec.outbuf) {
             free(bytes);
             if (code_blk) heap_caps_free(code_blk);
+            if (mem_blk) heap_caps_free(mem_blk);
             exec_unclaim();
             set_err(err, err_n, "oom");
             return NV_WRUN_NONE;
@@ -3622,6 +3689,7 @@ nv_wrun_id_t nv_wasm_exec_start(const nv_wasm_app_t *app, char *err, size_t err_
     s_exec.req.fallback   = aot ? s_exec.app.wasm_path : nullptr;   // s_exec.app outlives the run
     s_exec.req.code_blk   = code_blk;
     s_exec.req.code_size  = code_size;
+    s_exec.req.mem_blk    = mem_blk;
     snprintf(s_exec.req.tag, sizeof s_exec.req.tag, "app:%s", app->id);
 
     // A game gets its double-buffered canvas up before the worker can draw into it.
@@ -3643,6 +3711,7 @@ nv_wrun_id_t nv_wasm_exec_start(const nv_wasm_app_t *app, char *err, size_t err_
         if (rc == 0) s_exec.thread_valid = true;
     }
     if (rc != 0 && s_exec.req.code_blk) { heap_caps_free(s_exec.req.code_blk); s_exec.req.code_blk = nullptr; }
+    if (rc != 0 && s_exec.req.mem_blk) { heap_caps_free(s_exec.req.mem_blk); s_exec.req.mem_blk = nullptr; }
     pthread_mutex_unlock(&s_exec.lock);
 
     if (gfx_fail) { exec_unclaim(); set_err(err, err_n, "canvas alloc failed"); return NV_WRUN_NONE; }
@@ -3653,7 +3722,7 @@ nv_wrun_id_t nv_wasm_exec_start(const nv_wasm_app_t *app, char *err, size_t err_
         return NV_WRUN_NONE;
     }
     NV_LOGI(TAG, "run '%s' (%u KB %s%s, heap %u KB, stack %u KB, %s, from %s)",
-            app->id, (unsigned)(sz / 1024), aot ? "AOT" : "module", code_blk ? " at the top" : "",
+            app->id, (unsigned)(sz / 1024), aot ? "AOT" : "module", code_blk || mem_blk ? " at the top" : "",
             (unsigned)(s_exec.req.heap_size / 1024),
             (unsigned)(s_exec.req.stack_size / 1024), console ? "console" : "async", pcTaskGetName(nullptr));
     if (grant[0]) NV_LOGI(TAG, "run '%s' opened with %s (read-only grant)", app->id, grant);

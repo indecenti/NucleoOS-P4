@@ -49,7 +49,7 @@ namespace {
 
 // Installed apps discovered once at boot. PSRAM-backed and stable for the whole session: the
 // launcher NvApp tiles point their .user here, so the records must outlive registration.
-constexpr int  kMaxWasmApps = 64;   // Home tiles for installed apps (nv_ui's registry holds 96 with the natives)
+constexpr int  kMaxWasmApps = NV_WASM_MAX_APPS;   // Home tiles for installed apps (nv_ui's registry adds the natives)
 nv_wasm_app_t *s_installed  = nullptr;
 int            s_installed_n = 0;
 NvApp         *s_tiles       = nullptr;   // one launcher descriptor per installed app
@@ -2734,10 +2734,12 @@ namespace {
 
 // Home tile icon shipped with a store install (/sdcard/apps/<id>/icon.z, see nv_appstore): inflated
 // once into PSRAM like the built-in icons. nullptr when absent or corrupt (the compiled glyph then).
-NV_PSRAM_BSS lv_image_dsc_t s_tile_icon[kMaxWasmApps];
-NV_PSRAM_BSS uint8_t *s_tile_icon_px[kMaxWasmApps];
+// Allocated with s_installed (PSRAM heap): as statics they ate the PSRAM .bss budget.
+lv_image_dsc_t *s_tile_icon = nullptr;
+uint8_t **s_tile_icon_px = nullptr;
 
 const lv_image_dsc_t *tile_icon_sd(int i, const char *id) {
+    if (!s_tile_icon || !s_tile_icon_px || i < 0 || i >= kMaxWasmApps) return nullptr;
     char path[80];
     snprintf(path, sizeof path, "/sdcard/apps/%s/icon.z", id);
     FILE *f = fopen(path, "rb");
@@ -2829,10 +2831,13 @@ void apps_register_wasm(void) {
     s_installed = (nv_wasm_app_t *)heap_caps_calloc(kMaxWasmApps, sizeof(nv_wasm_app_t),
                                                     MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
     if (!s_installed) s_installed = (nv_wasm_app_t *)calloc(kMaxWasmApps, sizeof(nv_wasm_app_t));
+    s_tile_icon = (lv_image_dsc_t *)heap_caps_calloc(kMaxWasmApps, sizeof(lv_image_dsc_t),
+                                                     MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
+    s_tile_icon_px = (uint8_t **)heap_caps_calloc(kMaxWasmApps, sizeof(uint8_t *), MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
     s_tiles = (NvApp *)heap_caps_calloc(kMaxWasmApps, sizeof(NvApp),
                                         MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
     if (!s_tiles) s_tiles = (NvApp *)calloc(kMaxWasmApps, sizeof(NvApp));
-    if (!s_installed || !s_tiles) return;   // OOM this early means bigger problems; skip tiles
+    if (!s_installed || !s_tiles || !s_tile_icon || !s_tile_icon_px) return;   // OOM this early means bigger problems; skip tiles
     s_open_h   = (NvOpenHandler *)heap_caps_calloc(kMaxWasmApps, sizeof(NvOpenHandler),
                                                    MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
     s_open_ids = (char (*)[NV_OPEN_ID_MAX])heap_caps_calloc(kMaxWasmApps, NV_OPEN_ID_MAX,

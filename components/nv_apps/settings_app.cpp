@@ -497,7 +497,7 @@ void store_unsigned_cb(lv_event_t *e) {
 void app_perms_section(lv_obj_t *c) {
     section_label(c, nv_tr(NV_STR_PERM_APPS));
     s_prow_n = 0;
-    constexpr int kMaxApps = 64;
+    constexpr int kMaxApps = NV_WASM_MAX_APPS;
     auto *apps = (nv_wasm_app_t *)heap_caps_malloc(kMaxApps * sizeof(nv_wasm_app_t),
                                                    MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
     const int n = (apps && nv_sd_is_mounted()) ? nv_wasm_scan(apps, kMaxApps) : 0;

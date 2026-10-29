@@ -19,7 +19,7 @@ extern "C" {
 // The newest host ABI this SDK declares. In the manifest "abi" field put the LOWEST version whose
 // calls the app uses (each section below says which): an older system refuses an app that asks for
 // more than it has. (A game that uses the nv_gfx_* surface below needs at least "abi": 2 + "gfx".)
-#define NUCLEO_SDK_ABI 19
+#define NUCLEO_SDK_ABI 20
 
 #ifdef NV_SIM   // native build against the PC simulator (tools/vertice): plain C declarations
 #define NV_IMPORT(mod, sym)
@@ -182,6 +182,29 @@ NV_IMPORT("nv", "gfx_bg_restore") void nv_gfx_bg_restore(int32_t x, int32_t y, i
 // taps arrive in upright canvas pixels. The canvas is cleared on a change: redraw all of it. Every run
 // starts at 0. Returns q, or -1 when refused (no "gfx", a 1:1 canvas, a WASM-4 cart, Vertice in use).
 NV_IMPORT("nv", "gfx_set_rotation") int32_t nv_gfx_set_rotation(int32_t quarter_turns);
+
+// ---- ABI v20 VoxelSpaceNG terrain engine (manifest "abi": 20, permission "gfx") ----------------------
+// A Voxel Space heightfield world rendered natively on BOTH cores (SRAM strips + DMA) straight into the
+// canvas. Files in the app's data/ folder: <world>.vsw and <sky>.vss (voxelspace-esp32 tools/bake.py).
+// The frame is column-major, the exact buffer of a quarter-turned canvas: use "canvas_scale": "fit",
+// call nv_gfx_set_rotation(1) once, then each frame vs_camera + vs_render + nv_gfx_present (the PPA
+// shows it upright; touch arrives in upright canvas pixels: screen x = touch y, screen y = W-1-touch x).
+// Units: x, y in Q16 cells (the map wraps); h in Q4 height units; yaw 0..4095 (0 = +x, 1024 = +y);
+// pitch in px (+ looks down); roll in Q16 px per px from the centre column.
+enum { VS_CFG_FOV = 0, VS_CFG_ZFAR = 1, VS_CFG_QUALITY = 2, VS_CFG_NEAR = 3, VS_CFG_SMOOTH = 4,
+       VS_CFG_DETAIL = 5, VS_CFG_TARGET_MS = 6, VS_CFG_CORES = 7, VS_CFG_FOG = 8, VS_CFG_DIRECT = 9, VS_CFG_XSCALE = 10,
+       VS_CFG_MOTION = 11 };
+enum { VS_INFO_LOG2SIZE = 0, VS_INFO_WATER = 1, VS_INFO_MAXH = 2, VS_INFO_SAMPLES = 3, VS_INFO_NEAR_PX = 4,
+       VS_INFO_RENDER_US = 5, VS_INFO_QUALITY = 6, VS_INFO_FAST = 7, VS_INFO_XSCALE = 8, VS_INFO_SRAM_LEVELS = 9,
+       VS_INFO_VSCALE = 10, VS_INFO_FOCAL = 11, VS_INFO_MOTION = 12 };
+NV_IMPORT("nv", "vs_open")   int32_t vs_open(const char *world, const char *sky);   // 0 or <0
+NV_IMPORT("nv", "vs_close")  void    vs_close(void);
+NV_IMPORT("nv", "vs_camera") void    vs_camera(int32_t x, int32_t y, int32_t h, int32_t yaw, int32_t pitch,
+                                               int32_t roll, int32_t time_ms);
+NV_IMPORT("nv", "vs_render") int32_t vs_render(void);                   // us, -2 = canvas not turned
+NV_IMPORT("nv", "vs_height") int32_t vs_height(int32_t x, int32_t y);   // Q4
+NV_IMPORT("nv", "vs_config") int32_t vs_config(int32_t key, int32_t value);
+NV_IMPORT("nv", "vs_info")   int32_t vs_info(int32_t key);
 
 // ---- ABI v19 hardware JPEG decoder (manifest "abi": 19, permission "gfx") -------------------------
 // The P4 decodes baseline JPEG (8-bit, grey or YCbCr 4:4:4/4:2:2/4:2:0, up to 4096 a side) in hardware;

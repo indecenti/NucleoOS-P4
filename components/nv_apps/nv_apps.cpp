@@ -17,8 +17,8 @@ void nv_apps_register_all(void) {
     sysmon_app_register();        // System Monitor (task manager: CPU/SRAM/PSRAM/tasks/services)
     apps_app_register();          // WASM app manager (installed apps on SD)
     // Installed WASM apps as tiles. The launcher keeps its order and folders by app id, so the
-    // registration order is free to change. The registry (kMaxApps 96) holds the natives + 64
-    // WASM tiles without dropping anything; nv_app_register logs if that ever overflows.
+    // registration order is free to change. The registry (kMaxApps 116) holds the natives + 84
+    // WASM tiles (NV_WASM_MAX_APPS) without dropping anything; nv_app_register logs if that ever overflows.
     apps_register_wasm();
     terminal_app_register();      // local command console (heap/ps/log/i2c/ls/cat/reboot)
     secondscreen_app_register();  // USB extended display (nv_usb transport)

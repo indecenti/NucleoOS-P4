@@ -23,6 +23,14 @@ const char *nv_wasm_env_app_id(wasm_exec_env_t env);
 void nv_wasm_dl_register(void);
 // ABI v19: the hardware JPEG decoder (jpeg_info, jpeg_decode; nv_wasm_jpeg.cpp). Called from nv_wasm_init.
 void nv_wasm_jpeg_register(void);
+// ABI v20: the VoxelSpaceNG terrain engine (vs_*; nv_wasm_vs.cpp). Called from nv_wasm_init.
+void nv_wasm_vs_register(void);
+// nv_wasm.cpp, for ABI v20: the canvas buffer the next frame goes into (wholly dirty), its upright
+// size and quarter turn; nullptr when no canvas is open.
+uint16_t *nv_wasm_gfx_frame_target(int *w, int *h, int *rot);
+// nv_wasm.cpp: path of the running app's asset `name` (own folder, or "lib:name" of a declared
+// package) under <sub>/ with extension ext; false for a name that is not acceptable.
+bool nv_wasm_app_asset(const char *name, const char *sub, const char *ext, char *out, size_t n);
 
 // The ABI v12 destination policy for an http(s) URL: public hosts need "net", private ones "lan".
 // For the older nv.http_get, which predates the net/lan split. Resolves the host (blocking).
