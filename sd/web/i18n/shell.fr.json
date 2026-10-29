@@ -406,5 +406,7 @@
   "fd_replace_ok": "Remplacer",
   "fd_saving": "Enregistrement…",
   "fd_save_fail": "L'enregistrement a échoué : vérifiez l'espace libre.",
-  "fd_mkdir_fail": "Impossible de créer le dossier."
+  "fd_mkdir_fail": "Impossible de créer le dossier.",
+  "fd_saving_pct": "Enregistrement… {pct} %",
+  "fd_no_space": "L'appareil est plein : libérez de l'espace et réessayez."
 }

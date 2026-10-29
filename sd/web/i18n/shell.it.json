@@ -406,5 +406,7 @@
   "fd_replace_ok": "Sostituisci",
   "fd_saving": "Salvataggio…",
   "fd_save_fail": "Salvataggio non riuscito: controlla lo spazio libero.",
-  "fd_mkdir_fail": "Impossibile creare la cartella."
+  "fd_mkdir_fail": "Impossibile creare la cartella.",
+  "fd_saving_pct": "Salvataggio… {pct}%",
+  "fd_no_space": "Spazio esaurito sul dispositivo: libera spazio e riprova."
 }

@@ -3,83 +3,83 @@
  "apps": [
   {
    "id": "agent",
-   "version": "0.1.1",
-   "version_code": 2
+   "version": "0.1.2",
+   "version_code": 3
   },
   {
    "id": "anima",
-   "version": "0.1.2",
-   "version_code": 3
+   "version": "0.1.3",
+   "version_code": 4
   },
   {
    "id": "arcade",
-   "version": "1.0.1",
-   "version_code": 2
+   "version": "1.0.2",
+   "version_code": 3
   },
   {
    "id": "archive-manager",
-   "version": "1.0.1",
-   "version_code": 2
+   "version": "1.0.2",
+   "version_code": 3
   },
   {
    "id": "authenticator",
-   "version": "1.0.1",
-   "version_code": 1
+   "version": "1.0.2",
+   "version_code": 2
   },
   {
    "id": "browser",
-   "version": "0.2.1",
-   "version_code": 3
+   "version": "0.2.2",
+   "version_code": 4
   },
   {
    "id": "calculator",
-   "version": "0.1.1",
-   "version_code": 2
-  },
-  {
-   "id": "calendar",
-   "version": "0.1.1",
-   "version_code": 2
-  },
-  {
-   "id": "clock",
-   "version": "0.2.1",
+   "version": "0.1.2",
    "version_code": 3
   },
   {
+   "id": "calendar",
+   "version": "0.1.2",
+   "version_code": 3
+  },
+  {
+   "id": "clock",
+   "version": "0.2.2",
+   "version_code": 4
+  },
+  {
    "id": "code-runner",
-   "version": "0.1.1",
-   "version_code": 2
+   "version": "0.1.2",
+   "version_code": 3
   },
   {
    "id": "contacts",
-   "version": "1.0.1",
-   "version_code": 1
+   "version": "1.0.2",
+   "version_code": 2
   },
   {
    "id": "dj",
-   "version": "0.1.2",
-   "version_code": 1
+   "version": "0.1.3",
+   "version_code": 2
   },
   {
    "id": "dos-importer",
-   "version": "0.1.1",
-   "version_code": 2
+   "version": "0.1.2",
+   "version_code": 3
   },
   {
    "id": "dosbox",
-   "version": "0.1.1",
-   "version_code": 2
+   "version": "0.1.2",
+   "version_code": 3
   },
   {
    "id": "file-commander",
-   "version": "0.1.1",
-   "version_code": 1
+   "version": "0.1.2",
+   "version_code": 2
   },
   {
    "id": "games",
-   "version": "0.1.2",
-   "version_code": 2
+   "version": "0.1.3",
+   "version_code": 3
   },
   {
    "id": "groq-chat",
@@ -88,18 +88,18 @@
   },
   {
    "id": "help",
-   "version": "0.1.1",
-   "version_code": 2
+   "version": "0.1.2",
+   "version_code": 3
   },
   {
    "id": "log-viewer",
-   "version": "0.1.1",
-   "version_code": 1
+   "version": "0.1.2",
+   "version_code": 2
   },
   {
    "id": "media-player",
-   "version": "0.1.1",
-   "version_code": 1
+   "version": "0.1.2",
+   "version_code": 2
   },
   {
    "id": "metronome",
@@ -108,88 +108,88 @@
   },
   {
    "id": "miei-fatti",
-   "version": "0.1.1",
-   "version_code": 2
-  },
-  {
-   "id": "notepad",
-   "version": "0.1.1",
-   "version_code": 2
-  },
-  {
-   "id": "paint",
-   "version": "1.0.2",
+   "version": "0.1.2",
    "version_code": 3
   },
   {
+   "id": "notepad",
+   "version": "0.1.2",
+   "version_code": 3
+  },
+  {
+   "id": "paint",
+   "version": "1.0.3",
+   "version_code": 4
+  },
+  {
    "id": "photo-viewer",
-   "version": "0.1.1",
-   "version_code": 2
+   "version": "0.1.2",
+   "version_code": 3
   },
   {
    "id": "qr",
-   "version": "0.1.1",
-   "version_code": 2
+   "version": "0.1.2",
+   "version_code": 3
   },
   {
    "id": "radio",
-   "version": "1.0.1",
-   "version_code": 1
+   "version": "1.0.2",
+   "version_code": 2
   },
   {
    "id": "recorder",
-   "version": "0.1.1",
-   "version_code": 1
-  },
-  {
-   "id": "recycle-bin",
-   "version": "0.1.1",
-   "version_code": 2
-  },
-  {
-   "id": "settings",
-   "version": "0.2.2",
-   "version_code": 2
-  },
-  {
-   "id": "spreadsheet",
-   "version": "0.1.1",
-   "version_code": 2
-  },
-  {
-   "id": "ssh",
-   "version": "0.1.1",
-   "version_code": 2
-  },
-  {
-   "id": "store",
-   "version": "1.0.1",
-   "version_code": 1
-  },
-  {
-   "id": "system-monitor",
    "version": "0.1.2",
    "version_code": 2
   },
   {
-   "id": "tasks",
-   "version": "0.1.1",
+   "id": "recycle-bin",
+   "version": "0.1.2",
+   "version_code": 3
+  },
+  {
+   "id": "settings",
+   "version": "0.2.3",
+   "version_code": 3
+  },
+  {
+   "id": "spreadsheet",
+   "version": "0.1.2",
+   "version_code": 3
+  },
+  {
+   "id": "ssh",
+   "version": "0.1.2",
+   "version_code": 3
+  },
+  {
+   "id": "store",
+   "version": "1.0.2",
    "version_code": 2
+  },
+  {
+   "id": "system-monitor",
+   "version": "0.1.3",
+   "version_code": 3
+  },
+  {
+   "id": "tasks",
+   "version": "0.1.2",
+   "version_code": 3
   },
   {
    "id": "terminal",
-   "version": "0.1.1",
-   "version_code": 2
+   "version": "0.1.2",
+   "version_code": 3
   },
   {
    "id": "unit-converter",
-   "version": "0.1.1",
-   "version_code": 2
+   "version": "0.1.2",
+   "version_code": 3
   },
   {
    "id": "video-player",
-   "version": "3.1.3",
-   "version_code": 5
+   "version": "3.1.4",
+   "version_code": 6
   },
   {
    "id": "weather",
@@ -198,17 +198,17 @@
   },
   {
    "id": "wifi-scanner",
-   "version": "0.1.2",
-   "version_code": 2
+   "version": "0.1.3",
+   "version_code": 3
   }
  ],
  "apps_dir": "apps",
  "base": "/",
- "bytes": 29388172,
+ "bytes": 29414381,
  "caps_row": {
   "since": "1.2.118"
  },
- "commit": "dcda8f6af72faccc70fda68a67dc37a296486572",
+ "commit": "ca773ac7d5d99fc4ca217735d7a076cc4f562928",
  "edition": "p4",
  "externals": [
   {
@@ -523,11 +523,11 @@
    "why": "unRAR license is not free software: out until verified (external-resources.json)"
   }
  ],
- "files": 1256,
+ "files": 1260,
  "format": 1,
  "generator": "nucleo-webos tools/build.py",
- "gz_twins": 565,
- "hash": "a7c69d09173221e3edf156375bde738320e5092f45a33d4a7bd51dfefeb5a9f1",
+ "gz_twins": 567,
+ "hash": "aedf4aff8ff37ffb17e186f00667dbb2e10e7dc60fbe5df945e9ee2f85697230",
  "left_out": [
   {
    "id": "automation-studio",
@@ -630,8 +630,8 @@
  },
  "profile_sha256": "1f68b9fa5f458ece4c6aeffe3cd99bde79ecbc24e72a2dac7c8ecd87041c85cc",
  "shell": {
-  "cache": "nucleo-shell-v161-15f44ef46232",
-  "hash": "15f44ef46232"
+  "cache": "nucleo-shell-v161-dd1f079d01f0",
+  "hash": "dd1f079d01f0"
  },
  "shell_dir": "",
  "uncommitted_files": 0
