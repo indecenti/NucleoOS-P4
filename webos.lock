@@ -42,8 +42,8 @@
   "weather": "1.0.2",
   "wifi-scanner": "0.1.3"
  },
- "build_hash": "796cc5491bda5754ac4b9397aacfb2972f7f15c7320981925746660eae67858d",
- "commit": "73df5ccac266326ba52f77435a1f08b596b5b29a",
+ "build_hash": "f6a8378117067a7fe25d5a61298f1bdb1d6a276eb90676eed50a3b1690f48bb3",
+ "commit": "5b62c081fffa75dca8b0f46345c0ecb25cfc2986",
  "files": {
   "sd/web/ai-ask.js": "e62522b5149b555d2e21d9920da2dfa845932e18cbed49aabc1a2d6880a1348b",
   "sd/web/ai-engines.js": "630a8ee40df940b6c28aced08df6a205b743476b7c88191f1bcf8b46a1b6cae7",
@@ -126,7 +126,7 @@
   "sd/web/apps/anima/local/console-skills.js": "efecc1489f53081511de06633c99a70972fcb4b4e8f335e2e3970aee35232877",
   "sd/web/apps/anima/local/engine.js": "104809d7cd78a14abf4991e6190f84e6f181d802a4bbfbdab5a122642290cfcd",
   "sd/web/apps/anima/local/game-kb.js": "8e6029202c7aef4d0206d0eaa9d3fe93dd324deee415f8391afca8276623f1fe",
-  "sd/web/apps/anima/local/love-forge.js": "a087002f714faa6e38256ee73d5c9119c69c891483135ed0220cc216b5520043",
+  "sd/web/apps/anima/local/love-forge.js": "d25a04b8d89966fadca3f6d09a9adde634a94084233b7da908d011e2482028a5",
   "sd/web/apps/anima/local/nlmath.js": "4deb97e8336e844506946f4903368c92734103067a90fbb77cabe611a1baa29e",
   "sd/web/apps/anima/local/pc-llm.js": "6593dc0dcf9680c3bdecff99764102d28a32c96dc1ff937d4867c929995c97e7",
   "sd/web/apps/anima/local/weather.js": "4bb1de953d6c9ba8be55402c278e5e8ec114e437d090417e0c65f5f7923a927b",
@@ -714,7 +714,7 @@
   "sd/web/boot-fetch.js": "121915625d6de641e509f4aae83261713676af517cb802fac670b74f76592dc5",
   "sd/web/boot-install.js": "8f653164dcbf7ec2a34020fccf2d913644d8f5f68c85b784c4a2995f91d7fa2d",
   "sd/web/boot-splash.js": "e9c12559caf698feab1a11a0b9013c4cbea24dbf1618e0dce2d5f9e71b49f167",
-  "sd/web/build.json": "722b091240f5ef94a512856fc7cac793fe6df147900773579878c0c660987cfa",
+  "sd/web/build.json": "573f526227d6260eb745584e4d6de89a20ebeac1061f2b769f12719100c1dce3",
   "sd/web/busy.js": "9e7b476d21c4e9b148146efa2b8e117bd011c59d55db447ee629f1517b89a3dd",
   "sd/web/capabilities.js": "9d867a1d6e382752ebf25bcf4b9e6fa27a6a360ee911e4d85084638adf149cfb",
   "sd/web/caps-fallback.json": "3ce7223b49efc2f1215fe214878a5b65f56ef92fbf3ce5f225667514e0658fb8",

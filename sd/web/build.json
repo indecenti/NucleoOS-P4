@@ -204,11 +204,11 @@
  ],
  "apps_dir": "apps",
  "base": "/",
- "bytes": 31155462,
+ "bytes": 31155747,
  "caps_row": {
   "since": "1.2.118"
  },
- "commit": "73df5ccac266326ba52f77435a1f08b596b5b29a",
+ "commit": "5b62c081fffa75dca8b0f46345c0ecb25cfc2986",
  "edition": "p4",
  "externals": [
   {
@@ -527,7 +527,7 @@
  "format": 1,
  "generator": "nucleo-webos tools/build.py",
  "gz_twins": 623,
- "hash": "796cc5491bda5754ac4b9397aacfb2972f7f15c7320981925746660eae67858d",
+ "hash": "f6a8378117067a7fe25d5a61298f1bdb1d6a276eb90676eed50a3b1690f48bb3",
  "left_out": [
   {
    "id": "cast",
