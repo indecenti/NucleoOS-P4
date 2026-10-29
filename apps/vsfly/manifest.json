@@ -20,5 +20,10 @@
   "system_gestures": false,
   "category": "games",
   "author": "NucleoOS",
-  "description": "Arcade flight over a Voxel Space valley: fly through 12 rings against the clock. Touch, keyboard."
+  "license": "PolyForm-Noncommercial-1.0.0",
+  "description": "Arcade flight over a Voxel Space valley: fly through 12 rings against the clock. Touch, keyboard.",
+  "descriptions": {
+    "en": "Arcade flight over a Voxel Space valley: fly through 12 rings against the clock. Touch, keyboard.",
+    "it": "Volo arcade su una valle Voxel Space: attraversa 12 anelli contro il tempo. Touch, tastiera."
+  }
 }

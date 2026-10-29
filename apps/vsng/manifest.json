@@ -17,5 +17,10 @@
   "system_gestures": false,
   "category": "games",
   "author": "NucleoOS",
-  "description": "Voxel Space terrain engine: fly over a procedural world rendered on both cores at full resolution."
+  "license": "PolyForm-Noncommercial-1.0.0",
+  "description": "Voxel Space terrain engine: fly over a procedural world rendered on both cores at full resolution.",
+  "descriptions": {
+    "en": "Voxel Space terrain engine: fly over a procedural world rendered on both cores at full resolution.",
+    "it": "Motore di terreno Voxel Space: voli su un mondo procedurale disegnato da entrambi i core a piena risoluzione."
+  }
 }
