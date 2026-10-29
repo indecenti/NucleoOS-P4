@@ -1,0 +1,29 @@
+{
+  "id": "vsfly",
+  "name": "Sky Ranger",
+  "version": "0.1.0",
+  "entry": "run",
+  "abi": 20,
+  "requires": {
+    "vsng": "0.2"
+  },
+  "ram_budget": 262144,
+  "stack_kb": 32,
+  "timeout_ms": 120000,
+  "permissions": [
+    "gfx",
+    "log"
+  ],
+  "canvas_w": 1024,
+  "canvas_h": 600,
+  "canvas_scale": "fit",
+  "system_gestures": false,
+  "category": "games",
+  "author": "NucleoOS",
+  "license": "PolyForm-Noncommercial-1.0.0",
+  "description": "Arcade flight over a Voxel Space valley: fly through 12 rings against the clock. Touch, keyboard.",
+  "descriptions": {
+    "en": "Arcade flight over a Voxel Space valley: fly through 12 rings against the clock. Touch, keyboard.",
+    "it": "Volo arcade su una valle Voxel Space: attraversa 12 anelli contro il tempo. Touch, tastiera."
+  }
+}

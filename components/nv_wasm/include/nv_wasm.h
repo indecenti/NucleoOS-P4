@@ -171,6 +171,27 @@
 //   nv.dl_free() -> MiB                     ()i        room for a new download: free space less the OTA
 //                                                       reserve and what listed downloads still need
 //
+// ---- ABI v20: VoxelSpaceNG terrain engine (permission "gfx"; nv_wasm_vs.cpp, components/voxel) ----
+// A Voxel Space heightfield renderer on both cores. Files: /sdcard/apps/<id>/data/<name>.vsw (world)
+// and .vss (sky), made by the voxelspace-esp32 baker. The frame is column-major = the buffer of a
+// quarter-turned canvas: call gfx_set_rotation(1) first (vs_render returns -2 otherwise).
+//   nv.vs_open(world, sky) -> i32          ($$)i      0, -1 args/perm, -2 file, -3 format, -4 memory
+//   nv.vs_close()                           ()         also done when the run ends
+//   nv.vs_camera(x,y,h,yaw,pitch,roll,t)    (iiiiiii)  x,y Q16 cells; h Q4 height units; yaw 0..4095;
+//                                                       pitch px (+ looks down); roll Q16 px/px; t ms
+//   nv.vs_render() -> i32                   ()i        whole frame into the canvas; render time in us
+//   nv.vs_height(x,y) -> i32                (ii)i      ground height at Q16 cells, Q4 (bilinear)
+//   nv.vs_config(key, value) -> i32         (ii)i      0 fov, 1 zfar, 2 quality, 3 near, 4 smooth,
+//                                                       5 detail, 6 target ms (adaptive), 7 cores, 8 fog,
+//                                                       9 direct (1 = no SRAM strips + DMA), 10 xscale
+//                                                       (0 auto, 1 every column, 2 every other, interpolated),
+//                                                       11 motion (0 auto: every fourth column traced while the
+//                                                       camera moves fast, 1 never, 2 always);
+//                                                       returns the value in effect (out of range: kept)
+//   nv.vs_info(key) -> i32                  (i)i       0 log2 size, 1 water, 2 max height, 3 samples,
+//                                                       4 textured px, 5 render us, 6 quality, 7 SRAM+DMA,
+//                                                       8 xscale in use
+//
 // ---- ABI v19: turned canvas (permission "gfx"; manifest "canvas_scale" fit/stretch/zoom) ---------
 // The PPA turns the canvas while it scales it to the panel, so a portrait app draws upright and pays
 // nothing for the turn (from WASM it costs ~95 ms a full frame: PSRAM-bound).
@@ -223,7 +244,7 @@ extern "C" {
 
 // Version of the host-import ABI implemented by this OS build (manifest "abi" is checked
 // against it at run time).
-#define NV_WASM_ABI 19   // 19: turned scaled canvas (gfx_set_rotation); 18: the system downloader (dl_*); 17: full-screen terminal programs (tty); 16: Vertice 1.5
+#define NV_WASM_ABI 20   // 20: VoxelSpaceNG terrain engine (vs_*); 19: turned scaled canvas (gfx_set_rotation); 18: the system downloader (dl_*); 17: full-screen terminal programs (tty); 16: Vertice 1.5
 
 // Initialize the WAMR runtime once (idempotent). Returns false if it could not start.
 bool nv_wasm_init(void);
@@ -351,6 +372,9 @@ static inline bool nv_wasm_app_on_home(const nv_wasm_app_t *a, bool system_app) 
 
 enum { NV_WASM_SCALE_NONE = 0, NV_WASM_SCALE_FIT = 1, NV_WASM_SCALE_STRETCH = 2, NV_WASM_SCALE_ZOOM = 3 };
 #define NV_WASM_DEPS_MAX 4
+// Installed apps a scan returns (Home tiles, Settings, Terminal, dependents). With the natives they
+// must fit nv_ui's registry (kMaxApps) and the launcher order string (kMaxEntries * 32 < 4000).
+#define NV_WASM_MAX_APPS 84
 
 // Components built into this OS that an app may require, and their versions:
 //   "vertice" (the 3D engine, ABI v9), "wasi", "wasm4". NULL when `id` is not built in.
