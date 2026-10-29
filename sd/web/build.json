@@ -3,23 +3,23 @@
  "apps": [
   {
    "id": "agent",
-   "version": "0.1.2",
-   "version_code": 3
-  },
-  {
-   "id": "anima",
    "version": "0.1.3",
    "version_code": 4
   },
   {
+   "id": "anima",
+   "version": "0.1.4",
+   "version_code": 5
+  },
+  {
    "id": "arcade",
-   "version": "1.0.2",
-   "version_code": 3
+   "version": "1.0.3",
+   "version_code": 4
   },
   {
    "id": "archive-manager",
-   "version": "1.0.2",
-   "version_code": 3
+   "version": "1.0.3",
+   "version_code": 4
   },
   {
    "id": "authenticator",
@@ -28,13 +28,13 @@
   },
   {
    "id": "browser",
-   "version": "0.2.2",
-   "version_code": 4
+   "version": "0.2.3",
+   "version_code": 5
   },
   {
    "id": "calculator",
-   "version": "0.1.2",
-   "version_code": 3
+   "version": "0.1.3",
+   "version_code": 4
   },
   {
    "id": "calendar",
@@ -43,13 +43,13 @@
   },
   {
    "id": "clock",
-   "version": "0.2.2",
-   "version_code": 4
+   "version": "0.2.3",
+   "version_code": 5
   },
   {
    "id": "code-runner",
-   "version": "0.1.2",
-   "version_code": 3
+   "version": "0.1.3",
+   "version_code": 4
   },
   {
    "id": "contacts",
@@ -58,28 +58,28 @@
   },
   {
    "id": "dj",
-   "version": "0.1.3",
-   "version_code": 2
+   "version": "0.1.4",
+   "version_code": 3
   },
   {
    "id": "dos-importer",
-   "version": "0.1.2",
-   "version_code": 3
+   "version": "0.1.3",
+   "version_code": 4
   },
   {
    "id": "dosbox",
-   "version": "0.1.2",
-   "version_code": 3
+   "version": "0.1.3",
+   "version_code": 4
   },
   {
    "id": "file-commander",
-   "version": "0.1.2",
-   "version_code": 2
+   "version": "0.1.3",
+   "version_code": 3
   },
   {
    "id": "games",
-   "version": "0.1.3",
-   "version_code": 3
+   "version": "0.1.4",
+   "version_code": 4
   },
   {
    "id": "groq-chat",
@@ -88,8 +88,8 @@
   },
   {
    "id": "help",
-   "version": "0.1.2",
-   "version_code": 3
+   "version": "0.1.3",
+   "version_code": 4
   },
   {
    "id": "log-viewer",
@@ -98,8 +98,8 @@
   },
   {
    "id": "media-player",
-   "version": "0.1.2",
-   "version_code": 2
+   "version": "0.1.3",
+   "version_code": 3
   },
   {
    "id": "metronome",
@@ -113,23 +113,23 @@
   },
   {
    "id": "notepad",
-   "version": "0.1.2",
-   "version_code": 3
-  },
-  {
-   "id": "paint",
-   "version": "1.0.3",
+   "version": "0.1.3",
    "version_code": 4
   },
   {
+   "id": "paint",
+   "version": "1.0.4",
+   "version_code": 5
+  },
+  {
    "id": "photo-viewer",
-   "version": "0.1.2",
-   "version_code": 3
+   "version": "0.1.3",
+   "version_code": 4
   },
   {
    "id": "qr",
-   "version": "0.1.2",
-   "version_code": 3
+   "version": "0.1.3",
+   "version_code": 4
   },
   {
    "id": "radio",
@@ -148,13 +148,13 @@
   },
   {
    "id": "settings",
-   "version": "0.2.3",
-   "version_code": 3
+   "version": "0.2.4",
+   "version_code": 4
   },
   {
    "id": "spreadsheet",
-   "version": "0.1.2",
-   "version_code": 3
+   "version": "0.1.3",
+   "version_code": 4
   },
   {
    "id": "ssh",
@@ -163,13 +163,13 @@
   },
   {
    "id": "store",
-   "version": "1.0.2",
-   "version_code": 2
+   "version": "1.0.3",
+   "version_code": 3
   },
   {
    "id": "system-monitor",
-   "version": "0.1.3",
-   "version_code": 3
+   "version": "0.1.4",
+   "version_code": 4
   },
   {
    "id": "tasks",
@@ -178,8 +178,8 @@
   },
   {
    "id": "terminal",
-   "version": "0.1.2",
-   "version_code": 3
+   "version": "0.1.3",
+   "version_code": 4
   },
   {
    "id": "unit-converter",
@@ -188,13 +188,13 @@
   },
   {
    "id": "video-player",
-   "version": "3.1.4",
-   "version_code": 6
+   "version": "3.1.5",
+   "version_code": 7
   },
   {
    "id": "weather",
-   "version": "1.0.1",
-   "version_code": 1
+   "version": "1.0.2",
+   "version_code": 2
   },
   {
    "id": "wifi-scanner",
@@ -204,11 +204,11 @@
  ],
  "apps_dir": "apps",
  "base": "/",
- "bytes": 29405373,
+ "bytes": 31152913,
  "caps_row": {
   "since": "1.2.118"
  },
- "commit": "cb0da806156585bf40bd562fb6cfec7374f79ef0",
+ "commit": "b0feed44b60dd902ef419afaafd69de7b34799a5",
  "edition": "p4",
  "externals": [
   {
@@ -523,11 +523,11 @@
    "why": "unRAR license is not free software: out until verified (external-resources.json)"
   }
  ],
- "files": 1307,
+ "files": 1369,
  "format": 1,
  "generator": "nucleo-webos tools/build.py",
- "gz_twins": 591,
- "hash": "f8e2a06b50f5e55f908e2426d85c3e9609de13129331accdd82d4bdad2e4c5bc",
+ "gz_twins": 622,
+ "hash": "9a0b943e505b0ea30a5058cf58b990ba4f7a7bce927b079d5ede896eb84dfe1c",
  "left_out": [
   {
    "id": "cast",
@@ -617,9 +617,14 @@
  },
  "profile_sha256": "1f68b9fa5f458ece4c6aeffe3cd99bde79ecbc24e72a2dac7c8ecd87041c85cc",
  "shell": {
-  "cache": "nucleo-shell-v162-ed8a7ff60828",
-  "hash": "ed8a7ff60828"
+  "cache": "nucleo-shell-v162-b8cde4d90802",
+  "hash": "b8cde4d90802"
  },
  "shell_dir": "",
- "uncommitted_files": 0
+ "uncommitted_files": 0,
+ "webos": {
+  "contract": "1",
+  "core": 3,
+  "webos": "1.0.0"
+ }
 }
