@@ -16,9 +16,12 @@ jobs:
     name: Nothing private in the pushed commits
     runs-on: ubuntu-24.04
     steps:
+      # A pull request is checked on its own head: the merge commit GitHub makes for it (author: the GitHub
+      # account, committer: GitHub) is not one of the commits that will land, and failed the identity check.
       - uses: actions/checkout@v4
         with:
           fetch-depth: 0
+          ref: ${{ github.event.pull_request.head.sha || github.sha }}
       - uses: actions/setup-python@v5
         with:
           python-version: "3.12"
