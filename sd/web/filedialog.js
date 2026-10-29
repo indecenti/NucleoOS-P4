@@ -7,7 +7,9 @@
 //   • the computer or phone the OS is being used from — a file input / a download, made here because a
 //     frame without an origin may do neither.
 // The app never sees a path it was not given by the user, never lists a folder, never touches /api.
-// Edition differences live behind /api/fs, so no app is written twice.
+// Edition differences live behind /api/fs and the core file layer (nucleo-fs.js), so no app is written twice.
+
+import coreFs from './nucleo-fs.js';
 
 const ROOT = '/data';
 // Folders of the OS itself, never offered: the key vault, the agent, every app's private corner.
@@ -32,26 +34,22 @@ export function cleanName(n) {
 }
 const human = (n) => (n < 1024 ? n + ' B' : n < 1048576 ? (n / 1024).toFixed(0) + ' KB' : (n / 1048576).toFixed(1) + ' MB');
 
-export function createFileDialog({ t, fetchFn, remember, recall } = {}) {
-  const doFetch = fetchFn || ((...a) => fetch(...a));
+export function createFileDialog({ t, fs = coreFs, remember, recall } = {}) {
   const tr = (k, v) => (t ? t(k, v) : k);
   let current = null;                       // the one sheet on screen: { close }
 
   async function list(dir) {
-    const r = await doFetch('/api/fs/list?path=' + encodeURIComponent(dir), { cache: 'no-store' });
-    if (!r.ok) throw new Error('http-' + r.status);
-    const j = await r.json();
-    return (j.entries || []).filter((e) => e && typeof e.name === 'string' && !e.name.startsWith('.'))
+    return (await fs.list(dir)).filter((e) => !e.name.startsWith('.'))
       .filter((e) => e.type !== 'dir' || browsable(joinPath(dir, e.name)));
   }
 
   // The sheet. mode 'open' | 'save'. Resolves what the user chose, or null.
-  function sheet({ mode, appName, types, multiple, name, bytes, mime, dirKey, altKey }) {
+  function sheet({ mode, appName, types, multiple, name, bytes, mime, dirKey, altKey, pathOnly, title, dir: startDir }) {
     if (current) current.close(null);
     const want = (types || []).map((x) => String(x).toLowerCase());
     const fits = (n) => !want.length || want.includes(extOf(n));
     // Where the app last saved, else where it last opened from (a signed copy lands next to the original).
-    let dir = recall && recall(dirKey);
+    let dir = browsable(startDir) ? startDir : recall && recall(dirKey);
     if (!browsable(dir) && altKey) dir = recall && recall(altKey);
     if (!browsable(dir)) dir = ROOT;
     return new Promise((resolve) => {
@@ -59,7 +57,7 @@ export function createFileDialog({ t, fetchFn, remember, recall } = {}) {
       scrim.className = 'os-files-scrim';
       const box = document.createElement('div');
       box.className = 'os-files'; box.setAttribute('role', 'dialog'); box.setAttribute('aria-modal', 'true');
-      const title = mode === 'open' ? tr('fd_open_title') : tr('fd_save_title');
+      if (!title) title = mode === 'open' ? tr('fd_open_title') : tr('fd_save_title');
       box.innerHTML =
         `<div class="fd-head"><h3>${esc(title)}</h3>${appName ? `<span class="fd-app">${esc(appName)}</span>` : ''}</div>` +
         `<div class="fd-where"><button class="fd-up" type="button" aria-label="${esc(tr('fd_up'))}" title="${esc(tr('fd_up'))}">` +
@@ -73,12 +71,12 @@ export function createFileDialog({ t, fetchFn, remember, recall } = {}) {
           : (want.length ? `<div class="fd-types">${esc(tr('fd_types', { types: want.map((x) => '.' + x).join(' ') }))}</div>` : '')) +
         `<div class="fd-msg" role="status" hidden></div>` +
         `<div class="fd-row">` +
-          `<button class="os-dialog-btn fd-alt" type="button">${esc(mode === 'open' ? tr('fd_from_here') : tr('fd_download'))}</button>` +
+          (pathOnly ? '' : `<button class="os-dialog-btn fd-alt" type="button">${esc(mode === 'open' ? tr('fd_from_here') : tr('fd_download'))}</button>`) +
           `<span class="fd-sp"></span>` +
           `<button class="os-dialog-btn" type="button" data-act="cancel">${esc(tr('cancel'))}</button>` +
           `<button class="os-dialog-btn primary" type="button" data-act="ok" disabled>${esc(mode === 'open' ? tr('fd_open') : tr('fd_save'))}</button>` +
         `</div>` +
-        (mode === 'open' ? `<input type="file" class="fd-file" hidden ${multiple ? 'multiple' : ''} ${want.length ? `accept="${esc(want.map((x) => '.' + x).join(','))}"` : ''}>` : '');
+        (mode === 'open' && !pathOnly ? `<input type="file" class="fd-file" hidden ${multiple ? 'multiple' : ''} ${want.length ? `accept="${esc(want.map((x) => '.' + x).join(','))}"` : ''}>` : '');
       scrim.appendChild(box);
       document.body.appendChild(scrim);
       requestAnimationFrame(() => scrim.classList.add('show'));
@@ -149,11 +147,10 @@ export function createFileDialog({ t, fetchFn, remember, recall } = {}) {
         const out = [];
         for (const n of names) {
           const path = joinPath(dir, n);
-          const r = await doFetch('/api/fs/read?path=' + encodeURIComponent(path), { cache: 'no-store' });
-          if (!r.ok) throw new Error('read');
-          const buf = await r.arrayBuffer();
-          if (buf.byteLength > OPEN_MAX_BYTES) throw new Error('large');
-          out.push({ name: n, bytes: buf, path });
+          const b = await fs.read(path);
+          if (b == null) throw new Error('read');
+          if (b.byteLength > OPEN_MAX_BYTES) throw new Error('large');
+          out.push({ name: n, bytes: b.buffer.slice(b.byteOffset, b.byteOffset + b.byteLength), path });
         }
         return out;
       }
@@ -162,6 +159,7 @@ export function createFileDialog({ t, fetchFn, remember, recall } = {}) {
         if (mode === 'open') {
           const names = [...picked].filter((n) => entries.find((e) => e.name === n && e.type === 'file'));
           if (!names.length) return;
+          if (pathOnly) { close({ paths: names.map((n) => joinPath(dir, n)) }); return; }
           busy = true; refreshOk(); say(tr('fd_reading'));
           try { close({ files: await readDevice(multiple ? names : names.slice(0, 1)) }); }
           catch (e) { busy = false; refreshOk(); say(tr(e && e.message === 'large' ? 'fd_too_large' : 'fd_read_fail'), 'err'); }
@@ -169,7 +167,7 @@ export function createFileDialog({ t, fetchFn, remember, recall } = {}) {
         }
         let n = cleanName(nameIn.value);
         const ext = extOf(name);
-        if (ext && extOf(n) !== ext) n += '.' + ext;              // the type stays what the app made
+        if (ext && extOf(n) !== ext && !pathOnly) n += '.' + ext;   // the type stays what the app made
         if (!n) return;
         const hit = entries.find((e) => e.name === n);
         if (hit && hit.type === 'dir') { say(tr('fd_is_folder'), 'err'); return; }
@@ -179,14 +177,17 @@ export function createFileDialog({ t, fetchFn, remember, recall } = {}) {
           ok.textContent = tr('fd_replace_ok');
           return;
         }
-        busy = true; refreshOk(); say(tr('fd_saving'));
         const path = joinPath(dir, n);
+        if (pathOnly) { close({ where: 'device', path, name: n }); return; }
+        busy = true; refreshOk(); say(tr('fd_saving'));
         try {
-          const r = await doFetch('/api/fs/write?path=' + encodeURIComponent(path), { method: 'POST', body: new Blob([bytes], { type: mime || 'application/octet-stream' }) });
-          if (!r.ok) throw new Error('http-' + r.status);
+          // Atomic and space-checked (nucleo-fs.js): a failure leaves any previous file as it was.
+          await fs.write(path, bytes, { mkdir: false, onProgress: (done, total) => {
+            if (total > 512 * 1024) say(tr('fd_saving_pct', { pct: Math.floor((done / total) * 100) }));
+          } });
           close({ where: 'device', path, name: n });
-        } catch {
-          busy = false; refreshOk(); say(tr('fd_save_fail'), 'err');
+        } catch (e) {
+          busy = false; refreshOk(); say(tr(e && e.code === 'no-space' ? 'fd_no_space' : 'fd_save_fail'), 'err');
         }
       }
 
@@ -242,8 +243,7 @@ export function createFileDialog({ t, fetchFn, remember, recall } = {}) {
           const n = cleanName(inp.value);
           if (!commit || !n) { row.remove(); return; }
           try {
-            const r = await doFetch('/api/fs/mkdir?path=' + encodeURIComponent(joinPath(dir, n)), { method: 'POST' });
-            if (!r.ok) throw new Error();
+            await fs.mkdirp(joinPath(dir, n));
             await go(joinPath(dir, n));
           } catch { row.remove(); say(tr('fd_mkdir_fail'), 'err'); }
         };
@@ -256,7 +256,7 @@ export function createFileDialog({ t, fetchFn, remember, recall } = {}) {
 
       // The other side: the computer or phone in front of the user. The click lands HERE, in the shell, so the
       // browser lets the file input open and the download start.
-      $('.fd-alt').addEventListener('click', () => {
+      if ($('.fd-alt')) $('.fd-alt').addEventListener('click', () => {
         if (mode === 'save') {
           const url = URL.createObjectURL(new Blob([bytes], { type: mime || 'application/octet-stream' }));
           const a = document.createElement('a');
@@ -330,6 +330,15 @@ export function createFileDialog({ t, fetchFn, remember, recall } = {}) {
     save({ appId, appName, name, bytes, mime } = {}) {
       return sheet({ mode: 'save', appName, name, bytes, mime, dirKey: 'save.' + (appId || ''), altKey: 'open.' + (appId || '') });
     },
+    // For system apps (same origin) that read and write themselves: the sheet only answers WHERE.
+    // mode 'open' → [path…] | null; mode 'save' → path | null (a replacement already confirmed).
+    async pickPath({ appId, appName, mode = 'open', types, multiple, name, dir, title } = {}) {
+      const r = await sheet({ mode, appName, types, multiple, name, pathOnly: true, dir, title,
+        dirKey: (mode === 'save' ? 'save.' : 'open.') + (appId || ''), altKey: mode === 'save' ? 'open.' + (appId || '') : undefined });
+      if (!r) return null;
+      return mode === 'save' ? r.path : r.paths;
+    },
+    get isOpen() { return !!current; },
     cancel() { if (current) current.close(null); },
   };
 }

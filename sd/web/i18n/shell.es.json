@@ -406,5 +406,7 @@
   "fd_replace_ok": "Reemplazar",
   "fd_saving": "Guardando…",
   "fd_save_fail": "No se pudo guardar: comprueba el espacio libre.",
-  "fd_mkdir_fail": "No se pudo crear la carpeta."
+  "fd_mkdir_fail": "No se pudo crear la carpeta.",
+  "fd_saving_pct": "Guardando… {pct}%",
+  "fd_no_space": "El dispositivo está lleno: libera espacio y vuelve a intentarlo."
 }
