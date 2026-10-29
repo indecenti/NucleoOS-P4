@@ -228,8 +228,19 @@ bool is_mount_root(const char *p) {
 // are never opened or moved by a shell command. The shell answers the web (/api/term) and ANIMA's
 // agent, and on a board without settings encryption these files are plain text on the card: a `cat`
 // or a `grep -r` would hand the keys to whoever drives it. Their owners read them with nv_sealed_read.
+// The settings mirror (nucleos/settings.nvb, + its .tmp) holds the saved Wi-Fi passwords and the rest of NVS,
+// in plain text on a board without settings encryption: read through the shell, a prompt-injected ANIMA
+// (`cat`, `xxd`, `grep` run without asking) would send them to the model. The update staging folder is only
+// written by the updater: a file planted there is what recovery installs.
+static bool settings_mirror(const char *path) {
+    const char *b = path;
+    for (const char *p = path; *p; p++) if (*p == '/' || *p == '\\') b = p + 1;
+    return !strncasecmp(b, "settings.nvb", 12);
+}
+
 FILE *sh_fopen(const char *path, const char *mode) {
-    if (path && nv_sealed_path(path)) { errno = EACCES; return nullptr; }
+    if (path && (nv_sealed_path(path) || settings_mirror(path))) { errno = EACCES; return nullptr; }
+    if (path && mode && strpbrk(mode, "wa+") && nv_sealed_under(path, "/sdcard/nvupd")) { errno = EACCES; return nullptr; }
     return fopen(path, mode);
 }
 
@@ -1537,7 +1548,7 @@ int cp_mv(Ctx &c, bool move) {
         bool ok;
         if (move) {
             if (exists(to) && !is_dir(to)) unlink(to);
-            ok = !nv_sealed_within(src) && !nv_sealed_within(to) && rename(src, to) == 0;   // a secret, or a folder holding one, stays put
+            ok = !nv_sealed_within(src) && !nv_sealed_within(to) && !settings_mirror(src) && !settings_mirror(to) && rename(src, to) == 0;   // a secret, or a folder holding one, stays put
             if (!ok) {   // another volume: copy, then delete
                 ok = copy_tree(src, to, 0);
                 if (ok) { char p[kPath]; snprintf(p, sizeof p, "%s", src); ok = delete_tree(p, sizeof p, 0); }

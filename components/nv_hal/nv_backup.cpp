@@ -185,8 +185,25 @@ void write_value(const char *ns, const char *key, nvs_type_t type, const uint8_t
     nvs_close(h);
 }
 
-// Apply a record stream; returns the number of entries written.
-int apply_records(const uint8_t *p, size_t n) {
+// Settings that decide who may control the board or where its code and data come from. A plaintext backup
+// is plain FAT on a removable card: anyone holding it can write one, and before this a forged file could plant
+// a paired web session (full API + terminal), allow unsigned store installs, or point updates, the web OS and
+// ANIMA at another server — applied on the next wipe or "Restore". From such a file these are never taken;
+// the owner sets them again on the board. A sealed backup (made by this board) still restores everything.
+static bool security_key(const char *key) {
+    static const char *const kPrefix[] = { "web_", "store_", "ota_", "keydeck", "ss_trust", "ss_tls" };
+    static const char *const kExact[]  = { "lockpin", "cpin", "pin" };
+    static const char *const kSuffix[] = { "_url", "_pin", "_pass", "_token", "_key", "_sess", "_trust", "_secret" };
+    for (const char *x : kPrefix) if (!strncmp(key, x, strlen(x))) return true;
+    for (const char *x : kExact)  if (!strcmp(key, x)) return true;
+    const size_t kl = strlen(key);
+    for (const char *x : kSuffix) { const size_t xl = strlen(x); if (kl >= xl && !strcmp(key + kl - xl, x)) return true; }
+    return false;
+}
+
+// Apply a record stream; returns the number of entries written. trusted=false (a plaintext file): security
+// settings are skipped, see security_key().
+int apply_records(const uint8_t *p, size_t n, bool trusted) {
     // nvs_set_* bounce non-internal sources
     uint8_t *val = (uint8_t *)heap_caps_malloc(kValMax, MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
     if (!val) return 0;
@@ -220,6 +237,7 @@ int apply_records(const uint8_t *p, size_t n) {
             default: continue;
         }
         if (want && len != want) continue;
+        if (!trusted && security_key(key)) { NV_LOGW(TAG, "import: %s/%s skipped (plaintext backup)", ns, key); continue; }
         write_value(ns, key, (nvs_type_t)type, val, (int)len);
         count++;
     }
@@ -364,6 +382,13 @@ bool nv_backup_export(void) {
             r = nvs_entry_next(&it);
             continue;
         }
+        // Without a chip key the mirror is plaintext on a removable card: no Wi-Fi passwords, PINs, sessions or
+        // tokens in it (a restore asks for them again; the same rule as the Cardputer's SD mirror). A sealed
+        // mirror (encrypted NVS) keeps everything, since only this chip can open it.
+        if (!sealed && ((!strcmp(info.namespace_name, "nvwifi") && !strcmp(info.key, "saved")) || security_key(info.key))) {
+            r = nvs_entry_next(&it);
+            continue;
+        }
         int len = read_value(info.namespace_name, info.key, info.type, val, kValMax);
         if (len >= 0) {
             rec.put_u8((uint8_t)strlen(info.namespace_name));
@@ -454,10 +479,10 @@ bool nv_backup_import(void) {
         // Plaintext (older firmware). With encrypted NVS anyone holding the card could forge one and
         // plant settings (PINs, tokens) that a wipe would then restore: only sealed backups count.
         if (nv_config_encrypted()) NV_LOGW(TAG, "import: plaintext backup refused (NVS is encrypted)");
-        else count = apply_records(buf + sizeof kMagic, n - sizeof kMagic);
+        else count = apply_records(buf + sizeof kMagic, n - sizeof kMagic, false);
     } else if (got && n >= kHdrV2 && memcmp(buf, kMagicV2, sizeof kMagicV2) == 0) {
         uint8_t *plain = static_cast<uint8_t *>(heap_caps_malloc(n - kHdrV2 + 1, MALLOC_CAP_SPIRAM));
-        if (plain && unseal(buf, n, plain)) count = apply_records(plain, n - kHdrV2);
+        if (plain && unseal(buf, n, plain)) count = apply_records(plain, n - kHdrV2, true);
         else NV_LOGW(TAG, "import: backup sealed by another device (or damaged), ignored");
         if (plain) { memset(plain, 0, n - kHdrV2); heap_caps_free(plain); }
     }

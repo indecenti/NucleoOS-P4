@@ -447,15 +447,20 @@ const char *reset_reason_str(void) {
 // GET /api/info -> identity + health. "reset_reason" is this boot's cause; "crash" is the core dump
 // still stored in flash ({task,pc,reason,this_build}, or null) — it survives until Diagnostics
 // clears it, so it can predate this boot (this_build=false: an older image). Details: /api/crash.
+bool req_authed(httpd_req_t *req);   // below, with the other auth helpers
+
 esp_err_t h_info(httpd_req_t *req) {
     const esp_app_desc_t *ad = esp_app_get_description();
     char ip[16] = "?";
     esp_netif_ip_info_t ipi;
     esp_netif_t *nif = esp_netif_get_default_netif();
     if (nif && esp_netif_get_ip_info(nif, &ipi) == ESP_OK) snprintf(ip, sizeof ip, IPSTR, IP2STR(&ipi.ip));
+    // Unpaired callers get identity only: the crash PC, memory and reset cause tell an attacker which known
+    // bug this board has hit (the keys stay, with neutral values, so older pages keep parsing the reply).
+    const bool paired = req_authed(req);
     char crash[160] = "null";
     nv_crash_info_t ci;
-    if (nv_crash_get(&ci)) {
+    if (paired && nv_crash_get(&ci)) {
         char task[40];
         json_escape(task, sizeof task, ci.task);
         snprintf(crash, sizeof crash, "{\"task\":\"%s\",\"pc\":\"0x%08lx\",\"reason\":\"%s\",\"this_build\":%s}",
@@ -466,8 +471,8 @@ esp_err_t h_info(httpd_req_t *req) {
              "{\"name\":\"NucleoOS\",\"version\":\"%s\",\"ip\":\"%s\",\"uptime_s\":%lld,"
              "\"sram_free_kb\":%u,\"psram_free_kb\":%u,\"abi\":%d,\"reset_reason\":\"%s\",\"crash\":%s}",
              ad->version, ip, (long long)(esp_timer_get_time() / 1000000),
-             (unsigned)(nv_mem_free_internal() / 1024), (unsigned)(nv_mem_free_psram() / 1024), NV_WASM_ABI,
-             reset_reason_str(), crash);
+             paired ? (unsigned)(nv_mem_free_internal() / 1024) : 0u, paired ? (unsigned)(nv_mem_free_psram() / 1024) : 0u,
+             NV_WASM_ABI, paired ? reset_reason_str() : "", crash);
     httpd_resp_set_type(req, "application/json");
     return httpd_resp_send(req, body, HTTPD_RESP_USE_STRLEN);
 }

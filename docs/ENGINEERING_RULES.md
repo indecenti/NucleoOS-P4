@@ -82,6 +82,12 @@ recorded so nobody relaxes them by accident. Keep this file short and true.
 - The web API is paired (nv_auth): a new `/api` route is authenticated by default, and the public
   list in `server_start()` (info, auth/status, pair) stays that short. `settings.nvb` (Wi-Fi creds)
   is never served, even to a paired client; `teacher.json` is (the browser copilot needs it).
+  The terminal shell (web `/api/term` and ANIMA's agent) cannot open or move it either, nor write
+  into `/sdcard/nvupd` (`sh_fopen`). `/api/info` answers unpaired callers with identity only.
+- The SD settings mirror is plaintext on a board without encrypted NVS: it then leaves out Wi-Fi
+  passwords, PINs, sessions and tokens (`security_key()` in `nv_backup.cpp`), and a plaintext backup
+  never restores security settings (web sessions, store/OTA/web sources, KeyDeck, PINs, `*_url`):
+  anyone holding the card could forge one. Only a sealed (NVB2) backup restores everything.
 - Secrets never go through `NV_LOG*`: the log ring is served by `/api/logs`. The pairing code is
   printed with plain `printf` (serial console only) for that reason.
 - Remote firmware is trusted only through the release signature (nv_ota, tools/ota_sign.py): the
